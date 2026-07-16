@@ -1,0 +1,38 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
+  es5-ext: false
+  esbuild: true
+  prisma: true
+
+minimumReleaseAgeExclude:
+  - '@aws-sdk/checksums@3.1000.18'
+  - '@aws-sdk/client-s3@3.1088.0'
+  - '@aws-sdk/core@3.975.3'
+  - '@aws-sdk/credential-provider-env@3.972.59'
+  - '@aws-sdk/credential-provider-http@3.972.61'
+  - '@aws-sdk/credential-provider-ini@3.973.3'
+  - '@aws-sdk/credential-provider-login@3.972.65'
+  - '@aws-sdk/credential-provider-node@3.972.69'
+  - '@aws-sdk/credential-provider-process@3.972.59'
+  - '@aws-sdk/credential-provider-sso@3.973.3'
+  - '@aws-sdk/credential-provider-web-identity@3.972.65'
+  - '@aws-sdk/middleware-sdk-s3@3.972.64'
+  - '@aws-sdk/nested-clients@3.997.33'
+  - '@aws-sdk/signature-v4-multi-region@3.996.41'
+  - '@aws-sdk/token-providers@3.1088.0'
+  - '@aws-sdk/types@3.974.2'
+  - '@aws-sdk/xml-builder@3.972.36'
+
+packageExtensions:
+  '@vitejs/plugin-react-refresh@1.3.6':
+    dependencies:
+      vite: 2.9.18
+
+overrides:
+  'zmp-sdk>@sentry/browser': '-'
+  'zmp-sdk>@sentry/tracing': '-'

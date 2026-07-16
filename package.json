@@ -1,0 +1,45 @@
+{
+  "name": "zalo-shope",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-store Zalo commerce foundation for Vietnam",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24.0.0 <25.0.0"
+  },
+  "packageManager": "pnpm@11.13.1",
+  "scripts": {
+    "build": "corepack pnpm --recursive --if-present run build",
+    "clean": "corepack pnpm --recursive --if-present run clean",
+    "db:generate": "corepack pnpm --filter @zalo-shop/database generate",
+    "db:validate": "corepack pnpm --filter @zalo-shop/database validate",
+    "dev": "corepack pnpm run build:packages && corepack pnpm --parallel --filter \"./apps/**\" run dev",
+    "build:packages": "corepack pnpm --recursive --filter \"./packages/**\" run build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "infra:down": "docker compose down --remove-orphans",
+    "infra:logs": "docker compose logs --tail=100",
+    "infra:up": "docker compose up -d --wait",
+    "lint": "corepack pnpm run build:packages && eslint . --max-warnings=0",
+    "test": "corepack pnpm run test:unit",
+    "test:integration": "corepack pnpm run build:packages && vitest run --config vitest.integration.config.ts",
+    "test:unit": "corepack pnpm run build:packages && vitest run --config vitest.unit.config.ts",
+    "typecheck": "corepack pnpm run build:packages && corepack pnpm --recursive --filter \"./apps/**\" run typecheck",
+    "verify": "corepack pnpm run format:check && corepack pnpm run lint && corepack pnpm run typecheck && corepack pnpm run test:unit && corepack pnpm run build && corepack pnpm run db:validate"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/node": "24.10.1",
+    "@vitest/coverage-v8": "3.2.7",
+    "@zalo-shop/config": "workspace:*",
+    "@zalo-shop/platform": "workspace:*",
+    "dotenv": "17.2.3",
+    "eslint": "9.39.5",
+    "globals": "16.5.0",
+    "prettier": "3.9.5",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.64.0",
+    "vitest": "3.2.7"
+  }
+}

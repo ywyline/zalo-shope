@@ -1,0 +1,26 @@
+{
+  "name": "@zalo-shop/mini-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "vite build",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "dev": "zmp start",
+    "dev:web": "vite --host 0.0.0.0",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "6.30.4",
+    "zmp-sdk": "2.51.6",
+    "zmp-ui": "1.11.14"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react-refresh": "1.3.6",
+    "vite": "2.9.18",
+    "zmp-cli": "4.0.3"
+  }
+}

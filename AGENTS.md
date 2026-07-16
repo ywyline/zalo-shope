@@ -206,17 +206,24 @@
 
 ## 11. 项目命令
 
-当前仓库尚未确定技术栈和项目脚手架，因此没有可执行的标准命令。首次架构和脚手架确定后，必须立即更新本节，写入真实可运行的命令：
+项目采用 Node.js 24 LTS 与 Corepack 管理的 pnpm workspace。以下命令必须从仓库根目录运行：
 
-- 安装依赖。
-- 本地开发。
-- 单元测试和集成测试。
-- E2E 测试。
-- lint、格式化和类型检查。
-- 生产构建。
-- 数据库迁移、回滚和种子数据。
+- 包管理器版本：`corepack pnpm --version`。
+- 安装依赖：`corepack pnpm install --frozen-lockfile`。
+- 启动本地依赖：`corepack pnpm infra:up`；停止：`corepack pnpm infra:down`。
+- 本地开发：`corepack pnpm dev`。
+- 单元测试：`corepack pnpm test:unit`。
+- 基础设施集成测试：先运行 `corepack pnpm infra:up`，再运行 `corepack pnpm test:integration`。
+- lint：`corepack pnpm lint`。
+- 格式检查：`corepack pnpm format:check`；格式化：`corepack pnpm format`。
+- 类型检查：`corepack pnpm typecheck`。
+- 生产构建：`corepack pnpm build`。
+- 全部 M0 静态与单元验证：`corepack pnpm verify`。
+- 数据库客户端生成：`corepack pnpm db:generate`；schema 校验：`corepack pnpm db:validate`。
+- 开发迁移：`corepack pnpm --filter @zalo-shop/database migrate:dev`。
+- 部署迁移：`corepack pnpm --filter @zalo-shop/database migrate:deploy`。
 
-不得在这里保留无法运行的示例命令或虚构命令。优先通过项目脚本提供跨平台入口，避免文档只适用于某个开发者的本机。
+M0 尚无业务表和 E2E 业务流程，因此暂未提供业务 E2E、迁移回滚或种子数据命令；相关里程碑实现时必须同步补充真实命令。项目直接使用 `corepack pnpm`，不依赖需要管理员权限的全局 pnpm shim；Windows 也可使用 `corepack.cmd pnpm`，详见 `README.md`。
 
 ## 12. 文档与变更管理
 

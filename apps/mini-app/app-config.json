@@ -1,0 +1,14 @@
+{
+  "app": {
+    "title": "Zalo Shop",
+    "headerColor": "#FFFFFF",
+    "textColor": "black",
+    "statusBarColor": "#D8796B",
+    "leftButton": "none"
+  },
+  "debug": false,
+  "listCSS": [],
+  "listSyncJS": [],
+  "listAsyncJS": [],
+  "pages": []
+}
