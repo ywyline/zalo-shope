@@ -14,11 +14,18 @@
     "@nestjs/core": "11.1.28",
     "@nestjs/platform-express": "11.1.28",
     "@zalo-shop/config": "workspace:*",
+    "@zalo-shop/contracts": "workspace:*",
+    "@zalo-shop/database": "workspace:*",
+    "@zalo-shop/domain": "workspace:*",
+    "@zalo-shop/i18n": "workspace:*",
+    "@zalo-shop/integrations": "workspace:*",
     "@zalo-shop/logger": "workspace:*",
     "@zalo-shop/platform": "workspace:*",
+    "@zalo-shop/security": "workspace:*",
     "dotenv": "17.2.3",
     "reflect-metadata": "0.2.2",
-    "rxjs": "7.8.2"
+    "rxjs": "7.8.2",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@nestjs/testing": "11.1.28",

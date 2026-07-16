@@ -1,0 +1,2 @@
+export const DATABASE_CLIENT = Symbol('DATABASE_CLIENT');
+export const ZALO_IDENTITY_PROVIDER = Symbol('ZALO_IDENTITY_PROVIDER');

@@ -5,6 +5,7 @@ import { NestFactory } from '@nestjs/core';
 import { createLogger, NestPinoLogger } from '@zalo-shop/logger';
 
 import { AppModule, getApiRuntimeConfig } from './app.module';
+import { ApiExceptionFilter } from './api-exception.filter';
 
 async function bootstrap(): Promise<void> {
   const config = getApiRuntimeConfig();
@@ -13,6 +14,7 @@ async function bootstrap(): Promise<void> {
     logger: new NestPinoLogger(structuredLogger),
   });
 
+  app.useGlobalFilters(new ApiExceptionFilter());
   app.enableShutdownHooks();
   await app.listen(config.API_PORT, config.API_HOST);
   structuredLogger.info({ host: config.API_HOST, port: config.API_PORT }, 'API listening');

@@ -6,3 +6,408 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+enum Locale {
+  vi
+  zh
+  en
+}
+
+enum StoreIndustry {
+  BEAUTY
+  FASHION
+}
+
+enum RecordStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum DeploymentEnvironment {
+  TEST
+  STAGING
+  PRODUCTION
+}
+
+enum PermissionScope {
+  PLATFORM
+  STORE
+}
+
+enum AdminStatus {
+  ACTIVE
+  LOCKED
+  DISABLED
+}
+
+enum MemberStatus {
+  ACTIVE
+  DISABLED
+  ANONYMIZED
+}
+
+enum IdentityProvider {
+  ZALO
+}
+
+enum ConsentPurpose {
+  PROFILE
+  PHONE
+  LOCATION
+  TERMS
+  PRIVACY
+}
+
+enum ConsentStatus {
+  GRANTED
+  DENIED
+  REVOKED
+}
+
+enum ConsentSource {
+  ZALO
+  MANUAL
+}
+
+enum ContactSource {
+  ZALO
+  MANUAL
+}
+
+enum AuditActorType {
+  ADMIN
+  MEMBER
+  SYSTEM
+}
+
+model Store {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code          String        @unique @db.VarChar(64)
+  industry      StoreIndustry
+  status        RecordStatus  @default(ACTIVE)
+  defaultLocale Locale        @default(vi) @map("default_locale")
+  timezone      String        @default("Asia/Ho_Chi_Minh") @db.VarChar(64)
+  currency      String        @default("VND") @db.Char(3)
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  localizations      StoreLocalization[]
+  theme              StoreTheme?
+  zaloApps           StoreZaloApp[]
+  storeRoles         StoreRole[]
+  adminStoreRoles    AdminStoreRole[]
+  members            Member[]
+  memberIdentities   MemberExternalIdentity[]
+  memberPhoneContact MemberPhoneContact[]
+  consents           Consent[]
+  memberSessions     MemberSession[]
+  auditLogs          AuditLog[]
+
+  @@map("stores")
+}
+
+model StoreLocalization {
+  storeId          String   @map("store_id") @db.Uuid
+  locale           Locale
+  displayName      String   @map("display_name") @db.VarChar(160)
+  shortDescription String?  @map("short_description") @db.VarChar(500)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict)
+
+  @@id([storeId, locale])
+  @@map("store_localizations")
+}
+
+model StoreTheme {
+  storeId          String   @id @map("store_id") @db.Uuid
+  version          Int      @default(1)
+  colorTokens      Json     @map("color_tokens")
+  typographyTokens Json     @map("typography_tokens")
+  radiusTokens     Json     @map("radius_tokens")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict)
+
+  @@map("store_themes")
+}
+
+model StoreZaloApp {
+  storeId     String                @map("store_id") @db.Uuid
+  environment DeploymentEnvironment
+  parentAppId String?               @map("parent_app_id") @db.VarChar(128)
+  miniAppId   String?               @map("mini_app_id") @db.VarChar(128)
+  oaId        String?               @map("oa_id") @db.VarChar(128)
+  enabled     Boolean               @default(false)
+  createdAt   DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict)
+
+  @@id([storeId, environment])
+  @@unique([environment, miniAppId])
+  @@map("store_zalo_apps")
+}
+
+model AdminUser {
+  id                  String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email               String      @db.VarChar(320)
+  emailNormalized     String      @unique @map("email_normalized") @db.VarChar(320)
+  displayName         String      @map("display_name") @db.VarChar(160)
+  passwordHash        String      @map("password_hash") @db.Text
+  mfaSecretCiphertext String?     @map("mfa_secret_ciphertext") @db.Text
+  mfaEnabled          Boolean     @default(false) @map("mfa_enabled")
+  status              AdminStatus @default(ACTIVE)
+  failedLoginCount    Int         @default(0) @map("failed_login_count")
+  lockedUntil         DateTime?   @map("locked_until") @db.Timestamptz(6)
+  createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  platformRolesGranted   AdminPlatformRole[] @relation("AdminPlatformRoleAdmin")
+  platformRolesGrantedBy AdminPlatformRole[] @relation("AdminPlatformRoleGrantor")
+  storeRoles             AdminStoreRole[]    @relation("AdminStoreRoleAdmin")
+  storeRolesGrantedBy    AdminStoreRole[]    @relation("AdminStoreRoleGrantor")
+  adminSessions          AdminSession[]
+
+  @@map("admin_users")
+}
+
+model Permission {
+  code        String          @id @db.VarChar(128)
+  scope       PermissionScope
+  description String          @db.VarChar(500)
+
+  platformRolePermissions PlatformRolePermission[]
+  storeRolePermissions    StoreRolePermission[]
+
+  @@map("permissions")
+}
+
+model PlatformRole {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code      String   @unique @db.VarChar(64)
+  name      String   @db.VarChar(160)
+  isSystem  Boolean  @default(false) @map("is_system")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  permissions PlatformRolePermission[]
+  admins      AdminPlatformRole[]
+
+  @@map("platform_roles")
+}
+
+model PlatformRolePermission {
+  platformRoleId String @map("platform_role_id") @db.Uuid
+  permissionCode String @map("permission_code") @db.VarChar(128)
+
+  platformRole PlatformRole @relation(fields: [platformRoleId], references: [id], onDelete: Restrict)
+  permission   Permission   @relation(fields: [permissionCode], references: [code], onDelete: Restrict)
+
+  @@id([platformRoleId, permissionCode])
+  @@map("platform_role_permissions")
+}
+
+model AdminPlatformRole {
+  adminUserId    String   @map("admin_user_id") @db.Uuid
+  platformRoleId String   @map("platform_role_id") @db.Uuid
+  grantedBy      String   @map("granted_by") @db.Uuid
+  grantedAt      DateTime @default(now()) @map("granted_at") @db.Timestamptz(6)
+
+  adminUser    AdminUser    @relation("AdminPlatformRoleAdmin", fields: [adminUserId], references: [id], onDelete: Restrict)
+  platformRole PlatformRole @relation(fields: [platformRoleId], references: [id], onDelete: Restrict)
+  grantor      AdminUser    @relation("AdminPlatformRoleGrantor", fields: [grantedBy], references: [id], onDelete: Restrict)
+
+  @@id([adminUserId, platformRoleId])
+  @@map("admin_platform_roles")
+}
+
+model StoreRole {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId   String   @map("store_id") @db.Uuid
+  code      String   @db.VarChar(64)
+  name      String   @db.VarChar(160)
+  isSystem  Boolean  @default(false) @map("is_system")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store       Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  permissions StoreRolePermission[]
+  admins      AdminStoreRole[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, code])
+  @@map("store_roles")
+}
+
+model StoreRolePermission {
+  storeId        String @map("store_id") @db.Uuid
+  roleId         String @map("role_id") @db.Uuid
+  permissionCode String @map("permission_code") @db.VarChar(128)
+
+  role       StoreRole  @relation(fields: [storeId, roleId], references: [storeId, id], onDelete: Restrict)
+  permission Permission @relation(fields: [permissionCode], references: [code], onDelete: Restrict)
+
+  @@id([storeId, roleId, permissionCode])
+  @@map("store_role_permissions")
+}
+
+model AdminStoreRole {
+  storeId     String   @map("store_id") @db.Uuid
+  adminUserId String   @map("admin_user_id") @db.Uuid
+  roleId      String   @map("role_id") @db.Uuid
+  grantedBy   String   @map("granted_by") @db.Uuid
+  grantedAt   DateTime @default(now()) @map("granted_at") @db.Timestamptz(6)
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  adminUser AdminUser @relation("AdminStoreRoleAdmin", fields: [adminUserId], references: [id], onDelete: Restrict)
+  role      StoreRole @relation(fields: [storeId, roleId], references: [storeId, id], onDelete: Restrict)
+  grantor   AdminUser @relation("AdminStoreRoleGrantor", fields: [grantedBy], references: [id], onDelete: Restrict)
+
+  @@id([storeId, adminUserId, roleId])
+  @@map("admin_store_roles")
+}
+
+model Member {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId         String       @map("store_id") @db.Uuid
+  status          MemberStatus @default(ACTIVE)
+  preferredLocale Locale       @default(vi) @map("preferred_locale")
+  displayName     String?      @map("display_name") @db.VarChar(160)
+  avatarUrl       String?      @map("avatar_url") @db.Text
+  lastSeenAt      DateTime?    @map("last_seen_at") @db.Timestamptz(6)
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store        Store                    @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  identities   MemberExternalIdentity[]
+  phoneContact MemberPhoneContact?
+  consents     Consent[]
+  sessions     MemberSession[]
+
+  @@unique([storeId, id])
+  @@index([storeId, status])
+  @@map("members")
+}
+
+model MemberExternalIdentity {
+  id                String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId           String           @map("store_id") @db.Uuid
+  memberId          String           @map("member_id") @db.Uuid
+  provider          IdentityProvider
+  providerAppId     String           @map("provider_app_id") @db.VarChar(128)
+  providerSubjectId String           @map("provider_subject_id") @db.VarChar(255)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store  Store  @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  member Member @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, provider, providerAppId, providerSubjectId])
+  @@index([storeId, memberId])
+  @@map("member_external_identities")
+}
+
+model MemberPhoneContact {
+  storeId         String        @map("store_id") @db.Uuid
+  memberId        String        @map("member_id") @db.Uuid
+  phoneHash       String        @map("phone_hash") @db.VarChar(128)
+  phoneCiphertext String        @map("phone_ciphertext") @db.Text
+  source          ContactSource
+  verifiedAt      DateTime?     @map("verified_at") @db.Timestamptz(6)
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store  Store  @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  member Member @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+
+  @@id([storeId, memberId])
+  @@unique([storeId, phoneHash])
+  @@map("member_phone_contacts")
+}
+
+model Consent {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId       String         @map("store_id") @db.Uuid
+  memberId      String         @map("member_id") @db.Uuid
+  eventId       String         @map("event_id") @db.Uuid
+  purpose       ConsentPurpose
+  status        ConsentStatus
+  policyVersion String         @map("policy_version") @db.VarChar(64)
+  source        ConsentSource
+  occurredAt    DateTime       @map("occurred_at") @db.Timestamptz(6)
+  revokedAt     DateTime?      @map("revoked_at") @db.Timestamptz(6)
+  evidence      Json?
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store  Store  @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  member Member @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, eventId])
+  @@index([storeId, memberId, purpose, occurredAt])
+  @@map("consents")
+}
+
+model AdminSession {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  adminUserId      String    @map("admin_user_id") @db.Uuid
+  tokenFamilyId    String    @map("token_family_id") @db.Uuid
+  refreshTokenHash String    @unique @map("refresh_token_hash") @db.VarChar(128)
+  mfaVerifiedAt    DateTime  @map("mfa_verified_at") @db.Timestamptz(6)
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(6)
+  ipHash           String?   @map("ip_hash") @db.VarChar(128)
+  userAgentHash    String?   @map("user_agent_hash") @db.VarChar(128)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  adminUser AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Restrict)
+
+  @@index([adminUserId, expiresAt])
+  @@map("admin_sessions")
+}
+
+model MemberSession {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId            String    @map("store_id") @db.Uuid
+  memberId           String    @map("member_id") @db.Uuid
+  tokenFamilyId      String    @map("token_family_id") @db.Uuid
+  refreshTokenHash   String    @unique @map("refresh_token_hash") @db.VarChar(128)
+  expiresAt          DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt          DateTime? @map("revoked_at") @db.Timestamptz(6)
+  zaloTokenExpiresAt DateTime? @map("zalo_token_expires_at") @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store  Store  @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  member Member @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+
+  @@index([storeId, memberId, expiresAt])
+  @@map("member_sessions")
+}
+
+model AuditLog {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId       String?        @map("store_id") @db.Uuid
+  actorType     AuditActorType @map("actor_type")
+  actorId       String         @map("actor_id") @db.Uuid
+  action        String         @db.VarChar(160)
+  targetType    String         @map("target_type") @db.VarChar(160)
+  targetId      String?        @map("target_id") @db.VarChar(255)
+  beforeData    Json?          @map("before_data")
+  afterData     Json?          @map("after_data")
+  reason        String?        @db.VarChar(500)
+  correlationId String         @map("correlation_id") @db.VarChar(128)
+  sourceIp      String?        @map("source_ip") @db.Inet
+  userAgent     String?        @map("user_agent") @db.VarChar(500)
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store Store? @relation(fields: [storeId], references: [id], onDelete: Restrict)
+
+  @@index([storeId, createdAt(sort: Desc)])
+  @@index([actorType, actorId, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}

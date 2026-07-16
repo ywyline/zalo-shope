@@ -1,0 +1,280 @@
+openapi: 3.1.0
+info:
+  title: Zalo Shop M1 API
+  version: 0.1.0-m1
+  description: M1 商城上下文、身份、RBAC、国际化和审计契约。所有业务 API 以 /v1 开始。
+servers:
+  - url: http://localhost:3000
+paths:
+  /v1/auth/zalo/exchange:
+    post:
+      summary: 用商城绑定的 Zalo 凭据交换会员会话
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - name: X-Zalo-Access-Token
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        '201': { $ref: '#/components/responses/Session' }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/auth/refresh:
+    post:
+      summary: 轮换会员刷新令牌
+      parameters: [{ $ref: '#/components/parameters/StoreCode' }]
+      requestBody: { $ref: '#/components/requestBodies/Refresh' }
+      responses:
+        '201': { $ref: '#/components/responses/Session' }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/auth/admin/password:
+    post:
+      summary: 校验管理员密码并签发 MFA challenge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 12 }
+      responses:
+        '201': { description: MFA challenge }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/auth/admin/mfa/verify:
+    post:
+      summary: 验证 TOTP 并签发管理员会话
+      responses:
+        '201': { $ref: '#/components/responses/Session' }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/auth/admin/refresh:
+    post:
+      summary: 轮换管理员刷新令牌
+      requestBody: { $ref: '#/components/requestBodies/Refresh' }
+      responses:
+        '201': { $ref: '#/components/responses/Session' }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/auth/logout:
+    post:
+      summary: 撤销当前会话
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: 会话已撤销 }
+  /v1/stores/current:
+    get:
+      summary: 获取当前商城本地化和主题配置
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/AccessReason'
+      responses:
+        '200': { description: 当前商城公开配置 }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/members/me:
+    get:
+      summary: 获取当前商城会员资料（不返回手机号明文）
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/StoreCode' }]
+      responses:
+        '200': { description: 会员资料 }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/members/me/preferences:
+    patch:
+      summary: 修改会员语言偏好
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/StoreCode' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locale]
+              properties:
+                locale: { type: string, enum: [vi, zh, en] }
+      responses:
+        '200': { description: 已更新偏好 }
+  /v1/members/me/consents:
+    post:
+      summary: 幂等追加同意、拒绝或撤回事件
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/StoreCode' }]
+      responses:
+        '201': { description: 同意事件 }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/members/me/phone/manual:
+    put:
+      summary: 手工手机号降级流程；号码加密保存且只返回掩码
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/StoreCode' }]
+      responses:
+        '200': { description: 手机号掩码 }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/members/me/phone/zalo:
+    put:
+      summary: 校验一次性 Zalo 手机 token、Zalo 身份和当前会员归属后加密保存
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - name: X-Zalo-Access-Token
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: 已验证手机号掩码 }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/admin/stores:
+    get:
+      summary: 仅列出管理员明确可访问的商城
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: 商城列表 }
+  /v1/admin/stores/{storeId}/config:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/StoreCode'
+      - $ref: '#/components/parameters/AccessReason'
+    get:
+      summary: 读取商城配置
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: 商城配置 }
+        '403': { $ref: '#/components/responses/Error' }
+    patch:
+      summary: 使用 expected_version 更新商城配置
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: 更新后的商城配置 }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/rbac/roles:
+    parameters:
+      - $ref: '#/components/parameters/StoreIdQuery'
+      - $ref: '#/components/parameters/StoreCode'
+      - $ref: '#/components/parameters/AccessReason'
+    get:
+      summary: 读取商城角色
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: 角色列表 }
+    post:
+      summary: 创建商城角色
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: 新角色 }
+  /v1/admin/rbac/roles/{roleId}/permissions/{permissionCode}:
+    parameters:
+      - $ref: '#/components/parameters/RoleId'
+      - $ref: '#/components/parameters/PermissionCode'
+      - $ref: '#/components/parameters/StoreIdQuery'
+      - $ref: '#/components/parameters/StoreCode'
+      - $ref: '#/components/parameters/AccessReason'
+    put:
+      summary: 幂等授予商城权限
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: 权限绑定 } }
+    delete:
+      summary: 撤销商城权限
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: 已撤销 } }
+  /v1/admin/rbac/admins/{adminId}/roles/{roleId}:
+    parameters:
+      - $ref: '#/components/parameters/AdminId'
+      - $ref: '#/components/parameters/RoleId'
+      - $ref: '#/components/parameters/StoreIdQuery'
+      - $ref: '#/components/parameters/StoreCode'
+      - $ref: '#/components/parameters/AccessReason'
+    put:
+      summary: 幂等授予管理员商城角色
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: 角色绑定 } }
+    delete:
+      summary: 撤销管理员商城角色
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: 已撤销 } }
+  /v1/admin/audit-logs:
+    get:
+      summary: 读取当前商城不可变审计事件
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/AccessReason'
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses: { '200': { description: 审计事件列表 } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    StoreCode:
+      name: X-Store-Code
+      in: header
+      required: true
+      schema: { type: string }
+    AccessReason:
+      name: X-Access-Reason
+      in: header
+      required: false
+      description: 平台跨店访问时必填，10 至 500 字符
+      schema: { type: string, minLength: 10, maxLength: 500 }
+    StoreId:
+      name: storeId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    StoreIdQuery:
+      name: store_id
+      in: query
+      required: true
+      schema: { type: string, format: uuid }
+    RoleId:
+      name: roleId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AdminId:
+      name: adminId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PermissionCode:
+      name: permissionCode
+      in: path
+      required: true
+      schema: { type: string }
+  requestBodies:
+    Refresh:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [refresh_token]
+            properties:
+              refresh_token: { type: string, minLength: 32 }
+  responses:
+    Session:
+      description: 短期访问令牌和轮换刷新令牌
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [access_token, expires_in, refresh_token, token_type]
+            properties:
+              access_token: { type: string }
+              expires_in: { type: integer }
+              refresh_token: { type: string }
+              token_type: { const: Bearer }
+    Error:
+      description: 稳定错误信封，不泄露内部对象
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [code, correlation_id, message_key]
+            properties:
+              code: { type: string }
+              correlation_id: { type: string }
+              message_key: { type: string }

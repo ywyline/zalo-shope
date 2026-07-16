@@ -6,6 +6,8 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-zalo_shop}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_development_only}
+      POSTGRES_RUNTIME_PASSWORD: ${POSTGRES_RUNTIME_PASSWORD:-local_runtime_only}
+      POSTGRES_RUNTIME_USER: ${POSTGRES_RUNTIME_USER:-zalo_shop_runtime}
       POSTGRES_USER: ${POSTGRES_USER:-zalo_shop}
     ports:
       - '5432:5432'
@@ -15,6 +17,7 @@ services:
       timeout: 3s
       retries: 10
     volumes:
+      - ./packages/database/docker/init-runtime-role.sh:/docker-entrypoint-initdb.d/10-runtime-role.sh:ro
       - postgres-data:/var/lib/postgresql/data
 
   redis:

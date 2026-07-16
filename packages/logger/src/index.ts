@@ -8,8 +8,28 @@ const REDACTED_PATHS = [
   'req.headers.authorization',
   'req.headers.cookie',
   'req.headers.x-zalo-access-token',
+  'req.headers.x-zalo-phone-token',
+  'req.headers.x-refresh-token',
   'res.headers.set-cookie',
 ] as const;
+
+const SENSITIVE_KEY_PATTERN =
+  /authorization|cookie|password|secret|token|phone|address|mfa|card|payment/i;
+
+export function redactSensitiveData(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSensitiveData(item));
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nestedValue]) => [
+        key,
+        SENSITIVE_KEY_PATTERN.test(key) ? '[REDACTED]' : redactSensitiveData(nestedValue),
+      ]),
+    );
+  }
+  return value;
+}
 
 export function createLogger(service: string, level: string): Logger {
   return pino({

@@ -218,12 +218,15 @@
 - 格式检查：`corepack pnpm format:check`；格式化：`corepack pnpm format`。
 - 类型检查：`corepack pnpm typecheck`。
 - 生产构建：`corepack pnpm build`。
-- 全部 M0 静态与单元验证：`corepack pnpm verify`。
+- 全部静态、单元与构建验证：`corepack pnpm verify`。
 - 数据库客户端生成：`corepack pnpm db:generate`；schema 校验：`corepack pnpm db:validate`。
 - 开发迁移：`corepack pnpm --filter @zalo-shop/database migrate:dev`。
 - 部署迁移：`corepack pnpm --filter @zalo-shop/database migrate:deploy`。
+- 本地/测试种子：`NODE_ENV=test corepack pnpm --filter @zalo-shop/database seed`（PowerShell 使用 `$env:NODE_ENV='test'`）。
+- 创建首个管理员：配置一次性 `ADMIN_EMAIL`、`ADMIN_PASSWORD`、`ADMIN_TOTP_SECRET` 后运行 `corepack pnpm --filter @zalo-shop/database admin:create`；禁止将这些值写入仓库或 shell 历史。
+- 生产依赖审计：`corepack pnpm audit --prod --audit-level high`。
 
-M0 尚无业务表和 E2E 业务流程，因此暂未提供业务 E2E、迁移回滚或种子数据命令；相关里程碑实现时必须同步补充真实命令。项目直接使用 `corepack pnpm`，不依赖需要管理员权限的全局 pnpm shim；Windows 也可使用 `corepack.cmd pnpm`，详见 `README.md`。
+M1 已提供身份/RBAC 数据迁移、种子及 API 集成测试。迁移回滚只允许在无真实业务数据的 local/test 环境按迁移目录中的 `down.sql` 人工执行；产生身份、同意或审计数据后只允许向前修复。浏览器 E2E 尚未形成可执行项目脚本，不能以构建检查替代。项目直接使用 `corepack pnpm`，不依赖需要管理员权限的全局 pnpm shim；Windows 也可使用 `corepack.cmd pnpm`，详见 `README.md`。
 
 ## 12. 文档与变更管理
 

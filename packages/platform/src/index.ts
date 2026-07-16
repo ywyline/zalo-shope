@@ -60,7 +60,7 @@ async function checkObjectStorage(config: RuntimeConfig): Promise<void> {
 
 export async function checkInfrastructure(config: RuntimeConfig): Promise<InfrastructureStatus> {
   const checks: ReadonlyArray<readonly [DependencyName, Promise<void>]> = [
-    ['postgres', checkPostgres(config.DATABASE_URL)],
+    ['postgres', checkPostgres(config.DATABASE_RUNTIME_URL)],
     ['redis', checkRedis(config.REDIS_URL)],
     ['objectStorage', checkObjectStorage(config)],
   ];

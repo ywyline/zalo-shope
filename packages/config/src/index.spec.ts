@@ -3,12 +3,19 @@ import { describe, expect, it } from 'vitest';
 import { InvalidEnvironmentError, parseRuntimeConfig } from './index';
 
 const validEnvironment = {
+  AUTH_JWT_AUDIENCE: 'zalo-shop-test',
+  AUTH_JWT_ISSUER: 'zalo-shop',
+  AUTH_JWT_SECRET: 'test-jwt-secret-that-is-at-least-32-characters',
+  DATABASE_RUNTIME_URL: 'postgresql://runtime:password@localhost:5432/database',
   DATABASE_URL: 'postgresql://user:password@localhost:5432/database',
+  PII_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString('base64'),
+  PII_HASH_KEY: 'test-pii-hash-key-that-is-at-least-32-characters',
   REDIS_URL: 'redis://localhost:6379/0',
   S3_ACCESS_KEY: 'access-key',
   S3_BUCKET: 'test-bucket',
   S3_ENDPOINT: 'http://localhost:9000',
   S3_SECRET_KEY: 'secret-key',
+  ZALO_IDENTITY_PROVIDER: 'disabled',
 };
 
 describe('parseRuntimeConfig', () => {

@@ -1,0 +1,11 @@
+{
+  "name": "@zalo-shop/design-tokens",
+  "version": "0.1.0",
+  "private": true,
+  "sideEffects": [
+    "*.css"
+  ],
+  "exports": {
+    "./theme.css": "./theme.css"
+  }
+}

@@ -2,19 +2,26 @@
   "name": "@zalo-shop/database",
   "version": "0.1.0",
   "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
+    "admin:create": "tsx prisma/create-admin.ts",
     "build": "prisma generate && tsc -p tsconfig.json",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "generate": "prisma generate",
     "migrate:deploy": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "seed": "tsx prisma/seed.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p prisma/tsconfig.json --noEmit",
     "validate": "prisma validate"
   },
   "dependencies": {
-    "@prisma/client": "6.19.3"
+    "@prisma/client": "6.19.3",
+    "@zalo-shop/domain": "workspace:*",
+    "@zalo-shop/security": "workspace:*"
   },
   "devDependencies": {
-    "prisma": "6.19.3"
+    "prisma": "6.19.3",
+    "tsx": "4.23.1"
   }
 }
