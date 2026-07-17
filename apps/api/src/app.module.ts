@@ -21,6 +21,8 @@ import { AuthService } from './auth/auth.service';
 import { DATABASE_CLIENT, ZALO_IDENTITY_PROVIDER } from './auth/auth.tokens';
 import { AdminController } from './admin/admin.controller';
 import { AdminService } from './admin/admin.service';
+import { CatalogAdminController } from './catalog-admin/catalog-admin.controller';
+import { CatalogAdminService } from './catalog-admin/catalog-admin.service';
 import { StoreController } from './store.controller';
 
 const runtimeConfig = parseRuntimeConfig();
@@ -53,10 +55,12 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     AuthController,
     MemberController,
     AdminController,
+    CatalogAdminController,
     StoreController,
   ],
   providers: [
     AdminService,
+    CatalogAdminService,
     AuthService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {

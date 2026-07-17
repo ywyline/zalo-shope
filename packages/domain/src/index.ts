@@ -106,3 +106,5 @@ export function requirePermission(
     throw new PermissionDeniedError(requiredPermission);
   }
 }
+
+export * from './catalog';

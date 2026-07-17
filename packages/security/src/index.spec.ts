@@ -38,7 +38,15 @@ describe('PII protection', () => {
     const second = encryptSensitive('+84912345678', ENCRYPTION_KEY);
     expect(first).not.toBe(second);
     expect(decryptSensitive(first, ENCRYPTION_KEY)).toBe('+84912345678');
-    expect(() => decryptSensitive(`${first.slice(0, -1)}x`, ENCRYPTION_KEY)).toThrow();
+    const [version, iv, tag, ciphertext] = first.split('.');
+    const tamperedTag = Buffer.from(tag!, 'base64url');
+    tamperedTag[0] ^= 1;
+    expect(() =>
+      decryptSensitive(
+        [version, iv, tamperedTag.toString('base64url'), ciphertext].join('.'),
+        ENCRYPTION_KEY,
+      ),
+    ).toThrow();
   });
 
   it('creates deterministic keyed lookup hashes', () => {

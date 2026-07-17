@@ -91,17 +91,24 @@ model Store {
   createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  localizations      StoreLocalization[]
-  theme              StoreTheme?
-  zaloApps           StoreZaloApp[]
-  storeRoles         StoreRole[]
-  adminStoreRoles    AdminStoreRole[]
-  members            Member[]
-  memberIdentities   MemberExternalIdentity[]
-  memberPhoneContact MemberPhoneContact[]
-  consents           Consent[]
-  memberSessions     MemberSession[]
-  auditLogs          AuditLog[]
+  localizations          StoreLocalization[]
+  theme                  StoreTheme?
+  zaloApps               StoreZaloApp[]
+  storeRoles             StoreRole[]
+  adminStoreRoles        AdminStoreRole[]
+  members                Member[]
+  memberIdentities       MemberExternalIdentity[]
+  memberPhoneContact     MemberPhoneContact[]
+  consents               Consent[]
+  memberSessions         MemberSession[]
+  auditLogs              AuditLog[]
+  brands                 Brand[]
+  categories             Category[]
+  attributeTemplates     AttributeTemplate[]
+  products               Product[]
+  mediaAssets            MediaAsset[]
+  complianceRequirements ComplianceRequirement[]
+  pages                  Page[]
 
   @@map("stores")
 }
@@ -410,4 +417,677 @@ model AuditLog {
   @@index([storeId, createdAt(sort: Desc)])
   @@index([actorType, actorId, createdAt(sort: Desc)])
   @@map("audit_logs")
+}
+
+model AttributeDefinition {
+  id                          String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                     String                   @map("store_id") @db.Uuid
+  templateVersionId           String                   @map("template_version_id") @db.Uuid
+  code                        String                   @db.VarChar(64)
+  dataType                    AttributeDataType        @map("data_type")
+  purpose                     AttributePurpose
+  required                    Boolean                  @default(false)
+  multiple                    Boolean                  @default(false)
+  filterable                  Boolean                  @default(false)
+  unit                        String?                  @db.VarChar(32)
+  sortOrder                   Int                      @default(0) @map("sort_order")
+  validationRules             Json                     @default("{}") @map("validation_rules")
+  labelVi                     String                   @map("label_vi") @db.VarChar(160)
+  labelZh                     String?                  @map("label_zh") @db.VarChar(160)
+  labelEn                     String?                  @map("label_en") @db.VarChar(160)
+  createdAt                   DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  attribute_template_versions AttributeTemplateVersion @relation(fields: [storeId, templateVersionId], references: [storeId, id], map: "attribute_definitions_template_version_fkey")
+  attribute_options           AttributeOption[]
+  product_attribute_values    ProductAttributeValue[]
+  sku_option_values           SkuOptionValue[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, templateVersionId, code])
+  @@map("attribute_definitions")
+}
+
+model AttributeOption {
+  id                       String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                  String                  @map("store_id") @db.Uuid
+  attributeDefinitionId    String                  @map("attribute_definition_id") @db.Uuid
+  code                     String                  @db.VarChar(64)
+  labelVi                  String                  @map("label_vi") @db.VarChar(160)
+  labelZh                  String?                 @map("label_zh") @db.VarChar(160)
+  labelEn                  String?                 @map("label_en") @db.VarChar(160)
+  sortOrder                Int                     @default(0) @map("sort_order")
+  status                   RecordStatus            @default(ACTIVE)
+  createdAt                DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  attribute_definitions    AttributeDefinition     @relation(fields: [storeId, attributeDefinitionId], references: [storeId, id], map: "attribute_options_definition_fkey")
+  product_attribute_values ProductAttributeValue[]
+  sku_option_values        SkuOptionValue[]
+
+  @@unique([storeId, attributeDefinitionId, code])
+  @@unique([storeId, id])
+  @@unique([storeId, id, attributeDefinitionId])
+  @@map("attribute_options")
+}
+
+model AttributeTemplateVersion {
+  id                           String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                      String                      @map("store_id") @db.Uuid
+  templateId                   String                      @map("template_id") @db.Uuid
+  version                      Int
+  name                         String                      @db.VarChar(160)
+  status                       AttributeTemplateStatus     @default(DRAFT)
+  activatedAt                  DateTime?                   @map("activated_at") @db.Timestamptz(6)
+  activatedBy                  String?                     @map("activated_by") @db.Uuid
+  createdAt                    DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                    String?                     @map("created_by") @db.Uuid
+  attribute_definitions        AttributeDefinition[]
+  attribute_templates          AttributeTemplate           @relation(fields: [storeId, templateId], references: [storeId, id], map: "attribute_template_versions_template_fkey")
+  category_attribute_templates CategoryAttributeTemplate[]
+  products                     Product[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, templateId, version])
+  @@map("attribute_template_versions")
+}
+
+model AttributeTemplate {
+  id                          String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                     String                     @map("store_id") @db.Uuid
+  code                        String                     @db.VarChar(64)
+  industry                    StoreIndustry
+  status                      AttributeTemplateStatus    @default(DRAFT)
+  currentVersion              Int                        @default(0) @map("current_version")
+  version                     Int                        @default(1)
+  createdAt                   DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                   String?                    @map("created_by") @db.Uuid
+  updatedAt                   DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy                   String?                    @map("updated_by") @db.Uuid
+  attribute_template_versions AttributeTemplateVersion[]
+  stores                      Store                      @relation(fields: [storeId], references: [id])
+
+  @@unique([storeId, code])
+  @@unique([storeId, id])
+  @@map("attribute_templates")
+}
+
+model BrandLocalization {
+  storeId      String   @map("store_id") @db.Uuid
+  brandId      String   @map("brand_id") @db.Uuid
+  locale       Locale
+  name         String   @db.VarChar(240)
+  introduction String?
+  shareTitle   String?  @map("share_title") @db.VarChar(240)
+  shareSummary String?  @map("share_summary") @db.VarChar(500)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  brands       Brand    @relation(fields: [storeId, brandId], references: [storeId, id], map: "brand_localizations_brand_fkey")
+
+  @@id([storeId, brandId, locale])
+  @@map("brand_localizations")
+}
+
+model BrandMedia {
+  storeId      String       @map("store_id") @db.Uuid
+  brandId      String       @map("brand_id") @db.Uuid
+  mediaId      String       @map("media_id") @db.Uuid
+  purpose      MediaPurpose
+  sortOrder    Int          @default(0) @map("sort_order")
+  brands       Brand        @relation(fields: [storeId, brandId], references: [storeId, id], map: "brand_media_brand_fkey")
+  media_assets MediaAsset   @relation(fields: [storeId, mediaId], references: [storeId, id], map: "brand_media_media_fkey")
+
+  @@id([storeId, brandId, mediaId, purpose])
+  @@map("brand_media")
+}
+
+model Brand {
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId             String              @map("store_id") @db.Uuid
+  code                String              @db.VarChar(64)
+  status              RecordStatus        @default(ACTIVE)
+  countryCode         String?             @map("country_code") @db.Char(2)
+  websiteUrl          String?             @map("website_url")
+  recommended         Boolean             @default(false)
+  sortOrder           Int                 @default(0) @map("sort_order")
+  version             Int                 @default(1)
+  deletedAt           DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  createdAt           DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy           String?             @map("created_by") @db.Uuid
+  updatedAt           DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy           String?             @map("updated_by") @db.Uuid
+  brand_localizations BrandLocalization[]
+  brand_media         BrandMedia[]
+  stores              Store               @relation(fields: [storeId], references: [id])
+  products            Product[]
+
+  @@unique([storeId, code])
+  @@unique([storeId, id])
+  @@index([storeId, recommended, status])
+  @@index([storeId, status, sortOrder, id])
+  @@map("brands")
+}
+
+model CategoryAttributeTemplate {
+  storeId                     String                   @map("store_id") @db.Uuid
+  categoryId                  String                   @map("category_id") @db.Uuid
+  templateVersionId           String                   @map("template_version_id") @db.Uuid
+  isPrimary                   Boolean                  @default(false) @map("is_primary")
+  createdAt                   DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                   String?                  @map("created_by") @db.Uuid
+  categories                  Category                 @relation(fields: [storeId, categoryId], references: [storeId, id], map: "category_attribute_templates_category_fkey")
+  attribute_template_versions AttributeTemplateVersion @relation(fields: [storeId, templateVersionId], references: [storeId, id], map: "category_attribute_templates_version_fkey")
+
+  @@id([storeId, categoryId, templateVersionId])
+  @@map("category_attribute_templates")
+}
+
+model CategoryLocalization {
+  storeId      String   @map("store_id") @db.Uuid
+  categoryId   String   @map("category_id") @db.Uuid
+  locale       Locale
+  name         String   @db.VarChar(160)
+  description  String?
+  shareTitle   String?  @map("share_title") @db.VarChar(240)
+  shareSummary String?  @map("share_summary") @db.VarChar(500)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  categories   Category @relation(fields: [storeId, categoryId], references: [storeId, id], map: "category_localizations_category_fkey")
+
+  @@id([storeId, categoryId, locale])
+  @@map("category_localizations")
+}
+
+model CategoryMedia {
+  storeId      String       @map("store_id") @db.Uuid
+  categoryId   String       @map("category_id") @db.Uuid
+  mediaId      String       @map("media_id") @db.Uuid
+  purpose      MediaPurpose
+  sortOrder    Int          @default(0) @map("sort_order")
+  categories   Category     @relation(fields: [storeId, categoryId], references: [storeId, id], map: "category_media_category_fkey")
+  media_assets MediaAsset   @relation(fields: [storeId, mediaId], references: [storeId, id], map: "category_media_media_fkey")
+
+  @@id([storeId, categoryId, mediaId, purpose])
+  @@map("category_media")
+}
+
+model Category {
+  id                           String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                      String                      @map("store_id") @db.Uuid
+  parentId                     String?                     @map("parent_id") @db.Uuid
+  code                         String                      @db.VarChar(64)
+  depth                        Int
+  status                       RecordStatus                @default(ACTIVE)
+  sortOrder                    Int                         @default(0) @map("sort_order")
+  version                      Int                         @default(1)
+  deletedAt                    DateTime?                   @map("deleted_at") @db.Timestamptz(6)
+  createdAt                    DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                    String?                     @map("created_by") @db.Uuid
+  updatedAt                    DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy                    String?                     @map("updated_by") @db.Uuid
+  categories                   Category?                   @relation("categoriesTocategories", fields: [storeId, parentId], references: [storeId, id], map: "categories_parent_fkey")
+  other_categories             Category[]                  @relation("categoriesTocategories")
+  stores                       Store                       @relation(fields: [storeId], references: [id])
+  category_attribute_templates CategoryAttributeTemplate[]
+  category_localizations       CategoryLocalization[]
+  category_media               CategoryMedia[]
+  compliance_requirements      ComplianceRequirement[]
+  product_secondary_categories ProductSecondaryCategory[]
+  products                     Product[]
+
+  @@unique([storeId, code])
+  @@unique([storeId, id])
+  @@index([storeId, parentId, status, sortOrder, id])
+  @@map("categories")
+}
+
+model ComplianceRecordMedia {
+  storeId            String           @map("store_id") @db.Uuid
+  complianceRecordId String           @map("compliance_record_id") @db.Uuid
+  mediaId            String           @map("media_id") @db.Uuid
+  media_assets       MediaAsset       @relation(fields: [storeId, mediaId], references: [storeId, id], map: "compliance_record_media_media_fkey")
+  compliance_records ComplianceRecord @relation(fields: [storeId, complianceRecordId], references: [storeId, id], map: "compliance_record_media_record_fkey")
+
+  @@id([storeId, complianceRecordId, mediaId])
+  @@map("compliance_record_media")
+}
+
+model ComplianceRecord {
+  id                       String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                  String                  @map("store_id") @db.Uuid
+  productId                String                  @map("product_id") @db.Uuid
+  requirementId            String                  @map("requirement_id") @db.Uuid
+  documentNumber           String?                 @map("document_number") @db.VarChar(255)
+  issuedAt                 DateTime?               @map("issued_at") @db.Date
+  expiresAt                DateTime?               @map("expires_at") @db.Date
+  status                   ComplianceStatus        @default(DRAFT)
+  submittedBy              String                  @map("submitted_by") @db.Uuid
+  submittedAt              DateTime                @default(now()) @map("submitted_at") @db.Timestamptz(6)
+  reviewedBy               String?                 @map("reviewed_by") @db.Uuid
+  reviewedAt               DateTime?               @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote               String?                 @map("review_note")
+  supersedesRecordId       String?                 @map("supersedes_record_id") @db.Uuid
+  version                  Int                     @default(1)
+  compliance_record_media  ComplianceRecordMedia[]
+  products                 Product                 @relation(fields: [storeId, productId], references: [storeId, id], map: "compliance_records_product_fkey")
+  compliance_requirements  ComplianceRequirement   @relation(fields: [storeId, requirementId], references: [storeId, id], map: "compliance_records_requirement_fkey")
+  compliance_records       ComplianceRecord?       @relation("compliance_recordsTocompliance_records", fields: [storeId, supersedesRecordId], references: [storeId, id], map: "compliance_records_supersedes_fkey")
+  other_compliance_records ComplianceRecord[]      @relation("compliance_recordsTocompliance_records")
+
+  @@unique([storeId, id])
+  @@index([storeId, productId, requirementId, submittedAt(sort: Desc)])
+  @@index([storeId, status, expiresAt])
+  @@map("compliance_records")
+}
+
+model ComplianceRequirement {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId            String             @map("store_id") @db.Uuid
+  code               String             @db.VarChar(64)
+  industry           StoreIndustry
+  categoryId         String?            @map("category_id") @db.Uuid
+  documentType       String             @map("document_type") @db.VarChar(128)
+  blocking           Boolean            @default(true)
+  validityDays       Int?               @map("validity_days")
+  conditionRules     Json               @default("{}") @map("condition_rules")
+  version            Int
+  status             RecordStatus       @default(ACTIVE)
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy          String?            @map("created_by") @db.Uuid
+  updatedAt          DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  compliance_records ComplianceRecord[]
+  categories         Category?          @relation(fields: [storeId, categoryId], references: [storeId, id], map: "compliance_requirements_category_fkey")
+  stores             Store              @relation(fields: [storeId], references: [id])
+
+  @@unique([storeId, code, version])
+  @@unique([storeId, id])
+  @@map("compliance_requirements")
+}
+
+model MediaAsset {
+  id                      String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                 String                  @map("store_id") @db.Uuid
+  objectKey               String                  @map("object_key")
+  mimeType                String                  @map("mime_type") @db.VarChar(160)
+  byteSize                BigInt                  @map("byte_size")
+  width                   Int?
+  height                  Int?
+  checksumSha256          String                  @map("checksum_sha256") @db.Char(64)
+  status                  MediaStatus             @default(PENDING)
+  originalFilename        String                  @map("original_filename") @db.VarChar(255)
+  altTextVi               String?                 @map("alt_text_vi") @db.VarChar(500)
+  altTextZh               String?                 @map("alt_text_zh") @db.VarChar(500)
+  altTextEn               String?                 @map("alt_text_en") @db.VarChar(500)
+  failureCode             String?                 @map("failure_code") @db.VarChar(128)
+  version                 Int                     @default(1)
+  createdAt               DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy               String?                 @map("created_by") @db.Uuid
+  updatedAt               DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy               String?                 @map("updated_by") @db.Uuid
+  brand_media             BrandMedia[]
+  category_media          CategoryMedia[]
+  compliance_record_media ComplianceRecordMedia[]
+  stores                  Store                   @relation(fields: [storeId], references: [id])
+  page_module_media       PageModuleMedia[]
+  product_media           ProductMedia[]
+  sku_media               SkuMedia[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, objectKey])
+  @@index([storeId, status, createdAt])
+  @@map("media_assets")
+}
+
+model PageModuleLocalization {
+  storeId       String     @map("store_id") @db.Uuid
+  pageModuleId  String     @map("page_module_id") @db.Uuid
+  locale        Locale
+  title         String?    @db.VarChar(240)
+  summary       String?    @db.VarChar(500)
+  buttonLabel   String?    @map("button_label") @db.VarChar(160)
+  contentConfig Json       @default("{}") @map("content_config")
+  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  page_modules  PageModule @relation(fields: [storeId, pageModuleId], references: [storeId, id], map: "page_module_localizations_module_fkey")
+
+  @@id([storeId, pageModuleId, locale])
+  @@map("page_module_localizations")
+}
+
+model PageModuleMedia {
+  storeId      String       @map("store_id") @db.Uuid
+  pageModuleId String       @map("page_module_id") @db.Uuid
+  mediaId      String       @map("media_id") @db.Uuid
+  purpose      MediaPurpose
+  sortOrder    Int          @default(0) @map("sort_order")
+  media_assets MediaAsset   @relation(fields: [storeId, mediaId], references: [storeId, id], map: "page_module_media_media_fkey")
+  page_modules PageModule   @relation(fields: [storeId, pageModuleId], references: [storeId, id], map: "page_module_media_module_fkey")
+
+  @@id([storeId, pageModuleId, mediaId, purpose])
+  @@map("page_module_media")
+}
+
+model PageModule {
+  id                        String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                   String                   @map("store_id") @db.Uuid
+  pageVersionId             String                   @map("page_version_id") @db.Uuid
+  moduleType                PageModuleType           @map("module_type")
+  sortOrder                 Int                      @default(0) @map("sort_order")
+  visibleFrom               DateTime?                @map("visible_from") @db.Timestamptz(6)
+  visibleTo                 DateTime?                @map("visible_to") @db.Timestamptz(6)
+  status                    RecordStatus             @default(ACTIVE)
+  backgroundConfig          Json                     @default("{}") @map("background_config")
+  targetType                PageTargetType?          @map("target_type")
+  targetId                  String?                  @map("target_id") @db.Uuid
+  targetUrl                 String?                  @map("target_url")
+  createdAt                 DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  page_module_localizations PageModuleLocalization[]
+  page_module_media         PageModuleMedia[]
+  page_versions             PageVersion              @relation(fields: [storeId, pageVersionId], references: [storeId, id], map: "page_modules_version_fkey")
+
+  @@unique([storeId, id])
+  @@index([storeId, pageVersionId, sortOrder])
+  @@map("page_modules")
+}
+
+model PageVersion {
+  id                                                               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                                                          String            @map("store_id") @db.Uuid
+  pageId                                                           String            @map("page_id") @db.Uuid
+  version                                                          Int
+  publicationStatus                                                PublicationStatus @default(DRAFT) @map("publication_status")
+  publishedAt                                                      DateTime?         @map("published_at") @db.Timestamptz(6)
+  publishedBy                                                      String?           @map("published_by") @db.Uuid
+  createdAt                                                        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                                                        String            @map("created_by") @db.Uuid
+  page_modules                                                     PageModule[]
+  pages_page_versions_store_id_page_idTopages                      Page              @relation("page_versions_store_id_page_idTopages", fields: [storeId, pageId], references: [storeId, id], map: "page_versions_page_fkey")
+  pages_pages_store_id_current_published_version_idTopage_versions Page[]            @relation("pages_store_id_current_published_version_idTopage_versions")
+
+  @@unique([storeId, id])
+  @@unique([storeId, pageId, version])
+  @@map("page_versions")
+}
+
+model Page {
+  id                                                                       String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                                                                  String        @map("store_id") @db.Uuid
+  code                                                                     String        @db.VarChar(64)
+  status                                                                   PageStatus    @default(DRAFT)
+  currentPublishedVersionId                                                String?       @map("current_published_version_id") @db.Uuid
+  version                                                                  Int           @default(1)
+  createdAt                                                                DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                                                                String?       @map("created_by") @db.Uuid
+  updatedAt                                                                DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy                                                                String?       @map("updated_by") @db.Uuid
+  page_versions_page_versions_store_id_page_idTopages                      PageVersion[] @relation("page_versions_store_id_page_idTopages")
+  page_versions_pages_store_id_current_published_version_idTopage_versions PageVersion?  @relation("pages_store_id_current_published_version_idTopage_versions", fields: [storeId, currentPublishedVersionId], references: [storeId, id], map: "pages_published_version_fkey")
+  stores                                                                   Store         @relation(fields: [storeId], references: [id])
+
+  @@unique([storeId, code])
+  @@unique([storeId, id])
+  @@map("pages")
+}
+
+model ProductAttributeValue {
+  id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId               String              @map("store_id") @db.Uuid
+  productId             String              @map("product_id") @db.Uuid
+  attributeDefinitionId String              @map("attribute_definition_id") @db.Uuid
+  locale                Locale?
+  textValue             String?             @map("text_value")
+  integerValue          BigInt?             @map("integer_value")
+  decimalValue          Decimal?            @map("decimal_value") @db.Decimal(24, 8)
+  booleanValue          Boolean?            @map("boolean_value")
+  dateValue             DateTime?           @map("date_value") @db.Date
+  optionId              String?             @map("option_id") @db.Uuid
+  createdAt             DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  attribute_definitions AttributeDefinition @relation(fields: [storeId, attributeDefinitionId], references: [storeId, id], map: "product_attribute_values_definition_fkey")
+  attribute_options     AttributeOption?    @relation(fields: [storeId, optionId, attributeDefinitionId], references: [storeId, id, attributeDefinitionId], map: "product_attribute_values_option_fkey")
+  products              Product             @relation(fields: [storeId, productId], references: [storeId, id], map: "product_attribute_values_product_fkey")
+
+  @@unique([storeId, id])
+  @@index([storeId, productId, attributeDefinitionId])
+  @@map("product_attribute_values")
+}
+
+model ProductLocalization {
+  storeId             String   @map("store_id") @db.Uuid
+  productId           String   @map("product_id") @db.Uuid
+  locale              Locale
+  name                String   @db.VarChar(240)
+  subtitle            String?  @db.VarChar(500)
+  sellingPoints       String?  @map("selling_points")
+  descriptionDocument Json     @default("{}") @map("description_document")
+  usageInstructions   String?  @map("usage_instructions")
+  seoTitle            String?  @map("seo_title") @db.VarChar(240)
+  seoDescription      String?  @map("seo_description") @db.VarChar(500)
+  shareTitle          String?  @map("share_title") @db.VarChar(240)
+  shareSummary        String?  @map("share_summary") @db.VarChar(500)
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  products            Product  @relation(fields: [storeId, productId], references: [storeId, id], map: "product_localizations_product_fkey")
+
+  @@id([storeId, productId, locale])
+  @@map("product_localizations")
+}
+
+model ProductMedia {
+  storeId      String       @map("store_id") @db.Uuid
+  productId    String       @map("product_id") @db.Uuid
+  mediaId      String       @map("media_id") @db.Uuid
+  purpose      MediaPurpose
+  sortOrder    Int          @default(0) @map("sort_order")
+  media_assets MediaAsset   @relation(fields: [storeId, mediaId], references: [storeId, id], map: "product_media_media_fkey")
+  products     Product      @relation(fields: [storeId, productId], references: [storeId, id], map: "product_media_product_fkey")
+
+  @@id([storeId, productId, mediaId, purpose])
+  @@map("product_media")
+}
+
+model ProductSecondaryCategory {
+  storeId    String   @map("store_id") @db.Uuid
+  productId  String   @map("product_id") @db.Uuid
+  categoryId String   @map("category_id") @db.Uuid
+  categories Category @relation(fields: [storeId, categoryId], references: [storeId, id], map: "product_secondary_categories_category_fkey")
+  products   Product  @relation(fields: [storeId, productId], references: [storeId, id], map: "product_secondary_categories_product_fkey")
+
+  @@id([storeId, productId, categoryId])
+  @@map("product_secondary_categories")
+}
+
+model ProductVersion {
+  id                String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId           String            @map("store_id") @db.Uuid
+  productId         String            @map("product_id") @db.Uuid
+  version           Int
+  publicationStatus PublicationStatus @default(DRAFT) @map("publication_status")
+  snapshot          Json
+  contentHash       String            @map("content_hash") @db.Char(64)
+  createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         String            @map("created_by") @db.Uuid
+  publishedAt       DateTime?         @map("published_at") @db.Timestamptz(6)
+  publishedBy       String?           @map("published_by") @db.Uuid
+  withdrawnAt       DateTime?         @map("withdrawn_at") @db.Timestamptz(6)
+  withdrawnBy       String?           @map("withdrawn_by") @db.Uuid
+  products          Product           @relation(fields: [storeId, productId], references: [storeId, id], map: "product_versions_product_fkey")
+
+  @@unique([storeId, id])
+  @@unique([storeId, productId, contentHash])
+  @@unique([storeId, productId, version])
+  @@map("product_versions")
+}
+
+model Product {
+  id                           String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                      String                     @map("store_id") @db.Uuid
+  code                         String                     @db.VarChar(64)
+  brandId                      String                     @map("brand_id") @db.Uuid
+  mainCategoryId               String                     @map("main_category_id") @db.Uuid
+  attributeTemplateVersionId   String?                    @map("attribute_template_version_id") @db.Uuid
+  status                       ProductStatus              @default(DRAFT)
+  enabled                      Boolean                    @default(true)
+  scheduledPublishAt           DateTime?                  @map("scheduled_publish_at") @db.Timestamptz(6)
+  publishedAt                  DateTime?                  @map("published_at") @db.Timestamptz(6)
+  version                      Int                        @default(1)
+  deletedAt                    DateTime?                  @map("deleted_at") @db.Timestamptz(6)
+  createdAt                    DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                    String?                    @map("created_by") @db.Uuid
+  updatedAt                    DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy                    String?                    @map("updated_by") @db.Uuid
+  compliance_records           ComplianceRecord[]
+  product_attribute_values     ProductAttributeValue[]
+  product_localizations        ProductLocalization[]
+  product_media                ProductMedia[]
+  product_secondary_categories ProductSecondaryCategory[]
+  product_versions             ProductVersion[]
+  brands                       Brand                      @relation(fields: [storeId, brandId], references: [storeId, id], map: "products_brand_fkey")
+  categories                   Category                   @relation(fields: [storeId, mainCategoryId], references: [storeId, id], map: "products_main_category_fkey")
+  stores                       Store                      @relation(fields: [storeId], references: [id])
+  attribute_template_versions  AttributeTemplateVersion?  @relation(fields: [storeId, attributeTemplateVersionId], references: [storeId, id], map: "products_template_version_fkey")
+  skus                         Sku[]
+
+  @@unique([storeId, code])
+  @@unique([storeId, id])
+  @@index([storeId, brandId, status, id])
+  @@index([storeId, mainCategoryId, status, id])
+  @@index([storeId, scheduledPublishAt])
+  @@index([storeId, status, id])
+  @@map("products")
+}
+
+model SkuMedia {
+  storeId      String       @map("store_id") @db.Uuid
+  skuId        String       @map("sku_id") @db.Uuid
+  mediaId      String       @map("media_id") @db.Uuid
+  purpose      MediaPurpose
+  sortOrder    Int          @default(0) @map("sort_order")
+  media_assets MediaAsset   @relation(fields: [storeId, mediaId], references: [storeId, id], map: "sku_media_media_fkey")
+  skus         Sku          @relation(fields: [storeId, skuId], references: [storeId, id], map: "sku_media_sku_fkey")
+
+  @@id([storeId, skuId, mediaId, purpose])
+  @@map("sku_media")
+}
+
+model SkuOptionValue {
+  storeId               String              @map("store_id") @db.Uuid
+  skuId                 String              @map("sku_id") @db.Uuid
+  attributeDefinitionId String              @map("attribute_definition_id") @db.Uuid
+  optionId              String              @map("option_id") @db.Uuid
+  attribute_definitions AttributeDefinition @relation(fields: [storeId, attributeDefinitionId], references: [storeId, id], map: "sku_option_values_definition_fkey")
+  attribute_options     AttributeOption     @relation(fields: [storeId, optionId, attributeDefinitionId], references: [storeId, id, attributeDefinitionId], map: "sku_option_values_option_fkey")
+  skus                  Sku                 @relation(fields: [storeId, skuId], references: [storeId, id], map: "sku_option_values_sku_fkey")
+
+  @@id([storeId, skuId, attributeDefinitionId])
+  @@map("sku_option_values")
+}
+
+model Sku {
+  id                    String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId               String           @map("store_id") @db.Uuid
+  productId             String           @map("product_id") @db.Uuid
+  code                  String           @db.VarChar(64)
+  barcode               String?          @db.VarChar(64)
+  salePriceVnd          BigInt           @map("sale_price_vnd")
+  marketPriceVnd        BigInt?          @map("market_price_vnd")
+  costPriceVnd          BigInt?          @map("cost_price_vnd")
+  weightGrams           Int?             @map("weight_grams")
+  lengthMillimeters     Int?             @map("length_millimeters")
+  widthMillimeters      Int?             @map("width_millimeters")
+  heightMillimeters     Int?             @map("height_millimeters")
+  optionCombinationKey  String           @map("option_combination_key")
+  optionCombinationHash String           @map("option_combination_hash") @db.Char(64)
+  status                RecordStatus     @default(ACTIVE)
+  version               Int              @default(1)
+  createdAt             DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy             String?          @map("created_by") @db.Uuid
+  updatedAt             DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy             String?          @map("updated_by") @db.Uuid
+  sku_media             SkuMedia[]
+  sku_option_values     SkuOptionValue[]
+  products              Product          @relation(fields: [storeId, productId], references: [storeId, id], map: "skus_product_fkey")
+
+  @@unique([storeId, code])
+  @@unique([storeId, id])
+  @@unique([storeId, productId, optionCombinationHash])
+  @@index([storeId, productId, status])
+  @@map("skus")
+}
+
+enum ProductStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  UNPUBLISHED
+  DISABLED
+}
+
+enum AttributeTemplateStatus {
+  DRAFT
+  ACTIVE
+  RETIRED
+}
+
+enum AttributeDataType {
+  TEXT
+  INTEGER
+  DECIMAL
+  BOOLEAN
+  DATE
+  OPTION
+}
+
+enum AttributePurpose {
+  SPECIFICATION
+  FILTER
+  DETAIL
+  COMPLIANCE
+}
+
+enum MediaStatus {
+  PENDING
+  READY
+  FAILED
+  QUARANTINED
+}
+
+enum MediaPurpose {
+  PRIMARY
+  GALLERY
+  LOGO
+  COVER
+  DOCUMENT
+}
+
+enum ComplianceStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  SUPERSEDED
+}
+
+enum PublicationStatus {
+  DRAFT
+  PUBLISHED
+  WITHDRAWN
+}
+
+enum PageStatus {
+  DRAFT
+  PUBLISHED
+  DISABLED
+}
+
+enum PageModuleType {
+  HERO
+  BANNER
+  PRODUCT_GRID
+  BRAND_GRID
+  CATEGORY_GRID
+  RICH_TEXT
+}
+
+enum PageTargetType {
+  PRODUCT
+  BRAND
+  CATEGORY
+  PAGE
+  EXTERNAL
 }

@@ -1,0 +1,4 @@
+-- This migration is a forward safety fix for existing M2 databases.
+-- Deliberately do not restore the enum-unsafe trigger implementation.
+-- If rollback is required in an empty local/test database, roll back the
+-- complete M2 migration set instead of reintroducing the defect.

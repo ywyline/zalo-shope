@@ -22,7 +22,7 @@ import { AuthService } from '../auth/auth.service';
 import { DATABASE_CLIENT } from '../auth/auth.tokens';
 
 type StoreRegistryEntry = { code: string; default_locale: 'en' | 'vi' | 'zh'; id: string };
-type AdminHeaders = {
+export type AdminHeaders = {
   accessReason?: string;
   accessToken: string;
   storeCode: string;
@@ -301,7 +301,7 @@ export class AdminService {
     );
   }
 
-  private async authorize(
+  public async authorize(
     headers: AdminHeaders,
     storeId: string,
     requiredPermission: string,
@@ -365,7 +365,7 @@ export class AdminService {
     );
   }
 
-  private async writeAudit(
+  public async writeAudit(
     transaction: StoreTransaction,
     context: StoreContext,
     event: {

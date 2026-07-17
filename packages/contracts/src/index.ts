@@ -94,3 +94,5 @@ export const createStoreRoleSchema = z.object({
     .regex(/^[a-z][a-z0-9-]*$/),
   name: z.string().trim().min(2).max(160),
 });
+
+export * from './catalog';

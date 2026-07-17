@@ -21,6 +21,13 @@ const permissionSeeds = [
   ['store.rbac.read', PermissionScope.STORE, 'Read current store roles'],
   ['store.rbac.manage', PermissionScope.STORE, 'Manage current store roles'],
   ['store.audit.read', PermissionScope.STORE, 'Read current store audit events'],
+  ['store.catalog.read', PermissionScope.STORE, 'Read current store catalog'],
+  ['store.catalog.manage', PermissionScope.STORE, 'Manage current store catalog drafts'],
+  ['store.catalog.publish', PermissionScope.STORE, 'Review and publish current store catalog'],
+  ['store.compliance.read', PermissionScope.STORE, 'Read current store compliance metadata'],
+  ['store.compliance.review', PermissionScope.STORE, 'Review current store compliance records'],
+  ['store.content.read', PermissionScope.STORE, 'Read current store page content'],
+  ['store.content.manage', PermissionScope.STORE, 'Manage current store page content'],
 ] as const;
 
 async function seed(): Promise<void> {
@@ -135,6 +142,171 @@ async function seedStore(
       },
     });
   }
+
+  await seedCatalogFoundation(client, input);
+}
+
+async function seedCatalogFoundation(
+  client: PrismaClient,
+  input: { id: string; industry: StoreIndustry },
+): Promise<void> {
+  const isBeauty = input.industry === StoreIndustry.BEAUTY;
+  const rootId = isBeauty
+    ? '11000000-0000-4000-8000-000000000001'
+    : '11000000-0000-4000-8000-000000000002';
+  const childId = isBeauty
+    ? '12000000-0000-4000-8000-000000000001'
+    : '12000000-0000-4000-8000-000000000002';
+  const templateId = isBeauty
+    ? '13000000-0000-4000-8000-000000000001'
+    : '13000000-0000-4000-8000-000000000002';
+  const templateVersionId = isBeauty
+    ? '14000000-0000-4000-8000-000000000001'
+    : '14000000-0000-4000-8000-000000000002';
+  const definitionId = isBeauty
+    ? '15000000-0000-4000-8000-000000000001'
+    : '15000000-0000-4000-8000-000000000002';
+  const optionId = isBeauty
+    ? '16000000-0000-4000-8000-000000000001'
+    : '16000000-0000-4000-8000-000000000002';
+
+  await client.category.upsert({
+    create: {
+      code: isBeauty ? 'beauty' : 'fashion',
+      depth: 1,
+      id: rootId,
+      storeId: input.id,
+    },
+    update: { status: 'ACTIVE' },
+    where: { storeId_code: { code: isBeauty ? 'beauty' : 'fashion', storeId: input.id } },
+  });
+  await client.category.upsert({
+    create: {
+      code: isBeauty ? 'beauty-general' : 'fashion-general',
+      depth: 2,
+      id: childId,
+      parentId: rootId,
+      storeId: input.id,
+    },
+    update: { parentId: rootId, status: 'ACTIVE' },
+    where: {
+      storeId_code: {
+        code: isBeauty ? 'beauty-general' : 'fashion-general',
+        storeId: input.id,
+      },
+    },
+  });
+
+  const categoryNames = isBeauty
+    ? {
+        en: ['Beauty', 'General beauty'],
+        vi: ['Làm đẹp', 'Làm đẹp tổng hợp'],
+        zh: ['美妆', '综合美妆'],
+      }
+    : {
+        en: ['Fashion', 'General fashion'],
+        vi: ['Thời trang', 'Thời trang tổng hợp'],
+        zh: ['服装', '综合服装'],
+      };
+  for (const locale of Object.values(Locale)) {
+    for (const [categoryId, name] of [
+      [rootId, categoryNames[locale][0]!],
+      [childId, categoryNames[locale][1]!],
+    ] as const) {
+      await client.categoryLocalization.upsert({
+        create: { categoryId, locale, name, storeId: input.id },
+        update: { name },
+        where: { storeId_categoryId_locale: { categoryId, locale, storeId: input.id } },
+      });
+    }
+  }
+
+  await client.attributeTemplate.upsert({
+    create: {
+      code: isBeauty ? 'beauty-base' : 'fashion-base',
+      currentVersion: 1,
+      id: templateId,
+      industry: input.industry,
+      status: 'ACTIVE',
+      storeId: input.id,
+    },
+    update: { currentVersion: 1, status: 'ACTIVE' },
+    where: {
+      storeId_code: { code: isBeauty ? 'beauty-base' : 'fashion-base', storeId: input.id },
+    },
+  });
+  await client.attributeTemplateVersion.upsert({
+    create: {
+      activatedAt: new Date('2026-07-17T00:00:00.000Z'),
+      id: templateVersionId,
+      name: isBeauty ? 'Beauty base v1' : 'Fashion base v1',
+      status: 'ACTIVE',
+      storeId: input.id,
+      templateId,
+      version: 1,
+    },
+    update: {},
+    where: {
+      storeId_templateId_version: { storeId: input.id, templateId, version: 1 },
+    },
+  });
+  await client.attributeDefinition.upsert({
+    create: {
+      code: isBeauty ? 'shade' : 'size',
+      dataType: 'OPTION',
+      id: definitionId,
+      labelEn: isBeauty ? 'Shade' : 'Size',
+      labelVi: isBeauty ? 'Tông màu' : 'Kích cỡ',
+      labelZh: isBeauty ? '色号' : '尺码',
+      purpose: 'SPECIFICATION',
+      required: true,
+      storeId: input.id,
+      templateVersionId,
+    },
+    update: {},
+    where: {
+      storeId_templateVersionId_code: {
+        code: isBeauty ? 'shade' : 'size',
+        storeId: input.id,
+        templateVersionId,
+      },
+    },
+  });
+  await client.attributeOption.upsert({
+    create: {
+      attributeDefinitionId: definitionId,
+      code: isBeauty ? 'default' : 'm',
+      id: optionId,
+      labelEn: isBeauty ? 'Default' : 'M',
+      labelVi: isBeauty ? 'Mặc định' : 'M',
+      labelZh: isBeauty ? '默认' : 'M',
+      storeId: input.id,
+    },
+    update: {},
+    where: {
+      storeId_attributeDefinitionId_code: {
+        attributeDefinitionId: definitionId,
+        code: isBeauty ? 'default' : 'm',
+        storeId: input.id,
+      },
+    },
+  });
+  await client.categoryAttributeTemplate.upsert({
+    create: {
+      categoryId: childId,
+      isPrimary: true,
+      storeId: input.id,
+      templateVersionId,
+    },
+    update: { isPrimary: true },
+    where: {
+      storeId_categoryId_templateVersionId: {
+        categoryId: childId,
+        storeId: input.id,
+        templateVersionId,
+      },
+    },
+  });
 }
 
 void seed();

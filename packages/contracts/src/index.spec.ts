@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
-import { accessReasonSchema, consentEventSchema, memberPreferenceSchema } from './index';
+import {
+  accessReasonSchema,
+  catalogCodeSchema,
+  catalogLocalizationsSchema,
+  consentEventSchema,
+  createAttributeTemplateSchema,
+  createBrandSchema,
+  createCategorySchema,
+  createProductDraftSchema,
+  memberPreferenceSchema,
+  skuDraftSchema,
+} from './index';
 
 describe('M1 API contracts', () => {
   it('accepts only supported locales', () => {
@@ -23,6 +34,102 @@ describe('M1 API contracts', () => {
         purpose: 'PRIVACY',
         source: 'MANUAL',
         status: 'GRANTED',
+      }),
+    ).toThrow();
+  });
+});
+
+describe('M2 catalog API contracts', () => {
+  it('normalizes stable business codes and rejects unsafe identifiers', () => {
+    expect(catalogCodeSchema.parse('  SERUM-01  ')).toBe('serum-01');
+    expect(() => catalogCodeSchema.parse('../other-store')).toThrow();
+  });
+
+  it('requires exactly one Vietnamese localization for publishable content inputs', () => {
+    expect(
+      catalogLocalizationsSchema.parse([
+        { description: 'Mô tả', locale: 'vi', name: 'Tinh chất', selling_points: 'Dịu nhẹ' },
+        { description: null, locale: 'en', name: 'Serum', selling_points: null },
+      ]),
+    ).toHaveLength(2);
+    expect(() =>
+      catalogLocalizationsSchema.parse([
+        { description: 'Một', locale: 'vi', name: 'Tên một', selling_points: 'A' },
+        { description: 'Hai', locale: 'vi', name: 'Tên hai', selling_points: 'B' },
+      ]),
+    ).toThrow();
+    expect(() =>
+      catalogLocalizationsSchema.parse([
+        { description: 'Description', locale: 'en', name: 'Serum', selling_points: 'Gentle' },
+      ]),
+    ).toThrow();
+  });
+
+  it('does not accept store ownership from product request bodies', () => {
+    const input = {
+      brand_id: '11111111-1111-4111-8111-111111111111',
+      code: 'serum-01',
+      localizations: [
+        { description: 'Mô tả', locale: 'vi', name: 'Tinh chất', selling_points: 'Dịu nhẹ' },
+      ],
+      main_category_id: '22222222-2222-4222-8222-222222222222',
+      store_id: '33333333-3333-4333-8333-333333333333',
+    };
+
+    expect(() => createProductDraftSchema.parse(input)).toThrow();
+  });
+
+  it('rejects store ownership from every M2.3 administrative body', () => {
+    const localization = [{ locale: 'vi' as const, name: 'Tên' }];
+    expect(() =>
+      createBrandSchema.parse({ code: 'brand', localizations: localization, store_id: 'hidden' }),
+    ).toThrow();
+    expect(() =>
+      createCategorySchema.parse({
+        code: 'category',
+        localizations: localization,
+        store_id: 'hidden',
+      }),
+    ).toThrow();
+    expect(() =>
+      createAttributeTemplateSchema.parse({
+        code: 'template',
+        definitions: [
+          {
+            code: 'size',
+            data_type: 'OPTION',
+            label_vi: 'Kích cỡ',
+            options: [{ code: 'm', label_vi: 'M' }],
+            purpose: 'SPECIFICATION',
+          },
+        ],
+        name: 'Template',
+        store_id: 'hidden',
+      }),
+    ).toThrow();
+  });
+
+  it('requires integer VND prices and a non-empty option combination for SKU drafts', () => {
+    expect(
+      skuDraftSchema.parse({
+        code: 'serum-coral',
+        enabled: true,
+        market_price_vnd: 299_000,
+        option_values: [
+          {
+            attribute_code: 'color',
+            option_code: 'coral',
+          },
+        ],
+        sale_price_vnd: 249_000,
+      }),
+    ).toMatchObject({ sale_price_vnd: 249_000 });
+    expect(() =>
+      skuDraftSchema.parse({
+        code: 'serum-coral',
+        enabled: true,
+        option_values: [],
+        sale_price_vnd: 249_000.5,
       }),
     ).toThrow();
   });
