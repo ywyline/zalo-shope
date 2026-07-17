@@ -22,4 +22,10 @@ describe('audit and log redaction', () => {
       storeId: 'store-1',
     });
   });
+
+  it('converts audit values to JSON-safe integers and timestamps', () => {
+    expect(
+      redactSensitiveData({ createdAt: new Date('2026-07-17T00:00:00.000Z'), price: 249000n }),
+    ).toEqual({ createdAt: '2026-07-17T00:00:00.000Z', price: 249000 });
+  });
 });

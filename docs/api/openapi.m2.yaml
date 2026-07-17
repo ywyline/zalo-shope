@@ -365,6 +365,25 @@ paths:
       responses:
         '200': { description: 已更新 SKU }
         '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/catalog/products/{productId}/media:
+    post:
+      tags: [Admin catalog]
+      summary: 以 expected_version 关联已 READY 的同商城商品媒体
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/AccessReason'
+        - $ref: '#/components/parameters/ProductId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductMediaInput' }
+      responses:
+        '201': { description: 已关联媒体并递增商品版本 }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /v1/admin/catalog/products/{productId}/submit:
     post:
       tags: [Admin catalog]
@@ -375,8 +394,13 @@ paths:
         - $ref: '#/components/parameters/StoreIdQuery'
         - $ref: '#/components/parameters/AccessReason'
         - $ref: '#/components/parameters/ProductId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductVersionCommand' }
       responses:
-        '200':
+        '201':
           description: 门禁决定
           content:
             application/json:
@@ -392,8 +416,31 @@ paths:
         - $ref: '#/components/parameters/StoreIdQuery'
         - $ref: '#/components/parameters/AccessReason'
         - $ref: '#/components/parameters/ProductId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductVersionCommand' }
       responses:
         '201': { description: 已发布商品版本 }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/compliance/records:
+    post:
+      tags: [Admin compliance]
+      summary: 提交同商城商品合规资料；需要 store.catalog.manage + store.compliance.read
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/AccessReason'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ComplianceSubmissionInput' }
+      responses:
+        '201': { description: 待审核合规记录 }
+        '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /v1/admin/compliance/records/{recordId}/review:
     post:
@@ -440,6 +487,28 @@ paths:
       responses:
         '201': { description: 短期上传目标；不表示媒体已 READY }
         '413': { $ref: '#/components/responses/Error' }
+  /v1/admin/media/{mediaId}/confirm:
+    post:
+      tags: [Admin media]
+      summary: 核对对象大小、类型与签名 checksum 后确认；SVG 未清洗时隔离
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/AccessReason'
+        - name: mediaId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MediaConfirmationInput' }
+      responses:
+        '201': { description: READY 或 QUARANTINED 媒体记录 }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /v1/admin/content/pages:
     parameters:
       - $ref: '#/components/parameters/StoreCode'
@@ -454,7 +523,58 @@ paths:
       tags: [Admin content]
       summary: 创建页面草稿；需要 store.content.manage
       security: [{ bearerAuth: [] }]
-      responses: { '201': { description: 页面草稿 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PageDraftCreation' }
+      responses:
+        '201': { description: 页面及首个空草稿版本 }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/content/pages/{pageId}/draft:
+    put:
+      tags: [Admin content]
+      summary: 以完整模块列表替换可编辑草稿；无草稿时创建下一版本
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/AccessReason'
+        - name: pageId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PageDraftReplacement' }
+      responses:
+        '200': { description: 已更新页面草稿 }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/content/pages/{pageId}/publish:
+    post:
+      tags: [Admin content]
+      summary: 校验三语、媒体、时间窗及商城内目标后发布不可变版本
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/AccessReason'
+        - name: pageId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PagePublicationCommand' }
+      responses:
+        '201': { description: 已发布页面；原发布版本保持不可变 }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
@@ -749,6 +869,21 @@ components:
           minItems: 1
           maxItems: 3
           items: { $ref: '#/components/schemas/LocalizationInput' }
+    ProductVersionCommand:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+    ProductMediaInput:
+      type: object
+      additionalProperties: false
+      required: [expected_version, media_id, purpose]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        media_id: { type: string, format: uuid }
+        purpose: { type: string, enum: [PRIMARY, GALLERY] }
+        sort_order: { type: integer, minimum: 0, default: 0 }
     SkuOptionInput:
       type: object
       additionalProperties: false
@@ -837,7 +972,110 @@ components:
         mime_type: { type: string, enum: [image/svg+xml, image/png, image/webp] }
         byte_size: { type: integer, minimum: 1, maximum: 20971520 }
         checksum_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
-        resource: { type: string, enum: [brand, category, product, sku, page] }
+        resource: { type: string, enum: [brand, category, product, sku, page, compliance] }
+    MediaConfirmationInput:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        resource: { type: string, enum: [brand, category, product, sku, page, compliance] }
+    PageDraftCreation:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code: { $ref: '#/components/schemas/CatalogCode' }
+    PagePublicationCommand:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, expected_version]
+      properties:
+        confirmation_code: { $ref: '#/components/schemas/CatalogCode' }
+        expected_version: { type: integer, minimum: 1 }
+    PageDraftReplacement:
+      type: object
+      additionalProperties: false
+      required: [expected_version, modules]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        modules:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/PageModuleInput' }
+    PageModuleInput:
+      type: object
+      additionalProperties: false
+      required: [localizations, module_type, sort_order]
+      properties:
+        module_type:
+          type: string
+          enum: [HERO, BANNER, PRODUCT_GRID, BRAND_GRID, CATEGORY_GRID, RICH_TEXT]
+        sort_order: { type: integer, minimum: 0 }
+        status: { type: string, enum: [ACTIVE, DISABLED], default: ACTIVE }
+        visible_from: { type: [string, 'null'], format: date-time }
+        visible_to: { type: [string, 'null'], format: date-time }
+        target_type:
+          { type: [string, 'null'], enum: [PRODUCT, BRAND, CATEGORY, PAGE, EXTERNAL, null] }
+        target_id: { type: [string, 'null'], format: uuid }
+        target_url: { type: [string, 'null'], format: uri }
+        background_config:
+          type: object
+          additionalProperties: false
+          properties:
+            color: { type: [string, 'null'], pattern: '^#[0-9a-fA-F]{6}$' }
+            overlay: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        localizations:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            type: object
+            additionalProperties: false
+            required: [locale, title]
+            properties:
+              locale: { type: string, enum: [vi, zh, en] }
+              title: { type: string, minLength: 1, maxLength: 240 }
+              summary: { type: [string, 'null'], maxLength: 500 }
+              button_label: { type: [string, 'null'], maxLength: 160 }
+              content_config:
+                type: object
+                additionalProperties: false
+                properties:
+                  eyebrow: { type: [string, 'null'], maxLength: 120 }
+                  layout: { type: string, enum: [CAROUSEL, GRID, STACK] }
+                  item_ids:
+                    type: array
+                    maxItems: 24
+                    items: { type: string, format: uuid }
+        media:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            additionalProperties: false
+            required: [media_id, purpose]
+            properties:
+              media_id: { type: string, format: uuid }
+              purpose: { type: string, enum: [COVER, GALLERY] }
+              sort_order: { type: integer, minimum: 0, default: 0 }
+    ComplianceSubmissionInput:
+      type: object
+      additionalProperties: false
+      required: [media_ids, product_id, requirement_id]
+      properties:
+        product_id: { type: string, format: uuid }
+        requirement_id: { type: string, format: uuid }
+        document_number: { type: [string, 'null'], minLength: 1, maxLength: 255 }
+        issued_at: { type: [string, 'null'], format: date }
+        expires_at: { type: [string, 'null'], format: date }
+        supersedes_record_id: { type: [string, 'null'], format: uuid }
+        media_ids:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: { type: string, format: uuid }
     HomePage:
       allOf:
         - $ref: '#/components/schemas/LocaleResolution'

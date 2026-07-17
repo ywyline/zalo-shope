@@ -2,7 +2,7 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；真实 Zalo 生产适配器、真机验收及后续商品/交易领域尚未完成。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2.1-M2.4 商品目录数据、品牌/类目/属性模板、商品/SKU、媒体与合规后台 API 已实现。装修 UI、买家目录 UI、真实 Zalo 生产适配器、真机验收及交易领域尚未完成。
 
 ## 应用与包
 
@@ -22,6 +22,8 @@ packages/integrations Zalo 身份端口和测试 provider
 packages/i18n    vi/zh/en 回退与越南本地格式器
 packages/design-tokens Mini App/管理端共享设计 token
 ```
+
+M2.4 的媒体适配器使用 S3 兼容对象存储。`infra:up` 会通过一次性 `minio-init` 服务创建本地 bucket；生产 bucket 仍必须由批准的基础设施流程预先创建。
 
 架构与范围以 `REQUIREMENTS.md`、`AGENTS.md` 和 `docs/` 下已批准文档为准。
 
@@ -114,3 +116,4 @@ corepack pnpm --filter @zalo-shop/database seed
 - API/worker 启动时会验证数据库、Redis 和对象存储配置。
 - 日志默认遮盖认证、Cookie 和 Zalo Token 请求头。
 - `ZALO_IDENTITY_PROVIDER=test` 只允许 `NODE_ENV=test`；生产环境会拒绝启动该 provider。
+- `CONTENT_EXTERNAL_TARGET_HOSTS` 是逗号分隔的页面外跳 HTTPS 主机白名单；默认空值表示禁止全部外跳，配置不含协议或路径。

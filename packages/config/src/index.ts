@@ -19,6 +19,19 @@ const runtimeConfigSchema = z
       .default(2_592_000),
     API_HOST: z.string().min(1).default('0.0.0.0'),
     API_PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+    CONTENT_EXTERNAL_TARGET_HOSTS: z
+      .string()
+      .default('')
+      .transform((value) =>
+        value
+          .split(',')
+          .map((host) => host.trim().toLowerCase())
+          .filter(Boolean),
+      )
+      .refine(
+        (hosts) => hosts.every((host) => /^[a-z0-9.-]+$/.test(host) && !host.includes('..')),
+        'must contain comma-separated host names',
+      ),
     DATABASE_URL: z.string().url().startsWith('postgresql://'),
     DATABASE_RUNTIME_URL: z.string().url().startsWith('postgresql://'),
     LOG_LEVEL: z

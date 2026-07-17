@@ -1,6 +1,91 @@
 import { randomUUID } from 'node:crypto';
 
+import {
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import type { RuntimeConfig } from '@zalo-shop/config';
 import { signJwt, verifyJwt } from '@zalo-shop/security';
+
+export type MediaObjectMetadata = Readonly<{
+  byteSize: number;
+  checksumSha256?: string;
+  contentType?: string;
+}>;
+
+export interface MediaStorageProvider {
+  createUploadTarget(input: {
+    byteSize: number;
+    checksumSha256: string;
+    contentType: string;
+    objectKey: string;
+  }): Promise<{ expiresAt: Date; headers: Readonly<Record<string, string>>; url: string }>;
+  inspectObject(objectKey: string): Promise<MediaObjectMetadata>;
+  removeObject?(objectKey: string): Promise<void>;
+}
+
+export class S3MediaStorageProvider implements MediaStorageProvider {
+  readonly #client: S3Client;
+
+  public constructor(private readonly config: RuntimeConfig) {
+    this.#client = new S3Client({
+      credentials: {
+        accessKeyId: config.S3_ACCESS_KEY,
+        secretAccessKey: config.S3_SECRET_KEY,
+      },
+      endpoint: config.S3_ENDPOINT,
+      forcePathStyle: config.S3_FORCE_PATH_STYLE,
+      region: config.S3_REGION,
+    });
+  }
+
+  public async createUploadTarget(input: {
+    byteSize: number;
+    checksumSha256: string;
+    contentType: string;
+    objectKey: string;
+  }) {
+    const expiresIn = 300;
+    const command = new PutObjectCommand({
+      Body: undefined,
+      Bucket: this.config.S3_BUCKET,
+      ChecksumSHA256: Buffer.from(input.checksumSha256, 'hex').toString('base64'),
+      ContentLength: input.byteSize,
+      ContentType: input.contentType,
+      Key: input.objectKey,
+    });
+    return {
+      expiresAt: new Date(Date.now() + expiresIn * 1_000),
+      headers: {
+        'content-type': input.contentType,
+        'x-amz-checksum-sha256': Buffer.from(input.checksumSha256, 'hex').toString('base64'),
+      },
+      url: await getSignedUrl(this.#client, command, { expiresIn }),
+    };
+  }
+
+  public async inspectObject(objectKey: string): Promise<MediaObjectMetadata> {
+    const result = await this.#client.send(
+      new HeadObjectCommand({ Bucket: this.config.S3_BUCKET, Key: objectKey }),
+    );
+    return {
+      byteSize: result.ContentLength ?? 0,
+      ...(result.ChecksumSHA256
+        ? { checksumSha256: Buffer.from(result.ChecksumSHA256, 'base64').toString('hex') }
+        : {}),
+      ...(result.ContentType ? { contentType: result.ContentType } : {}),
+    };
+  }
+
+  public async removeObject(objectKey: string): Promise<void> {
+    await this.#client.send(
+      new DeleteObjectCommand({ Bucket: this.config.S3_BUCKET, Key: objectKey }),
+    );
+  }
+}
 
 export type ZaloIdentity = Readonly<{
   avatarUrl?: string;

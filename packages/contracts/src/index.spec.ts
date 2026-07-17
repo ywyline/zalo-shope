@@ -9,8 +9,14 @@ import {
   createBrandSchema,
   createCategorySchema,
   createProductDraftSchema,
+  pageModuleInputSchema,
+  publishPageSchema,
+  replacePageDraftSchema,
+  mediaUploadInputSchema,
   memberPreferenceSchema,
+  reviewComplianceRecordSchema,
   skuDraftSchema,
+  submitComplianceRecordSchema,
 } from './index';
 
 describe('M1 API contracts', () => {
@@ -132,5 +138,89 @@ describe('M2 catalog API contracts', () => {
         sale_price_vnd: 249_000.5,
       }),
     ).toThrow();
+  });
+
+  it('rejects unsafe media metadata and store ownership in compliance commands', () => {
+    expect(
+      mediaUploadInputSchema.parse({
+        byte_size: 128,
+        checksum_sha256: 'a'.repeat(64),
+        filename: 'hero.webp',
+        mime_type: 'image/webp',
+        resource: 'product',
+      }),
+    ).toMatchObject({ filename: 'hero.webp' });
+    expect(() =>
+      mediaUploadInputSchema.parse({
+        byte_size: 128,
+        checksum_sha256: 'a'.repeat(64),
+        filename: '../hero.webp',
+        mime_type: 'image/jpeg',
+        resource: 'product',
+      }),
+    ).toThrow();
+    expect(() =>
+      submitComplianceRecordSchema.parse({
+        media_ids: ['11111111-1111-4111-8111-111111111111'],
+        product_id: '22222222-2222-4222-8222-222222222222',
+        requirement_id: '33333333-3333-4333-8333-333333333333',
+        store_id: 'hidden',
+      }),
+    ).toThrow();
+    expect(() =>
+      reviewComplianceRecordSchema.parse({ decision: 'APPROVED', review_note: '' }),
+    ).toThrow();
+  });
+
+  it('validates complete localized page modules and target shapes', () => {
+    const localizations = [
+      { locale: 'vi' as const, title: 'Bo suu tap moi' },
+      { locale: 'zh' as const, title: 'New collection' },
+      { locale: 'en' as const, title: 'New collection' },
+    ];
+    expect(
+      pageModuleInputSchema.parse({
+        localizations,
+        module_type: 'HERO',
+        sort_order: 0,
+        target_id: '11111111-1111-4111-8111-111111111111',
+        target_type: 'CATEGORY',
+      }),
+    ).toMatchObject({ module_type: 'HERO', status: 'ACTIVE' });
+    expect(() =>
+      pageModuleInputSchema.parse({
+        localizations: localizations.slice(0, 2),
+        module_type: 'HERO',
+        sort_order: 0,
+      }),
+    ).toThrow();
+    expect(() =>
+      pageModuleInputSchema.parse({
+        localizations,
+        module_type: 'BANNER',
+        sort_order: 0,
+        target_type: 'EXTERNAL',
+        target_url: 'http://unsafe.example',
+      }),
+    ).toThrow();
+  });
+
+  it('rejects ambiguous page ordering and requires explicit publish confirmation', () => {
+    const module = {
+      localizations: [
+        { locale: 'vi' as const, title: 'Trang chu' },
+        { locale: 'zh' as const, title: 'Home' },
+        { locale: 'en' as const, title: 'Home' },
+      ],
+      module_type: 'RICH_TEXT' as const,
+      sort_order: 0,
+    };
+    expect(() =>
+      replacePageDraftSchema.parse({ expected_version: 1, modules: [module, module] }),
+    ).toThrow();
+    expect(publishPageSchema.parse({ confirmation_code: 'HOME', expected_version: 2 })).toEqual({
+      confirmation_code: 'home',
+      expected_version: 2,
+    });
   });
 });

@@ -17,6 +17,12 @@ const SENSITIVE_KEY_PATTERN =
   /authorization|cookie|password|secret|token|phone|address|mfa|card|payment/i;
 
 export function redactSensitiveData(value: unknown): unknown {
+  if (typeof value === 'bigint') {
+    return value <= BigInt(Number.MAX_SAFE_INTEGER) && value >= BigInt(Number.MIN_SAFE_INTEGER)
+      ? Number(value)
+      : value.toString();
+  }
+  if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) {
     return value.map((item) => redactSensitiveData(item));
   }

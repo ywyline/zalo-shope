@@ -3,10 +3,11 @@ import { createRoot } from 'react-dom/client';
 
 import '@zalo-shop/design-tokens/theme.css';
 import './styles.css';
+import { ContentEditor } from './content-editor';
 
 type Locale = 'en' | 'vi' | 'zh';
 type Phase = 'dashboard' | 'mfa' | 'password';
-type Tab = 'audit' | 'overview' | 'roles';
+type Tab = 'audit' | 'content' | 'overview' | 'roles';
 type Store = { code: string; default_locale: Locale; id: string };
 type Role = { code: string; id: string; name: string; permissions?: Array<unknown> };
 type Audit = { action: string; actorId: string; createdAt: string; id: string; reason?: string };
@@ -17,6 +18,7 @@ const labels = {
   vi: {
     audit: 'Nhật ký',
     create: 'Tạo vai trò',
+    content: 'Trang & nội dung',
     email: 'Email quản trị',
     empty: 'Chưa có dữ liệu trong phạm vi này.',
     errorAuth: 'Thông tin đăng nhập hoặc mã xác thực không hợp lệ.',
@@ -42,6 +44,7 @@ const labels = {
   zh: {
     audit: '审计日志',
     create: '创建角色',
+    content: '页面与装修',
     email: '管理员邮箱',
     empty: '当前范围暂无数据。',
     errorAuth: '登录信息或验证码无效。',
@@ -67,6 +70,7 @@ const labels = {
   en: {
     audit: 'Audit log',
     create: 'Create role',
+    content: 'Pages & content',
     email: 'Admin email',
     empty: 'No data exists in this scope yet.',
     errorAuth: 'The credentials or verification code are invalid.',
@@ -324,6 +328,9 @@ function AdminApp(): JSX.Element {
           <button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>
             ⌂ <span>{t.overview}</span>
           </button>
+          <button className={tab === 'content' ? 'active' : ''} onClick={() => setTab('content')}>
+            ◫ <span>{t.content}</span>
+          </button>
           <button
             className={tab === 'roles' ? 'active' : ''}
             onClick={() => {
@@ -378,6 +385,7 @@ function AdminApp(): JSX.Element {
                 setStore(next);
                 setRoles([]);
                 setAudits([]);
+                if (tab !== 'content') void loadScope(next);
               }}
               value={store?.id ?? ''}
             >
@@ -438,6 +446,15 @@ function AdminApp(): JSX.Element {
               <p>{audits.length ? `${audits.length} immutable events` : t.empty}</p>
             </article>
           </section>
+        )}
+        {tab === 'content' && store && (
+          <ContentEditor
+            headers={() => authenticatedHeaders(store)}
+            key={store.id}
+            locale={locale}
+            request={api}
+            store={store}
+          />
         )}
         {tab === 'roles' && (
           <section className="data-section">

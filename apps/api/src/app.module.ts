@@ -6,7 +6,11 @@ import {
 } from '@nestjs/common';
 import { parseRuntimeConfig, type RuntimeConfig } from '@zalo-shop/config';
 import { createRuntimePrismaClient } from '@zalo-shop/database';
-import { DeterministicZaloTestProvider, type ZaloIdentityProvider } from '@zalo-shop/integrations';
+import {
+  DeterministicZaloTestProvider,
+  S3MediaStorageProvider,
+  type ZaloIdentityProvider,
+} from '@zalo-shop/integrations';
 import { createHttpLogger, createLogger } from '@zalo-shop/logger';
 import { checkInfrastructure } from '@zalo-shop/platform';
 
@@ -18,11 +22,23 @@ import {
 } from './health.controller';
 import { AuthController, MemberController } from './auth/auth.controller';
 import { AuthService } from './auth/auth.service';
-import { DATABASE_CLIENT, ZALO_IDENTITY_PROVIDER } from './auth/auth.tokens';
+import {
+  DATABASE_CLIENT,
+  MEDIA_STORAGE_PROVIDER,
+  ZALO_IDENTITY_PROVIDER,
+} from './auth/auth.tokens';
 import { AdminController } from './admin/admin.controller';
 import { AdminService } from './admin/admin.service';
 import { CatalogAdminController } from './catalog-admin/catalog-admin.controller';
 import { CatalogAdminService } from './catalog-admin/catalog-admin.service';
+import {
+  ComplianceAdminController,
+  MediaAdminController,
+  ProductAdminController,
+} from './catalog-admin/product-admin.controller';
+import { ProductAdminService } from './catalog-admin/product-admin.service';
+import { ContentAdminController } from './content-admin/content-admin.controller';
+import { ContentAdminService } from './content-admin/content-admin.service';
 import { StoreController } from './store.controller';
 
 const runtimeConfig = parseRuntimeConfig();
@@ -56,11 +72,17 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     MemberController,
     AdminController,
     CatalogAdminController,
+    ProductAdminController,
+    MediaAdminController,
+    ComplianceAdminController,
+    ContentAdminController,
     StoreController,
   ],
   providers: [
     AdminService,
     CatalogAdminService,
+    ProductAdminService,
+    ContentAdminService,
     AuthService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
@@ -70,6 +92,10 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     {
       provide: ZALO_IDENTITY_PROVIDER,
       useFactory: () => createZaloProvider(runtimeConfig),
+    },
+    {
+      provide: MEDIA_STORAGE_PROVIDER,
+      useFactory: () => new S3MediaStorageProvider(runtimeConfig),
     },
     {
       provide: INFRASTRUCTURE_CHECKER,

@@ -50,6 +50,20 @@ services:
     volumes:
       - minio-data:/data
 
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minio_local}
+      S3_BUCKET: ${S3_BUCKET:-zalo-shop-local}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minio_local_development_only}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - mc alias set local http://minio:9000 "$${S3_ACCESS_KEY}" "$${S3_SECRET_KEY}" && mc mb --ignore-existing "local/$${S3_BUCKET}"
+
 volumes:
   minio-data:
   postgres-data:

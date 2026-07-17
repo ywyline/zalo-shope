@@ -200,6 +200,20 @@ export const createProductDraftSchema = z
   })
   .strict();
 
+export const replaceProductSkusSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    skus: z
+      .array(z.lazy(() => skuDraftSchema))
+      .min(1)
+      .max(500),
+  })
+  .strict();
+
+export const productVersionCommandSchema = z
+  .object({ expected_version: z.number().int().positive() })
+  .strict();
+
 export const skuOptionValueSchema = z
   .object({
     attribute_code: catalogCodeSchema,
@@ -235,13 +249,201 @@ export const skuDraftSchema = z
     });
   });
 
+const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+
+export const mediaUploadInputSchema = z
+  .object({
+    byte_size: z
+      .number()
+      .int()
+      .safe()
+      .min(1)
+      .max(20 * 1024 * 1024),
+    checksum_sha256: sha256Schema,
+    filename: z
+      .string()
+      .trim()
+      .min(1)
+      .max(255)
+      .refine(
+        (value) =>
+          !value.includes('/') &&
+          !value.includes('\\') &&
+          [...value].every((character) => character.charCodeAt(0) >= 32),
+        'Filename is unsafe',
+      ),
+    mime_type: z.enum(['image/svg+xml', 'image/png', 'image/webp']),
+    resource: z.enum(['brand', 'category', 'product', 'sku', 'page', 'compliance']),
+  })
+  .strict();
+
+export const confirmMediaUploadSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    resource: z.enum(['brand', 'category', 'product', 'sku', 'page', 'compliance']).optional(),
+  })
+  .strict();
+
+export const productMediaInputSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    media_id: z.string().uuid(),
+    purpose: z.enum(['PRIMARY', 'GALLERY']),
+    sort_order: z.number().int().safe().nonnegative().default(0),
+  })
+  .strict();
+
+export const submitComplianceRecordSchema = z
+  .object({
+    document_number: z.string().trim().min(1).max(255).nullable().optional(),
+    expires_at: z.coerce.date().nullable().optional(),
+    issued_at: z.coerce.date().nullable().optional(),
+    media_ids: z.array(z.string().uuid()).min(1).max(20),
+    product_id: z.string().uuid(),
+    requirement_id: z.string().uuid(),
+    supersedes_record_id: z.string().uuid().nullable().optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.issued_at && input.expires_at && input.expires_at <= input.issued_at) {
+      context.addIssue({ code: 'custom', message: 'Expiry must be after issue date' });
+    }
+  });
+
+export const reviewComplianceRecordSchema = z
+  .object({
+    decision: z.enum(['APPROVED', 'REJECTED']),
+    review_note: z.string().trim().min(1).max(2_000),
+  })
+  .strict();
+
+const pageModuleLocalizationSchema = z
+  .object({
+    button_label: z.string().trim().min(1).max(160).nullable().default(null),
+    content_config: z
+      .object({
+        eyebrow: z.string().trim().min(1).max(120).nullable().optional(),
+        item_ids: z.array(z.string().uuid()).max(24).optional(),
+        layout: z.enum(['CAROUSEL', 'GRID', 'STACK']).optional(),
+      })
+      .strict()
+      .default({}),
+    locale: z.enum(SUPPORTED_LOCALES),
+    summary: z.string().trim().min(1).max(500).nullable().default(null),
+    title: z.string().trim().min(1).max(240),
+  })
+  .strict();
+
+const pageModuleLocalizationsSchema = z
+  .array(pageModuleLocalizationSchema)
+  .length(SUPPORTED_LOCALES.length)
+  .superRefine((localizations, context) => {
+    const locales = new Set(localizations.map(({ locale }) => locale));
+    for (const locale of SUPPORTED_LOCALES) {
+      if (!locales.has(locale)) {
+        context.addIssue({ code: 'custom', message: `Localization is required: ${locale}` });
+      }
+    }
+  });
+
+const pageModuleMediaSchema = z
+  .object({
+    media_id: z.string().uuid(),
+    purpose: z.enum(['COVER', 'GALLERY']),
+    sort_order: z.number().int().safe().nonnegative().default(0),
+  })
+  .strict();
+
+export const pageModuleInputSchema = z
+  .object({
+    background_config: z
+      .object({
+        color: z
+          .string()
+          .regex(/^#[0-9a-f]{6}$/i)
+          .nullable()
+          .default(null),
+        overlay: z.number().min(0).max(1).nullable().default(null),
+      })
+      .strict()
+      .default({ color: null, overlay: null }),
+    localizations: pageModuleLocalizationsSchema,
+    media: z.array(pageModuleMediaSchema).max(10).default([]),
+    module_type: z.enum([
+      'HERO',
+      'BANNER',
+      'PRODUCT_GRID',
+      'BRAND_GRID',
+      'CATEGORY_GRID',
+      'RICH_TEXT',
+    ]),
+    sort_order: z.number().int().safe().nonnegative(),
+    status: z.enum(['ACTIVE', 'DISABLED']).default('ACTIVE'),
+    target_id: z.string().uuid().nullable().default(null),
+    target_type: z
+      .enum(['PRODUCT', 'BRAND', 'CATEGORY', 'PAGE', 'EXTERNAL'])
+      .nullable()
+      .default(null),
+    target_url: z.string().url().startsWith('https://').max(2_048).nullable().default(null),
+    visible_from: z.coerce.date().nullable().default(null),
+    visible_to: z.coerce.date().nullable().default(null),
+  })
+  .strict()
+  .superRefine((module, context) => {
+    if (module.visible_from && module.visible_to && module.visible_to <= module.visible_from) {
+      context.addIssue({ code: 'custom', message: 'Visibility end must be after start' });
+    }
+    if (module.target_type === 'EXTERNAL') {
+      if (!module.target_url || module.target_id) {
+        context.addIssue({ code: 'custom', message: 'External targets require only target_url' });
+      }
+    } else if (module.target_type) {
+      if (!module.target_id || module.target_url) {
+        context.addIssue({ code: 'custom', message: 'Internal targets require only target_id' });
+      }
+    } else if (module.target_id || module.target_url) {
+      context.addIssue({ code: 'custom', message: 'Target values require target_type' });
+    }
+  });
+
+export const createPageDraftSchema = z.object({ code: catalogCodeSchema }).strict();
+
+export const replacePageDraftSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    modules: z.array(pageModuleInputSchema).max(50),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const positions = new Set(input.modules.map(({ sort_order }) => sort_order));
+    if (positions.size !== input.modules.length) {
+      context.addIssue({ code: 'custom', message: 'Module sort orders must be unique' });
+    }
+  });
+
+export const publishPageSchema = z
+  .object({
+    confirmation_code: catalogCodeSchema,
+    expected_version: z.number().int().positive(),
+  })
+  .strict();
+
 export type CatalogLocalizationInput = z.infer<typeof catalogLocalizationSchema>;
 export type AttributeTemplateVersionInput = z.infer<typeof attributeTemplateVersionInputSchema>;
 export type CreateAttributeTemplateInput = z.infer<typeof createAttributeTemplateSchema>;
 export type CreateBrandInput = z.infer<typeof createBrandSchema>;
 export type CreateCategoryInput = z.infer<typeof createCategorySchema>;
 export type CreateProductDraftInput = z.infer<typeof createProductDraftSchema>;
+export type ConfirmMediaUploadInput = z.infer<typeof confirmMediaUploadSchema>;
+export type CreatePageDraftInput = z.infer<typeof createPageDraftSchema>;
+export type MediaUploadInput = z.infer<typeof mediaUploadInputSchema>;
+export type ProductMediaInput = z.infer<typeof productMediaInputSchema>;
+export type PublishPageInput = z.infer<typeof publishPageSchema>;
+export type ReplacePageDraftInput = z.infer<typeof replacePageDraftSchema>;
+export type ReplaceProductSkusInput = z.infer<typeof replaceProductSkusSchema>;
+export type ReviewComplianceRecordInput = z.infer<typeof reviewComplianceRecordSchema>;
 export type SkuDraftInput = z.infer<typeof skuDraftSchema>;
+export type SubmitComplianceRecordInput = z.infer<typeof submitComplianceRecordSchema>;
 export type UpdateBrandInput = z.infer<typeof updateBrandSchema>;
 export type UpdateCategoryInput = z.infer<typeof updateCategorySchema>;
 export type UpdateAttributeTemplateVersionInput = z.infer<

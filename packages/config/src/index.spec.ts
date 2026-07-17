@@ -26,6 +26,16 @@ describe('parseRuntimeConfig', () => {
     expect(config.API_PORT).toBe(3000);
     expect(config.WORKER_PORT).toBe(3001);
     expect(config.S3_FORCE_PATH_STYLE).toBe(true);
+    expect(config.CONTENT_EXTERNAL_TARGET_HOSTS).toEqual([]);
+  });
+
+  it('normalizes the external content target allowlist', () => {
+    const config = parseRuntimeConfig({
+      ...validEnvironment,
+      CONTENT_EXTERNAL_TARGET_HOSTS: ' Example.COM,shop.example.com ',
+    });
+
+    expect(config.CONTENT_EXTERNAL_TARGET_HOSTS).toEqual(['example.com', 'shop.example.com']);
   });
 
   it('parses false without treating it as a truthy string', () => {
