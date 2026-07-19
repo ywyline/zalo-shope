@@ -32,6 +32,10 @@ describe('M2.4 product, media and compliance API', () => {
     { byteSize: number; checksumSha256: string; contentType: string }
   >();
   const storage: MediaStorageProvider = {
+    async createReadUrl(objectKey) {
+      await Promise.resolve();
+      return { expiresAt: new Date(Date.now() + 300_000), url: `https://media.test/${objectKey}` };
+    },
     async createUploadTarget(input) {
       await Promise.resolve();
       objects.set(input.objectKey, input);

@@ -40,6 +40,8 @@ import { ProductAdminService } from './catalog-admin/product-admin.service';
 import { ContentAdminController } from './content-admin/content-admin.controller';
 import { ContentAdminService } from './content-admin/content-admin.service';
 import { StoreController } from './store.controller';
+import { CatalogController } from './catalog/catalog.controller';
+import { CatalogService } from './catalog/catalog.service';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -76,6 +78,7 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     MediaAdminController,
     ComplianceAdminController,
     ContentAdminController,
+    CatalogController,
     StoreController,
   ],
   providers: [
@@ -83,6 +86,7 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     CatalogAdminService,
     ProductAdminService,
     ContentAdminService,
+    CatalogService,
     AuthService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {

@@ -13,6 +13,37 @@ export const catalogCodeSchema = z
       .regex(/^[a-z][a-z0-9-]*$/),
   );
 
+const catalogLocaleQuerySchema = z.enum(SUPPORTED_LOCALES).default('vi');
+const catalogLimitQuerySchema = z.coerce.number().int().min(1).max(100).default(20);
+const catalogCursorQuerySchema = z.string().trim().min(1).max(1_000).optional();
+
+export const publicCatalogLocaleQuerySchema = z
+  .object({ locale: catalogLocaleQuerySchema })
+  .strict();
+
+export const publicBrandListQuerySchema = z
+  .object({
+    cursor: catalogCursorQuerySchema,
+    limit: catalogLimitQuerySchema,
+    locale: catalogLocaleQuerySchema,
+    recommended: z
+      .enum(['true', 'false'])
+      .transform((value) => value === 'true')
+      .optional(),
+  })
+  .strict();
+
+export const publicProductListQuerySchema = z
+  .object({
+    brand_code: catalogCodeSchema.optional(),
+    category_code: catalogCodeSchema.optional(),
+    cursor: catalogCursorQuerySchema,
+    limit: catalogLimitQuerySchema,
+    locale: catalogLocaleQuerySchema,
+    sort: z.enum(['newest', 'price_asc', 'price_desc']).default('newest'),
+  })
+  .strict();
+
 export const catalogLocalizationSchema = z
   .object({
     description: z.string().trim().max(20_000).nullable(),
@@ -439,6 +470,9 @@ export type CreatePageDraftInput = z.infer<typeof createPageDraftSchema>;
 export type MediaUploadInput = z.infer<typeof mediaUploadInputSchema>;
 export type ProductMediaInput = z.infer<typeof productMediaInputSchema>;
 export type PublishPageInput = z.infer<typeof publishPageSchema>;
+export type PublicBrandListQuery = z.infer<typeof publicBrandListQuerySchema>;
+export type PublicCatalogLocaleQuery = z.infer<typeof publicCatalogLocaleQuerySchema>;
+export type PublicProductListQuery = z.infer<typeof publicProductListQuerySchema>;
 export type ReplacePageDraftInput = z.infer<typeof replacePageDraftSchema>;
 export type ReplaceProductSkusInput = z.infer<typeof replaceProductSkusSchema>;
 export type ReviewComplianceRecordInput = z.infer<typeof reviewComplianceRecordSchema>;

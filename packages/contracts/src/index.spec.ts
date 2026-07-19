@@ -11,6 +11,8 @@ import {
   createProductDraftSchema,
   pageModuleInputSchema,
   publishPageSchema,
+  publicBrandListQuerySchema,
+  publicProductListQuerySchema,
   replacePageDraftSchema,
   mediaUploadInputSchema,
   memberPreferenceSchema,
@@ -222,5 +224,30 @@ describe('M2 catalog API contracts', () => {
       confirmation_code: 'home',
       expected_version: 2,
     });
+  });
+
+  it('validates public catalog filters without coercing false to true', () => {
+    expect(publicBrandListQuerySchema.parse({ recommended: 'false' })).toEqual({
+      limit: 20,
+      locale: 'vi',
+      recommended: false,
+    });
+    expect(
+      publicProductListQuerySchema.parse({
+        brand_code: ' ATELIER ',
+        category_code: 'BEAUTY',
+        limit: '12',
+        locale: 'en',
+        sort: 'price_asc',
+      }),
+    ).toEqual({
+      brand_code: 'atelier',
+      category_code: 'beauty',
+      limit: 12,
+      locale: 'en',
+      sort: 'price_asc',
+    });
+    expect(() => publicProductListQuerySchema.parse({ limit: '101' })).toThrow();
+    expect(() => publicProductListQuerySchema.parse({ locale: 'fr' })).toThrow();
   });
 });

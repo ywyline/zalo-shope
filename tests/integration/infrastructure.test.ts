@@ -40,6 +40,12 @@ describe('local infrastructure', () => {
         byteSize: body.length,
         contentType: 'image/webp',
       });
+      const readTarget = await storage.createReadUrl(objectKey);
+      const readResponse = await fetch(readTarget.url);
+      expect(readResponse.status).toBe(200);
+      await expect(readResponse.arrayBuffer()).resolves.toEqual(
+        body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
+      );
 
       const invalidObjectKey = `${objectKey}-invalid`;
       const invalidTarget = await storage.createUploadTarget({

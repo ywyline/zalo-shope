@@ -1,11 +1,12 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M2 Catalog and Content API
-  version: 0.2.3-m2
+  version: 0.2.6-m2
   description: >-
     M2.1 冻结草案；作为 openapi.m1.yaml 的向后兼容增量，定义品牌、类目、属性模板、
     商品、SKU、媒体、合规和页面装修接口。实现必须从受信 X-Store-Code 与认证主体解析商城，
-    不接受请求体中的 store_id。M2.3 已实现品牌、类目与属性模板后台路径；其余路径仍是后续阶段契约。
+    不接受请求体中的 store_id。M2.3-M2.5 已实现后台目录、商品、媒体、合规和页面装修路径；
+    M2.6 已实现本文件的 Buyer catalog 路径及短期签名媒体读取。
 servers:
   - url: http://localhost:3000
 tags:
@@ -28,6 +29,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/HomePage' }
+        '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /v1/catalog/brands:
     get:
@@ -43,6 +45,8 @@ paths:
           schema: { type: boolean }
       responses:
         '200': { $ref: '#/components/responses/BrandPage' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
   /v1/catalog/brands/{brandCode}:
     get:
       tags: [Buyer catalog]
@@ -57,6 +61,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Brand' }
+        '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /v1/catalog/categories:
     get:
@@ -73,6 +78,8 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Category' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
   /v1/catalog/products:
     get:
       tags: [Buyer catalog]
@@ -93,6 +100,8 @@ paths:
           schema: { type: string, enum: [newest, price_asc, price_desc], default: newest }
       responses:
         '200': { $ref: '#/components/responses/ProductPage' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
   /v1/catalog/products/{productCode}:
     get:
       tags: [Buyer catalog]
@@ -107,6 +116,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProductDetail' }
+        '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /v1/admin/catalog/brands:
     parameters:
@@ -748,13 +758,17 @@ components:
           maxItems: 3
           items: { $ref: '#/components/schemas/CatalogAdminLocalizationInput' }
     Category:
-      type: object
-      required: [code, depth, name, children]
-      properties:
-        code: { $ref: '#/components/schemas/CatalogCode' }
-        depth: { type: integer, enum: [1, 2] }
-        name: { type: string }
-        children: { type: array, items: { $ref: '#/components/schemas/Category' } }
+      allOf:
+        - $ref: '#/components/schemas/LocaleResolution'
+        - type: object
+          required: [children, code, depth, description, media, name]
+          properties:
+            code: { $ref: '#/components/schemas/CatalogCode' }
+            depth: { type: integer, enum: [1, 2] }
+            name: { type: string }
+            description: { type: [string, 'null'] }
+            media: { $ref: '#/components/schemas/PublicMedia' }
+            children: { type: array, items: { $ref: '#/components/schemas/Category' } }
     CategoryInput:
       type: object
       additionalProperties: false
@@ -910,27 +924,53 @@ components:
           items: { $ref: '#/components/schemas/SkuOptionInput' }
     PublicSku:
       type: object
-      required: [code, option_values, sale_price_vnd]
+      required: [code, market_price_vnd, media, option_values, sale_price_vnd]
       properties:
         code: { $ref: '#/components/schemas/CatalogCode' }
         sale_price_vnd: { type: integer, minimum: 0 }
         market_price_vnd: { type: [integer, 'null'], minimum: 0 }
+        media: { $ref: '#/components/schemas/PublicMedia' }
         option_values:
           type: array
-          minItems: 1
-          items: { $ref: '#/components/schemas/SkuOptionInput' }
+          items: { $ref: '#/components/schemas/PublicSkuOption' }
+    PublicSkuOption:
+      type: object
+      required: [attribute_code, attribute_label, option_code, option_label]
+      properties:
+        attribute_code: { $ref: '#/components/schemas/CatalogCode' }
+        attribute_label: { type: string }
+        option_code: { $ref: '#/components/schemas/CatalogCode' }
+        option_label: { type: string }
     ProductSummary:
       allOf:
         - $ref: '#/components/schemas/LocaleResolution'
         - type: object
-          required: [brand, code, name, price_range_vnd]
+          required:
+            - brand
+            - code
+            - main_category
+            - market_price_range_vnd
+            - name
+            - price_range_vnd
+            - primary_media
+            - selling_points
+            - subtitle
           properties:
             code: { $ref: '#/components/schemas/CatalogCode' }
             name: { type: string }
+            subtitle: { type: [string, 'null'] }
+            selling_points: { type: [string, 'null'] }
             brand: { $ref: '#/components/schemas/Brand' }
+            main_category: { $ref: '#/components/schemas/Category' }
             primary_media: { $ref: '#/components/schemas/PublicMedia' }
             price_range_vnd:
               type: object
+              required: [minimum, maximum]
+              properties:
+                minimum: { type: integer, minimum: 0 }
+                maximum: { type: integer, minimum: 0 }
+            market_price_range_vnd:
+              type: [object, 'null']
               required: [minimum, maximum]
               properties:
                 minimum: { type: integer, minimum: 0 }
@@ -939,17 +979,37 @@ components:
       allOf:
         - $ref: '#/components/schemas/ProductSummary'
         - type: object
-          required: [description_document, skus]
+          required: [attributes, description_document, gallery, skus, usage_instructions]
           properties:
             description_document: { type: object }
+            usage_instructions: { type: [string, 'null'] }
+            gallery: { type: array, items: { $ref: '#/components/schemas/PublicMediaObject' } }
+            attributes:
+              type: array
+              items: { $ref: '#/components/schemas/PublicProductAttribute' }
             skus: { type: array, items: { $ref: '#/components/schemas/PublicSku' } }
-    PublicMedia:
-      type: [object, 'null']
+    PublicProductAttribute:
+      type: object
+      required: [code, label, purpose, unit, value]
+      properties:
+        code: { $ref: '#/components/schemas/CatalogCode' }
+        label: { type: string }
+        purpose: { type: string }
+        unit: { type: [string, 'null'] }
+        value: { type: [string, number, boolean, 'null'] }
+    PublicMediaObject:
+      type: object
+      required: [alt_text, expires_at, height, url, width]
       properties:
         url: { type: string, format: uri }
         alt_text: { type: string }
-        width: { type: integer, minimum: 1 }
-        height: { type: integer, minimum: 1 }
+        width: { type: [integer, 'null'], minimum: 1 }
+        height: { type: [integer, 'null'], minimum: 1 }
+        expires_at: { type: string, format: date-time }
+    PublicMedia:
+      oneOf:
+        - $ref: '#/components/schemas/PublicMediaObject'
+        - type: 'null'
     PublicationDecision:
       type: object
       required: [can_publish, issues]
@@ -1076,14 +1136,87 @@ components:
           maxItems: 20
           uniqueItems: true
           items: { type: string, format: uuid }
+    HomeTarget:
+      oneOf:
+        - type: object
+          required: [code, type]
+          properties:
+            code: { $ref: '#/components/schemas/CatalogCode' }
+            type: { type: string, enum: [BRAND, CATEGORY, PAGE, PRODUCT] }
+        - type: object
+          required: [type, url]
+          properties:
+            type: { type: string, enum: [EXTERNAL] }
+            url: { type: string, format: uri, pattern: '^https://' }
+        - type: 'null'
+    HomeModule:
+      allOf:
+        - $ref: '#/components/schemas/LocaleResolution'
+        - type: object
+          required:
+            - background_config
+            - button_label
+            - content_config
+            - id
+            - items
+            - media
+            - module_type
+            - summary
+            - target
+            - title
+          properties:
+            id: { type: string, format: uuid }
+            module_type:
+              type: string
+              enum: [BANNER, BRAND_GRID, CATEGORY_GRID, HERO, PRODUCT_GRID, RICH_TEXT]
+            title: { type: [string, 'null'] }
+            summary: { type: [string, 'null'] }
+            button_label: { type: [string, 'null'] }
+            background_config:
+              type: object
+              properties:
+                color: { type: [string, 'null'] }
+                overlay: { type: [number, 'null'], minimum: 0, maximum: 1 }
+            content_config:
+              type: object
+              properties:
+                eyebrow: { type: string }
+                layout: { type: string, enum: [CAROUSEL, GRID, STACK] }
+            target: { $ref: '#/components/schemas/HomeTarget' }
+            media: { type: array, items: { $ref: '#/components/schemas/PublicMediaObject' } }
+            items:
+              type: array
+              items:
+                oneOf:
+                  - $ref: '#/components/schemas/Brand'
+                  - $ref: '#/components/schemas/Category'
+                  - $ref: '#/components/schemas/ProductSummary'
+    StoreTheme:
+      type: [object, 'null']
+      required: [color_tokens, radius_tokens, typography_tokens, version]
+      properties:
+        color_tokens: { type: object }
+        radius_tokens: { type: object }
+        typography_tokens: { type: object }
+        version: { type: integer, minimum: 1 }
+    PublicStorefront:
+      type: object
+      required: [code, industry, name, short_description, theme]
+      properties:
+        code: { $ref: '#/components/schemas/CatalogCode' }
+        industry: { type: string, enum: [BEAUTY, FASHION] }
+        name: { type: string }
+        short_description: { type: [string, 'null'] }
+        theme: { $ref: '#/components/schemas/StoreTheme' }
     HomePage:
       allOf:
         - $ref: '#/components/schemas/LocaleResolution'
         - type: object
-          required: [modules, version]
+          required: [modules, store, version]
           properties:
             version: { type: integer, minimum: 1 }
-            modules: { type: array, items: { type: object } }
+            store: { $ref: '#/components/schemas/PublicStorefront' }
+            modules: { type: array, items: { $ref: '#/components/schemas/HomeModule' } }
     Error:
       type: object
       required: [code, correlation_id, message_key]

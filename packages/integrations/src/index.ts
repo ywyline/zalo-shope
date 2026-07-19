@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -17,6 +18,7 @@ export type MediaObjectMetadata = Readonly<{
 }>;
 
 export interface MediaStorageProvider {
+  createReadUrl(objectKey: string): Promise<{ expiresAt: Date; url: string }>;
   createUploadTarget(input: {
     byteSize: number;
     checksumSha256: string;
@@ -64,6 +66,18 @@ export class S3MediaStorageProvider implements MediaStorageProvider {
         'x-amz-checksum-sha256': Buffer.from(input.checksumSha256, 'hex').toString('base64'),
       },
       url: await getSignedUrl(this.#client, command, { expiresIn }),
+    };
+  }
+
+  public async createReadUrl(objectKey: string): Promise<{ expiresAt: Date; url: string }> {
+    const expiresIn = 300;
+    return {
+      expiresAt: new Date(Date.now() + expiresIn * 1_000),
+      url: await getSignedUrl(
+        this.#client,
+        new GetObjectCommand({ Bucket: this.config.S3_BUCKET, Key: objectKey }),
+        { expiresIn },
+      ),
     };
   }
 

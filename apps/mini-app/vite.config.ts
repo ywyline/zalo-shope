@@ -1,4 +1,5 @@
 import reactRefresh from '@vitejs/plugin-react-refresh';
+import path from 'node:path';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -9,6 +10,11 @@ export default defineConfig({
     polyfillModulePreload: false,
   },
   plugins: [reactRefresh()],
+  resolve: {
+    alias: {
+      '@zalo-shop/i18n': path.resolve(__dirname, '../../packages/i18n/src/index.ts'),
+    },
+  },
   root: './src',
   server: {
     host: '0.0.0.0',
