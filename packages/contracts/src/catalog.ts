@@ -231,6 +231,94 @@ export const createProductDraftSchema = z
   })
   .strict();
 
+const productAttributeDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((value) => {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  }, 'Date must be a real calendar date');
+
+const productAttributeDecimalSchema = z
+  .string()
+  .trim()
+  .regex(/^-?(?:0|[1-9]\d{0,15})(?:\.\d{1,8})?$/);
+
+export const productAttributeValueInputSchema = z.discriminatedUnion('data_type', [
+  z
+    .object({
+      attribute_code: catalogCodeSchema,
+      data_type: z.literal('TEXT'),
+      locale: z.enum(SUPPORTED_LOCALES),
+      value: z.string().trim().min(1).max(20_000),
+    })
+    .strict(),
+  z
+    .object({
+      attribute_code: catalogCodeSchema,
+      data_type: z.literal('INTEGER'),
+      value: z.number().int().safe(),
+    })
+    .strict(),
+  z
+    .object({
+      attribute_code: catalogCodeSchema,
+      data_type: z.literal('DECIMAL'),
+      value: productAttributeDecimalSchema,
+    })
+    .strict(),
+  z
+    .object({
+      attribute_code: catalogCodeSchema,
+      data_type: z.literal('BOOLEAN'),
+      value: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      attribute_code: catalogCodeSchema,
+      data_type: z.literal('DATE'),
+      value: productAttributeDateSchema,
+    })
+    .strict(),
+  z
+    .object({
+      attribute_code: catalogCodeSchema,
+      data_type: z.literal('OPTION'),
+      option_code: catalogCodeSchema,
+    })
+    .strict(),
+]);
+
+export const replaceProductAttributesSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    values: z.array(productAttributeValueInputSchema).max(500),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const values = new Set<string>();
+    input.values.forEach((value, index) => {
+      const key = JSON.stringify(value);
+      if (values.has(key)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Duplicate product attribute value',
+          path: ['values', index],
+        });
+      }
+      values.add(key);
+    });
+  });
+
+export const complianceOverviewQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    product_id: z.string().uuid().optional(),
+    status: z.enum(['DRAFT', 'PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SUPERSEDED']).optional(),
+  })
+  .strict();
+
 export const replaceProductSkusSchema = z
   .object({
     expected_version: z.number().int().positive(),
@@ -518,17 +606,20 @@ export type CreateBrandInput = z.infer<typeof createBrandSchema>;
 export type CreateCategoryInput = z.infer<typeof createCategorySchema>;
 export type CreateProductDraftInput = z.infer<typeof createProductDraftSchema>;
 export type ConfirmMediaUploadInput = z.infer<typeof confirmMediaUploadSchema>;
+export type ComplianceOverviewQuery = z.infer<typeof complianceOverviewQuerySchema>;
 export type BatchDisableProductsInput = z.infer<typeof batchDisableProductsSchema>;
 export type BatchMoveProductsInput = z.infer<typeof batchMoveProductsSchema>;
 export type CreatePageDraftInput = z.infer<typeof createPageDraftSchema>;
 export type MediaUploadInput = z.infer<typeof mediaUploadInputSchema>;
 export type ProductMediaInput = z.infer<typeof productMediaInputSchema>;
 export type ProductImportQuery = z.infer<typeof productImportQuerySchema>;
+export type ProductAttributeValueInput = z.infer<typeof productAttributeValueInputSchema>;
 export type PublishPageInput = z.infer<typeof publishPageSchema>;
 export type PublicBrandListQuery = z.infer<typeof publicBrandListQuerySchema>;
 export type PublicCatalogLocaleQuery = z.infer<typeof publicCatalogLocaleQuerySchema>;
 export type PublicProductListQuery = z.infer<typeof publicProductListQuerySchema>;
 export type ReplacePageDraftInput = z.infer<typeof replacePageDraftSchema>;
+export type ReplaceProductAttributesInput = z.infer<typeof replaceProductAttributesSchema>;
 export type ReplaceProductSkusInput = z.infer<typeof replaceProductSkusSchema>;
 export type ReviewComplianceRecordInput = z.infer<typeof reviewComplianceRecordSchema>;
 export type SkuDraftInput = z.infer<typeof skuDraftSchema>;

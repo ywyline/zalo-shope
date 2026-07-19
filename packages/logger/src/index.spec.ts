@@ -28,4 +28,14 @@ describe('audit and log redaction', () => {
       redactSensitiveData({ createdAt: new Date('2026-07-17T00:00:00.000Z'), price: 249000n }),
     ).toEqual({ createdAt: '2026-07-17T00:00:00.000Z', price: 249000 });
   });
+
+  it('uses JSON-backed scalar representations instead of enumerable implementation details', () => {
+    class DecimalLike {
+      public toJSON(): string {
+        return '30.5';
+      }
+    }
+
+    expect(redactSensitiveData({ decimal: new DecimalLike() })).toEqual({ decimal: '30.5' });
+  });
 });

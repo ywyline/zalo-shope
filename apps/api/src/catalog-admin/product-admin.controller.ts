@@ -19,6 +19,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import {
   batchDisableProductsSchema,
   batchMoveProductsSchema,
+  complianceOverviewQuerySchema,
   confirmMediaUploadSchema,
   createProductDraftSchema,
   mediaUploadInputSchema,
@@ -26,6 +27,7 @@ import {
   productMediaInputSchema,
   productVersionNumberSchema,
   productVersionCommandSchema,
+  replaceProductAttributesSchema,
   replaceProductSkusSchema,
   reviewComplianceRecordSchema,
   submitComplianceRecordSchema,
@@ -188,6 +190,36 @@ export class ProductAdminController {
     );
   }
 
+  @Get(':productId/attributes')
+  public attributes(
+    @Param('productId') productId: string,
+    @Query('store_id') storeId: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+  ): Promise<unknown> {
+    return this.products.getProductAttributes(
+      context(authorization, storeCode, accessReason, storeId),
+      parse(uuidSchema, productId),
+    );
+  }
+
+  @Put(':productId/attributes')
+  public replaceAttributes(
+    @Param('productId') productId: string,
+    @Query('store_id') storeId: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    return this.products.replaceProductAttributes(
+      context(authorization, storeCode, accessReason, storeId),
+      parse(uuidSchema, productId),
+      parse(replaceProductAttributesSchema, body),
+    );
+  }
+
   @Put(':productId/skus')
   public replaceSkus(
     @Param('productId') productId: string,
@@ -293,6 +325,26 @@ export class MediaAdminController {
 @Controller('v1/admin/compliance')
 export class ComplianceAdminController {
   public constructor(@Inject(ProductAdminService) private readonly products: ProductAdminService) {}
+
+  @Get('overview')
+  public overview(
+    @Query('store_id') storeId: string | undefined,
+    @Query('limit') limit: string | undefined,
+    @Query('product_id') productId: string | undefined,
+    @Query('status') status: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+  ): Promise<unknown> {
+    return this.products.getComplianceOverview(
+      context(authorization, storeCode, accessReason, storeId),
+      parse(complianceOverviewQuerySchema, {
+        ...(limit === undefined ? {} : { limit }),
+        ...(productId === undefined ? {} : { product_id: productId }),
+        ...(status === undefined ? {} : { status }),
+      }),
+    );
+  }
 
   @Post('records')
   public submit(

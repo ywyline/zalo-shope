@@ -11,11 +11,14 @@ import {
 import type {
   BatchDisableProductsInput,
   BatchMoveProductsInput,
+  ComplianceOverviewQuery,
   ConfirmMediaUploadInput,
   CreateProductDraftInput,
   MediaUploadInput,
+  ProductAttributeValueInput,
   ProductImportQuery,
   ProductMediaInput,
+  ReplaceProductAttributesInput,
   ReplaceProductSkusInput,
   ReviewComplianceRecordInput,
   SubmitComplianceRecordInput,
@@ -96,6 +99,11 @@ function jsonSafe(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(jsonSafe);
   if (value && typeof value === 'object') {
+    const jsonBacked = value as { toJSON?: () => unknown };
+    if (typeof jsonBacked.toJSON === 'function') {
+      const serialized = jsonBacked.toJSON();
+      if (serialized !== value) return jsonSafe(serialized);
+    }
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
         .sort(([left], [right]) => left.localeCompare(right, 'en'))
@@ -115,6 +123,23 @@ function versionSnapshotForCatalogReader(value: unknown): unknown {
     );
   }
   return value;
+}
+
+function productAttributeValueKey(value: ProductAttributeValueInput): string {
+  switch (value.data_type) {
+    case 'TEXT':
+      return `${value.attribute_code}:${value.data_type}:${value.locale}:${value.value}`;
+    case 'OPTION':
+      return `${value.attribute_code}:${value.data_type}:${value.option_code}`;
+    default:
+      return `${value.attribute_code}:${value.data_type}:${String(value.value)}`;
+  }
+}
+
+function maskDocumentNumber(value: string | null): string | null {
+  if (value === null) return null;
+  if (value.length <= 4) return '*'.repeat(value.length);
+  return `${value.slice(0, 2)}${'*'.repeat(Math.min(8, value.length - 4))}${value.slice(-2)}`;
 }
 
 @Injectable()
@@ -144,6 +169,229 @@ export class ProductAdminService {
         }),
       ),
     }));
+  }
+
+  public async getProductAttributes(request: CatalogContext, productId: string) {
+    const context = await this.admin.authorize(
+      request.headers,
+      request.storeId,
+      'store.catalog.read',
+    );
+    return withStoreTransaction(this.database, context, async (transaction) => {
+      const editor = await this.loadAttributeEditor(transaction, request.storeId, productId);
+      if (!editor) throw new NotFoundException('Resource not found');
+      return editor;
+    });
+  }
+
+  public async getComplianceOverview(request: CatalogContext, query: ComplianceOverviewQuery) {
+    const context = await this.admin.authorize(
+      request.headers,
+      request.storeId,
+      'store.compliance.read',
+    );
+    return withStoreTransaction(this.database, context, async (transaction) => {
+      const [requirements, records] = await Promise.all([
+        transaction.complianceRequirement.findMany({
+          orderBy: [{ code: 'asc' }, { version: 'desc' }],
+          where: { status: 'ACTIVE', storeId: request.storeId },
+        }),
+        transaction.complianceRecord.findMany({
+          include: {
+            _count: { select: { compliance_record_media: true } },
+            compliance_requirements: true,
+            products: {
+              select: {
+                code: true,
+                id: true,
+                product_localizations: {
+                  select: { name: true },
+                  where: { locale: 'vi' },
+                },
+              },
+            },
+          },
+          orderBy: [{ submittedAt: 'desc' }, { id: 'asc' }],
+          take: query.limit,
+          where: {
+            ...(query.product_id === undefined ? {} : { productId: query.product_id }),
+            ...(query.status === undefined ? {} : { status: query.status }),
+            storeId: request.storeId,
+          },
+        }),
+      ]);
+      return {
+        records: records.map((record) => ({
+          document_number_masked: maskDocumentNumber(record.documentNumber),
+          expires_on: record.expiresAt?.toISOString().slice(0, 10) ?? null,
+          id: record.id,
+          issued_on: record.issuedAt?.toISOString().slice(0, 10) ?? null,
+          media_count: record._count.compliance_record_media,
+          product: {
+            code: record.products.code,
+            id: record.products.id,
+            name_vi: record.products.product_localizations[0]?.name ?? record.products.code,
+          },
+          requirement: {
+            blocking: record.compliance_requirements.blocking,
+            code: record.compliance_requirements.code,
+            document_type: record.compliance_requirements.documentType,
+            id: record.compliance_requirements.id,
+          },
+          reviewed_at: record.reviewedAt?.toISOString() ?? null,
+          status: record.status,
+          submitted_at: record.submittedAt.toISOString(),
+          version: record.version,
+        })),
+        requirements: requirements.map((requirement) => ({
+          blocking: requirement.blocking,
+          category_id: requirement.categoryId,
+          code: requirement.code,
+          document_type: requirement.documentType,
+          id: requirement.id,
+          version: requirement.version,
+        })),
+      };
+    });
+  }
+
+  public async replaceProductAttributes(
+    request: CatalogContext,
+    productId: string,
+    input: ReplaceProductAttributesInput,
+  ) {
+    const context = await this.admin.authorize(
+      request.headers,
+      request.storeId,
+      'store.catalog.manage',
+    );
+    return withStoreTransaction(this.database, context, async (transaction) => {
+      const before = await this.loadProduct(transaction, request.storeId, productId);
+      if (!before) throw new NotFoundException('Resource not found');
+      if (!['DRAFT', 'UNPUBLISHED'].includes(before.status)) {
+        throw new ConflictException('Only editable product drafts can change attributes');
+      }
+      if (before.version !== input.expected_version) {
+        throw new ConflictException('Product version conflict');
+      }
+      if (!before.attributeTemplateVersionId) {
+        throw new ConflictException('Product has no attribute template');
+      }
+
+      const definitions = await transaction.attributeDefinition.findMany({
+        include: { attribute_options: true },
+        where: {
+          storeId: request.storeId,
+          templateVersionId: before.attributeTemplateVersionId,
+        },
+      });
+      const definitionByCode = new Map(
+        definitions.map((definition) => [definition.code, definition]),
+      );
+      const prepared: Prisma.ProductAttributeValueCreateManyInput[] = [];
+      const valuesByDefinition = new Map<string, ProductAttributeValueInput[]>();
+
+      for (const value of input.values) {
+        const definition = definitionByCode.get(value.attribute_code);
+        if (!definition) throw new NotFoundException('Resource not found');
+        if (definition.purpose === 'SPECIFICATION') {
+          throw new ConflictException('Specification attributes must be maintained through SKUs');
+        }
+        if (definition.dataType !== value.data_type) {
+          throw new ConflictException('Product attribute data type does not match its definition');
+        }
+        const values = valuesByDefinition.get(definition.id) ?? [];
+        values.push(value);
+        valuesByDefinition.set(definition.id, values);
+
+        const base = {
+          attributeDefinitionId: definition.id,
+          productId,
+          storeId: request.storeId,
+        };
+        switch (value.data_type) {
+          case 'TEXT':
+            prepared.push({ ...base, locale: value.locale, textValue: value.value });
+            break;
+          case 'INTEGER':
+            prepared.push({ ...base, integerValue: BigInt(value.value) });
+            break;
+          case 'DECIMAL':
+            prepared.push({ ...base, decimalValue: value.value });
+            break;
+          case 'BOOLEAN':
+            prepared.push({ ...base, booleanValue: value.value });
+            break;
+          case 'DATE':
+            prepared.push({ ...base, dateValue: new Date(`${value.value}T00:00:00.000Z`) });
+            break;
+          case 'OPTION': {
+            const option = definition.attribute_options.find(
+              (candidate) => candidate.code === value.option_code,
+            );
+            if (!option) throw new NotFoundException('Resource not found');
+            if (option.status !== 'ACTIVE') {
+              throw new ConflictException('Product attribute option is not active');
+            }
+            prepared.push({ ...base, optionId: option.id });
+            break;
+          }
+        }
+      }
+
+      for (const definition of definitions) {
+        const values = valuesByDefinition.get(definition.id) ?? [];
+        if (definition.multiple) {
+          if (new Set(values.map(productAttributeValueKey)).size !== values.length) {
+            throw new ConflictException('Duplicate product attribute value');
+          }
+          continue;
+        }
+        if (definition.dataType === 'TEXT') {
+          const locales = values.map((value) =>
+            value.data_type === 'TEXT' ? value.locale : 'invalid',
+          );
+          if (new Set(locales).size !== locales.length) {
+            throw new ConflictException('Single-value text attributes allow one value per locale');
+          }
+        } else if (values.length > 1) {
+          throw new ConflictException('Single-value attributes allow only one value');
+        }
+      }
+
+      await transaction.productAttributeValue.deleteMany({
+        where: {
+          attribute_definitions: { purpose: { not: 'SPECIFICATION' } },
+          productId,
+          storeId: request.storeId,
+        },
+      });
+      if (prepared.length > 0) {
+        await transaction.productAttributeValue.createMany({ data: prepared });
+      }
+      const updated = await transaction.product.updateMany({
+        data: { updatedBy: context.actor.id, version: { increment: 1 } },
+        where: {
+          id: productId,
+          status: { in: ['DRAFT', 'UNPUBLISHED'] },
+          storeId: request.storeId,
+          version: input.expected_version,
+        },
+      });
+      if (updated.count !== 1) throw new ConflictException('Product version conflict');
+
+      const after = await this.loadProduct(transaction, request.storeId, productId);
+      await this.admin.writeAudit(transaction, context, {
+        action: 'catalog.product.attributes_replaced',
+        after,
+        before,
+        targetId: productId,
+        targetType: 'product',
+      });
+      const editor = await this.loadAttributeEditor(transaction, request.storeId, productId);
+      if (!editor) throw new NotFoundException('Resource not found');
+      return editor;
+    });
   }
 
   public async getProductImportTemplate(request: CatalogContext): Promise<Buffer> {
@@ -1280,7 +1528,9 @@ export class ProductAdminService {
         brands: true,
         categories: true,
         compliance_records: { include: { compliance_requirements: true } },
-        product_attribute_values: { include: { attribute_definitions: true } },
+        product_attribute_values: {
+          include: { attribute_definitions: true, attribute_options: true },
+        },
         product_localizations: true,
         product_media: { include: { media_assets: true }, orderBy: { sortOrder: 'asc' } },
         product_secondary_categories: true,
@@ -1294,6 +1544,125 @@ export class ProductAdminService {
       },
       where: { storeId_id: { id: productId, storeId } },
     });
+  }
+
+  private async loadAttributeEditor(
+    transaction: StoreTransaction,
+    storeId: string,
+    productId: string,
+  ) {
+    const product = await transaction.product.findUnique({
+      select: { attributeTemplateVersionId: true, id: true, status: true, version: true },
+      where: { storeId_id: { id: productId, storeId } },
+    });
+    if (!product) return null;
+    if (!product.attributeTemplateVersionId) {
+      throw new ConflictException('Product has no attribute template');
+    }
+    const [template, values] = await Promise.all([
+      transaction.attributeTemplateVersion.findUnique({
+        where: {
+          storeId_id: { id: product.attributeTemplateVersionId, storeId },
+        },
+      }),
+      transaction.productAttributeValue.findMany({
+        include: { attribute_definitions: true, attribute_options: true },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        where: {
+          attribute_definitions: {
+            purpose: { not: 'SPECIFICATION' },
+            templateVersionId: product.attributeTemplateVersionId,
+          },
+          productId,
+          storeId,
+        },
+      }),
+    ]);
+    if (!template) throw new ConflictException('Product attribute template is unavailable');
+    const definitions = await transaction.attributeDefinition.findMany({
+      include: {
+        attribute_options: {
+          orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
+          where: { status: 'ACTIVE' },
+        },
+      },
+      orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
+      where: {
+        purpose: { not: 'SPECIFICATION' },
+        storeId,
+        templateVersionId: product.attributeTemplateVersionId,
+      },
+    });
+    return {
+      definitions: definitions.map((definition) => ({
+        code: definition.code,
+        data_type: definition.dataType,
+        filterable: definition.filterable,
+        labels: {
+          en: definition.labelEn,
+          vi: definition.labelVi,
+          zh: definition.labelZh,
+        },
+        multiple: definition.multiple,
+        options: definition.attribute_options.map((option) => ({
+          code: option.code,
+          labels: { en: option.labelEn, vi: option.labelVi, zh: option.labelZh },
+          sort_order: option.sortOrder,
+        })),
+        purpose: definition.purpose,
+        required: definition.required,
+        sort_order: definition.sortOrder,
+        unit: definition.unit,
+        validation_rules: definition.validationRules,
+      })),
+      editable: ['DRAFT', 'UNPUBLISHED'].includes(product.status),
+      product_id: product.id,
+      product_status: product.status,
+      product_version: product.version,
+      template_version: { id: template.id, name: template.name, version: template.version },
+      values: values.map((value) => {
+        const common = {
+          attribute_code: value.attribute_definitions.code,
+          data_type: value.attribute_definitions.dataType,
+        };
+        switch (value.attribute_definitions.dataType) {
+          case 'TEXT':
+            if (value.locale === null || value.textValue === null) {
+              throw new ConflictException('Stored product attribute value is inconsistent');
+            }
+            return { ...common, locale: value.locale, value: value.textValue };
+          case 'INTEGER':
+            if (
+              value.integerValue === null ||
+              value.integerValue > BigInt(Number.MAX_SAFE_INTEGER) ||
+              value.integerValue < BigInt(Number.MIN_SAFE_INTEGER)
+            ) {
+              throw new ConflictException('Stored product attribute value is inconsistent');
+            }
+            return { ...common, value: Number(value.integerValue) };
+          case 'DECIMAL':
+            if (value.decimalValue === null) {
+              throw new ConflictException('Stored product attribute value is inconsistent');
+            }
+            return { ...common, value: value.decimalValue.toString() };
+          case 'BOOLEAN':
+            if (value.booleanValue === null) {
+              throw new ConflictException('Stored product attribute value is inconsistent');
+            }
+            return { ...common, value: value.booleanValue };
+          case 'DATE':
+            if (value.dateValue === null) {
+              throw new ConflictException('Stored product attribute value is inconsistent');
+            }
+            return { ...common, value: value.dateValue.toISOString().slice(0, 10) };
+          case 'OPTION':
+            if (value.attribute_options === null || value.optionId === null) {
+              throw new ConflictException('Stored product attribute value is inconsistent');
+            }
+            return { ...common, option_code: value.attribute_options.code };
+        }
+      }),
+    };
   }
 
   private async publicationDecision(
@@ -1345,9 +1714,42 @@ export class ProductAdminService {
     });
     const vietnamese = product.product_localizations.find((item) => item.locale === 'vi');
     const description = vietnamese?.descriptionDocument as { value?: unknown } | undefined;
-    const skuAttributeCodes = product.skus.flatMap((sku) =>
-      sku.sku_option_values.map((item) => item.attribute_definitions.code),
-    );
+    const skuAttributeCodes = product.skus
+      .filter((sku) => sku.status === 'ACTIVE')
+      .flatMap((sku) =>
+        sku.sku_option_values.flatMap((item) =>
+          item.attribute_definitions.templateVersionId === product.attributeTemplateVersionId &&
+          item.attribute_definitions.purpose === 'SPECIFICATION' &&
+          item.attribute_options.status === 'ACTIVE'
+            ? [item.attribute_definitions.code]
+            : [],
+        ),
+      );
+    const productAttributeCodes = product.product_attribute_values.flatMap((value) => {
+      const definition = value.attribute_definitions;
+      if (
+        definition.templateVersionId !== product.attributeTemplateVersionId ||
+        definition.purpose === 'SPECIFICATION'
+      ) {
+        return [];
+      }
+      switch (definition.dataType) {
+        case 'TEXT':
+          return value.locale === 'vi' && value.textValue?.trim() ? [definition.code] : [];
+        case 'INTEGER':
+          return value.integerValue === null ? [] : [definition.code];
+        case 'DECIMAL':
+          return value.decimalValue === null ? [] : [definition.code];
+        case 'BOOLEAN':
+          return value.booleanValue === null ? [] : [definition.code];
+        case 'DATE':
+          return value.dateValue === null ? [] : [definition.code];
+        case 'OPTION':
+          return value.optionId !== null && value.attribute_options?.status === 'ACTIVE'
+            ? [definition.code]
+            : [];
+      }
+    });
     return evaluateProductPublication({
       brandEnabled: product.brands.status === 'ACTIVE',
       complianceRecords: latestRecords,
@@ -1356,12 +1758,7 @@ export class ProductAdminService {
       primaryMediaReady: product.product_media.some(
         (item) => item.purpose === 'PRIMARY' && item.media_assets.status === 'READY',
       ),
-      productAttributeCodes: [
-        ...new Set([
-          ...product.product_attribute_values.map((item) => item.attribute_definitions.code),
-          ...skuAttributeCodes,
-        ]),
-      ],
+      productAttributeCodes: [...new Set([...productAttributeCodes, ...skuAttributeCodes])],
       requiredAttributeCodes: definitions.map((item) => item.code),
       requiredComplianceCodes: requirements.map((item) => item.code),
       skus: product.skus.map((sku) => ({

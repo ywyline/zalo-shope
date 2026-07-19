@@ -6,6 +6,7 @@ import {
   batchMoveProductsSchema,
   catalogCodeSchema,
   catalogLocalizationsSchema,
+  complianceOverviewQuerySchema,
   consentEventSchema,
   createAttributeTemplateSchema,
   createBrandSchema,
@@ -16,6 +17,7 @@ import {
   publishPageSchema,
   publicBrandListQuerySchema,
   publicProductListQuerySchema,
+  replaceProductAttributesSchema,
   replacePageDraftSchema,
   mediaUploadInputSchema,
   memberPreferenceSchema,
@@ -51,6 +53,17 @@ describe('M1 API contracts', () => {
 });
 
 describe('M2 catalog API contracts', () => {
+  it('bounds and validates the M2.8.2 compliance overview query', () => {
+    expect(complianceOverviewQuerySchema.parse({ limit: '25', status: 'PENDING_REVIEW' })).toEqual({
+      limit: 25,
+      status: 'PENDING_REVIEW',
+    });
+    expect(() => complianceOverviewQuerySchema.parse({ limit: '0' })).toThrow();
+    expect(() => complianceOverviewQuerySchema.parse({ limit: '101' })).toThrow();
+    expect(() => complianceOverviewQuerySchema.parse({ product_id: 'foreign' })).toThrow();
+    expect(() => complianceOverviewQuerySchema.parse({ include_files: 'true' })).toThrow();
+  });
+
   it('bounds M2.7 batch commands and parses dry-run without Boolean coercion surprises', () => {
     const product = {
       expected_version: 1,
@@ -162,6 +175,56 @@ describe('M2 catalog API contracts', () => {
         enabled: true,
         option_values: [],
         sale_price_vnd: 249_000.5,
+      }),
+    ).toThrow();
+  });
+
+  it('validates typed product attribute replacement values without numeric precision loss', () => {
+    const parsed = replaceProductAttributesSchema.parse({
+      expected_version: 3,
+      values: [
+        { attribute_code: 'benefit', data_type: 'TEXT', locale: 'vi', value: '  Dịu nhẹ  ' },
+        { attribute_code: 'spf', data_type: 'INTEGER', value: 50 },
+        { attribute_code: 'volume', data_type: 'DECIMAL', value: '30.50000000' },
+        { attribute_code: 'vegan', data_type: 'BOOLEAN', value: false },
+        { attribute_code: 'available-on', data_type: 'DATE', value: '2026-07-19' },
+        { attribute_code: 'finish', data_type: 'OPTION', option_code: 'matte' },
+      ],
+    });
+    expect(parsed.values).toHaveLength(6);
+    expect(parsed.values[0]).toEqual({
+      attribute_code: 'benefit',
+      data_type: 'TEXT',
+      locale: 'vi',
+      value: 'Dịu nhẹ',
+    });
+
+    expect(() =>
+      replaceProductAttributesSchema.parse({
+        expected_version: 3,
+        values: [{ attribute_code: 'volume', data_type: 'DECIMAL', value: 30.5 }],
+      }),
+    ).toThrow();
+    expect(() =>
+      replaceProductAttributesSchema.parse({
+        expected_version: 3,
+        values: [{ attribute_code: 'available-on', data_type: 'DATE', value: '2026-02-30' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      replaceProductAttributesSchema.parse({
+        expected_version: 3,
+        values: [
+          { attribute_code: 'benefit', data_type: 'TEXT', locale: 'vi', value: 'Dịu nhẹ' },
+          { attribute_code: 'benefit', data_type: 'TEXT', locale: 'vi', value: 'Dịu nhẹ' },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      replaceProductAttributesSchema.parse({
+        expected_version: 3,
+        store_id: '10000000-0000-4000-8000-000000000001',
+        values: [],
       }),
     ).toThrow();
   });

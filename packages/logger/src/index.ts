@@ -27,6 +27,11 @@ export function redactSensitiveData(value: unknown): unknown {
     return value.map((item) => redactSensitiveData(item));
   }
   if (value !== null && typeof value === 'object') {
+    const jsonBacked = value as { toJSON?: () => unknown };
+    if (typeof jsonBacked.toJSON === 'function') {
+      const serialized = jsonBacked.toJSON();
+      if (serialized !== value) return redactSensitiveData(serialized);
+    }
     return Object.fromEntries(
       Object.entries(value).map(([key, nestedValue]) => [
         key,

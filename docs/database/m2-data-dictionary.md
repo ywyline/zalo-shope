@@ -1,8 +1,8 @@
 # M2 商品内容数据字典与迁移设计
 
-> 状态：M2.1 已冻结；M2.2 已按本文实现并验证
+> 状态：M2.1 已冻结；M2.2 已按本文实现并验证；M2.8.1 已补充属性编辑语义
 >
-> 日期：2026-07-17
+> 日期：2026-07-19
 >
 > 适用范围：品牌、类目、属性模板、商品、SKU、媒体、合规、商品版本与页面装修
 
@@ -162,7 +162,17 @@
 
 ### 5.4 `product_attribute_values`
 
-字段：`id`、`store_id`、`product_id`、`attribute_definition_id`、`locale`（仅本地化文本值使用）、`text_value`、`integer_value`、`decimal_value`、`boolean_value`、`date_value`、`option_id`。检查约束要求每行只设置一种值类型，且与定义 `data_type` 一致。多值属性允许多行；单值属性用部分唯一索引限制。
+字段：`id`、`store_id`、`product_id`、`attribute_definition_id`、`locale`（仅本地化文本值使用）、`text_value`、`integer_value bigint`、`decimal_value decimal(24,8)`、`boolean_value`、`date_value date`、`option_id`。数据库检查约束要求每行六种值列恰好设置一种；商品、定义和选项使用包含 `store_id` 的复合外键，且选项复合外键同时保证其属于对应定义。
+
+当前 schema 没有跨表检查定义 `data_type` 的触发器，也没有单值部分唯一索引。M2.8.1 的唯一受支持写路径使用 `PUT /v1/admin/catalog/products/{productId}/attributes` 在同一商城事务内执行以下校验和全量替换：
+
+- 定义必须属于商品固定的模板版本且用途不是 `SPECIFICATION`；规格值只通过 SKU 命令维护。
+- 请求判别类型必须与定义 `data_type` 一致；有限选项必须属于定义且处于 `ACTIVE`。
+- `TEXT` 强制携带 `vi`/`zh`/`en`；单值文本每种语言最多一行，其他单值类型最多一行；多值允许不同值但拒绝完全重复项。
+- `INTEGER` 只接受 JavaScript 安全整数；`DECIMAL` 只接受最多 16 位整数、8 位小数的定点字符串；`DATE` 只接受可往返的真实 `YYYY-MM-DD` 日期。
+- 删除旧非规格值、写入新值、以 `expected_version` 条件递增商品版本和 `catalog.product.attributes_replaced` 前后快照审计在同一事务内完成；并发冲突整体回滚。
+
+`GET .../attributes` 只返回同商城商品的非规格定义、启用选项和当前值，不包含成本价。必填 `TEXT` 只有存在非空越南语值才满足发布门禁；其他必填非规格类型需要至少一个类型正确的值，必填规格仍由启用 SKU 选项满足。`validation_rules` 的正式结构尚未版本化，M2.8.1 不对任意 JSON 静默解释；引入范围/正则等规则前必须先冻结规则 schema 和兼容策略。
 
 ### 5.5 `skus`
 

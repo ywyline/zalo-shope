@@ -170,7 +170,22 @@ export class CatalogAdminService {
     );
     return withStoreTransaction(this.database, context, async (transaction) => {
       const categories = await transaction.category.findMany({
-        include: { category_localizations: true },
+        include: {
+          category_attribute_templates: {
+            include: {
+              attribute_template_versions: {
+                select: {
+                  id: true,
+                  name: true,
+                  status: true,
+                  version: true,
+                  attribute_templates: { select: { code: true, id: true } },
+                },
+              },
+            },
+          },
+          category_localizations: true,
+        },
         orderBy: [{ depth: 'asc' }, { sortOrder: 'asc' }, { id: 'asc' }],
       });
       return categories
