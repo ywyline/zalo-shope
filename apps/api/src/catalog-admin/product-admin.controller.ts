@@ -3,27 +3,38 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Headers,
   Inject,
   Param,
   Post,
   Put,
   Query,
+  StreamableFile,
   UnauthorizedException,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
+  batchDisableProductsSchema,
+  batchMoveProductsSchema,
   confirmMediaUploadSchema,
   createProductDraftSchema,
   mediaUploadInputSchema,
+  productImportQuerySchema,
   productMediaInputSchema,
+  productVersionNumberSchema,
   productVersionCommandSchema,
   replaceProductSkusSchema,
   reviewComplianceRecordSchema,
   submitComplianceRecordSchema,
+  uuidSchema,
 } from '@zalo-shop/contracts';
 import type { z } from 'zod';
 
-import { ProductAdminService } from './product-admin.service';
+import { PRODUCT_IMPORT_MAX_BYTES } from './product-import';
+import { ProductAdminService, type ProductImportUpload } from './product-admin.service';
 
 function bearer(value: string | undefined): string {
   if (!value?.startsWith('Bearer ')) throw new UnauthorizedException('Bearer token is required');
@@ -65,6 +76,102 @@ export class ProductAdminController {
     @Headers('x-access-reason') accessReason: string | undefined,
   ): Promise<unknown> {
     return this.products.listProducts(context(authorization, storeCode, accessReason, storeId));
+  }
+
+  @Get('imports/template.csv')
+  @Header('Cache-Control', 'no-store')
+  public async importTemplate(
+    @Query('store_id') storeId: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+  ): Promise<StreamableFile> {
+    const template = await this.products.getProductImportTemplate(
+      context(authorization, storeCode, accessReason, storeId),
+    );
+    return new StreamableFile(template, {
+      disposition: 'attachment; filename="product-import-template.csv"',
+      type: 'text/csv; charset=utf-8',
+    });
+  }
+
+  @Post('imports/csv')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: PRODUCT_IMPORT_MAX_BYTES, files: 1 },
+    }),
+  )
+  public importCsv(
+    @Query('store_id') storeId: string | undefined,
+    @Query('dry_run') dryRun: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @UploadedFile() file: ProductImportUpload | undefined,
+  ): Promise<unknown> {
+    return this.products.importProducts(
+      context(authorization, storeCode, accessReason, storeId),
+      parse(productImportQuerySchema, { dry_run: dryRun ?? 'true' }),
+      file,
+    );
+  }
+
+  @Get(':productId/versions')
+  public versions(
+    @Param('productId') productId: string,
+    @Query('store_id') storeId: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+  ): Promise<unknown> {
+    return this.products.listProductVersions(
+      context(authorization, storeCode, accessReason, storeId),
+      parse(uuidSchema, productId),
+    );
+  }
+
+  @Get(':productId/versions/:version')
+  public version(
+    @Param('productId') productId: string,
+    @Param('version') version: string,
+    @Query('store_id') storeId: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+  ): Promise<unknown> {
+    return this.products.getProductVersion(
+      context(authorization, storeCode, accessReason, storeId),
+      parse(uuidSchema, productId),
+      parse(productVersionNumberSchema, version),
+    );
+  }
+
+  @Post('batch/disable')
+  public batchDisable(
+    @Query('store_id') storeId: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    return this.products.batchDisableProducts(
+      context(authorization, storeCode, accessReason, storeId),
+      parse(batchDisableProductsSchema, body),
+    );
+  }
+
+  @Post('batch/move')
+  public batchMove(
+    @Query('store_id') storeId: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    return this.products.batchMoveProducts(
+      context(authorization, storeCode, accessReason, storeId),
+      parse(batchMoveProductsSchema, body),
+    );
   }
 
   @Post()

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Inject,
@@ -8,9 +9,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type {
+  BatchDisableProductsInput,
+  BatchMoveProductsInput,
   ConfirmMediaUploadInput,
   CreateProductDraftInput,
   MediaUploadInput,
+  ProductImportQuery,
   ProductMediaInput,
   ReplaceProductSkusInput,
   ReviewComplianceRecordInput,
@@ -18,16 +22,73 @@ import type {
 } from '@zalo-shop/contracts';
 import type { Prisma, PrismaClient, StoreTransaction } from '@zalo-shop/database';
 import { withStoreTransaction } from '@zalo-shop/database';
-import { canonicalSkuCombinationKey, evaluateProductPublication } from '@zalo-shop/domain';
+import {
+  canonicalSkuCombinationKey,
+  evaluateProductPublication,
+  type StoreContext,
+} from '@zalo-shop/domain';
 import type { MediaStorageProvider } from '@zalo-shop/integrations';
 
 import { AdminService, type AdminHeaders } from '../admin/admin.service';
 import { DATABASE_CLIENT, MEDIA_STORAGE_PROVIDER } from '../auth/auth.tokens';
+import {
+  PRODUCT_IMPORT_MAX_BYTES,
+  ProductImportFileError,
+  parseProductImportCsv,
+  productImportTemplateCsv,
+  type ParsedProductImportRow,
+} from './product-import';
 
 type CatalogContext = { headers: AdminHeaders; storeId: string };
+export type ProductImportUpload = {
+  buffer: Buffer;
+  mimetype: string;
+  originalname: string;
+  size: number;
+};
+
+type ImportGroup = {
+  productCode: string;
+  rows: Array<
+    ParsedProductImportRow & {
+      product: NonNullable<ParsedProductImportRow['product']>;
+      sku: NonNullable<ParsedProductImportRow['sku']>;
+    }
+  >;
+};
+
+type ImportRowReport = {
+  errors: Array<{ code: string; message: string }>;
+  line: number;
+  product_code: string;
+  product_id?: string;
+  status: 'FAILED' | 'IMPORTED' | 'VALIDATED';
+};
+
+class ImportGroupError extends Error {
+  public constructor(
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ImportGroupError';
+  }
+}
 
 function isUniqueConflict(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
+}
+
+function batchFailure(
+  error: unknown,
+): { code: 'CONFLICT' | 'RESOURCE_NOT_FOUND'; message: string } | null {
+  if (error instanceof NotFoundException) {
+    return { code: 'RESOURCE_NOT_FOUND', message: 'Resource not found' };
+  }
+  if (error instanceof ConflictException) {
+    return { code: 'CONFLICT', message: 'Product state or version conflict' };
+  }
+  return null;
 }
 
 function jsonSafe(value: unknown): unknown {
@@ -39,6 +100,18 @@ function jsonSafe(value: unknown): unknown {
       Object.entries(value as Record<string, unknown>)
         .sort(([left], [right]) => left.localeCompare(right, 'en'))
         .map(([key, item]) => [key, jsonSafe(item)]),
+    );
+  }
+  return value;
+}
+
+function versionSnapshotForCatalogReader(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(versionSnapshotForCatalogReader);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => !['costPriceVnd', 'cost_price_vnd'].includes(key))
+        .map(([key, item]) => [key, versionSnapshotForCatalogReader(item)]),
     );
   }
   return value;
@@ -71,6 +144,355 @@ export class ProductAdminService {
         }),
       ),
     }));
+  }
+
+  public async getProductImportTemplate(request: CatalogContext): Promise<Buffer> {
+    await this.admin.authorize(request.headers, request.storeId, 'store.catalog.read');
+    return productImportTemplateCsv();
+  }
+
+  public async importProducts(
+    request: CatalogContext,
+    query: ProductImportQuery,
+    upload: ProductImportUpload | undefined,
+  ) {
+    const context = await this.admin.authorize(
+      request.headers,
+      request.storeId,
+      'store.catalog.manage',
+    );
+    if (!upload) throw new BadRequestException('A CSV file is required');
+    const acceptedTypes = new Set([
+      'application/csv',
+      'application/octet-stream',
+      'application/vnd.ms-excel',
+      'text/csv',
+      'text/plain',
+    ]);
+    if (
+      !upload.originalname.toLowerCase().endsWith('.csv') ||
+      !acceptedTypes.has(upload.mimetype.toLowerCase()) ||
+      upload.size !== upload.buffer.byteLength ||
+      upload.size > PRODUCT_IMPORT_MAX_BYTES
+    ) {
+      throw new BadRequestException('CSV file metadata is invalid');
+    }
+    let parsedRows: ParsedProductImportRow[];
+    try {
+      parsedRows = parseProductImportCsv(upload.buffer);
+    } catch (error) {
+      if (error instanceof ProductImportFileError) {
+        throw new BadRequestException(`Product import file error: ${error.code}`);
+      }
+      throw error;
+    }
+
+    const reports = new Map<number, ImportRowReport>();
+    const invalidProductCodes = new Set<string>();
+    const groups = new Map<string, ImportGroup>();
+    for (const row of parsedRows) {
+      if (row.issues.length > 0 || !row.product || !row.sku) {
+        if (row.productCode !== '') invalidProductCodes.add(row.productCode);
+        reports.set(row.line, {
+          errors: row.issues.map((issue) => ({ code: issue.code, message: issue.message })),
+          line: row.line,
+          product_code: row.productCode,
+          status: 'FAILED',
+        });
+        continue;
+      }
+      const group = groups.get(row.productCode) ?? { productCode: row.productCode, rows: [] };
+      group.rows.push({ ...row, product: row.product, sku: row.sku });
+      groups.set(row.productCode, group);
+    }
+
+    const skuLines = new Map<string, number[]>();
+    for (const group of groups.values()) {
+      for (const row of group.rows) {
+        const lines = skuLines.get(row.sku.code) ?? [];
+        lines.push(row.line);
+        skuLines.set(row.sku.code, lines);
+      }
+    }
+    const duplicateSkuCodes = new Set(
+      [...skuLines.entries()].filter(([, lines]) => lines.length > 1).map(([code]) => code),
+    );
+
+    for (const group of groups.values()) {
+      if (
+        invalidProductCodes.has(group.productCode) ||
+        group.rows.some((row) => duplicateSkuCodes.has(row.sku.code))
+      ) {
+        const code = invalidProductCodes.has(group.productCode)
+          ? 'PRODUCT_GROUP_INVALID'
+          : 'DUPLICATE_SKU_IN_FILE';
+        for (const row of group.rows) {
+          reports.set(row.line, {
+            errors: [{ code, message: 'The complete product group must be corrected' }],
+            line: row.line,
+            product_code: row.productCode,
+            status: 'FAILED',
+          });
+        }
+        continue;
+      }
+      try {
+        const result = await withStoreTransaction(this.database, context, (transaction) =>
+          this.processProductImportGroup(transaction, context, group, query.dry_run),
+        );
+        for (const row of group.rows) {
+          reports.set(row.line, {
+            errors: [],
+            line: row.line,
+            product_code: row.productCode,
+            ...(result.productId === undefined ? {} : { product_id: result.productId }),
+            status: query.dry_run ? 'VALIDATED' : 'IMPORTED',
+          });
+        }
+      } catch (error) {
+        const failure =
+          error instanceof ImportGroupError
+            ? { code: error.code, message: error.message }
+            : isUniqueConflict(error)
+              ? { code: 'CODE_CONFLICT', message: 'Product or SKU code already exists' }
+              : null;
+        if (!failure) throw error;
+        for (const row of group.rows) {
+          reports.set(row.line, {
+            errors: [failure],
+            line: row.line,
+            product_code: row.productCode,
+            status: 'FAILED',
+          });
+        }
+      }
+    }
+
+    const rows = [...reports.values()].sort((left, right) => left.line - right.line);
+    const successfulProducts = new Set(
+      rows.filter((row) => row.status !== 'FAILED').map((row) => row.product_code),
+    );
+    const failedProducts = new Set(
+      rows
+        .filter((row) => row.status === 'FAILED' && row.product_code !== '')
+        .map((row) => row.product_code),
+    );
+    return {
+      dry_run: query.dry_run,
+      rows,
+      summary: {
+        products_failed: failedProducts.size,
+        products_imported: query.dry_run ? 0 : successfulProducts.size,
+        products_validated: query.dry_run ? successfulProducts.size : 0,
+        rows_failed: rows.filter((row) => row.status === 'FAILED').length,
+        rows_imported: rows.filter((row) => row.status === 'IMPORTED').length,
+        rows_total: rows.length,
+        rows_validated: rows.filter((row) => row.status === 'VALIDATED').length,
+      },
+    };
+  }
+
+  public async listProductVersions(request: CatalogContext, productId: string) {
+    const context = await this.admin.authorize(
+      request.headers,
+      request.storeId,
+      'store.catalog.read',
+    );
+    return withStoreTransaction(this.database, context, async (transaction) => {
+      const product = await transaction.product.findUnique({
+        select: { id: true },
+        where: { storeId_id: { id: productId, storeId: request.storeId } },
+      });
+      if (!product) throw new NotFoundException('Resource not found');
+      return {
+        items: jsonSafe(
+          await transaction.productVersion.findMany({
+            orderBy: { version: 'desc' },
+            select: {
+              contentHash: true,
+              createdAt: true,
+              createdBy: true,
+              publicationStatus: true,
+              publishedAt: true,
+              publishedBy: true,
+              version: true,
+              withdrawnAt: true,
+              withdrawnBy: true,
+            },
+            where: { productId, storeId: request.storeId },
+          }),
+        ),
+      };
+    });
+  }
+
+  public async getProductVersion(request: CatalogContext, productId: string, version: number) {
+    const context = await this.admin.authorize(
+      request.headers,
+      request.storeId,
+      'store.catalog.read',
+    );
+    return withStoreTransaction(this.database, context, async (transaction) => {
+      const item = await transaction.productVersion.findUnique({
+        where: {
+          storeId_productId_version: { productId, storeId: request.storeId, version },
+        },
+      });
+      if (!item) throw new NotFoundException('Resource not found');
+      return jsonSafe({ ...item, snapshot: versionSnapshotForCatalogReader(item.snapshot) });
+    });
+  }
+
+  public async batchDisableProducts(request: CatalogContext, input: BatchDisableProductsInput) {
+    const context = await this.admin.authorize(
+      request.headers,
+      request.storeId,
+      'store.catalog.publish',
+    );
+    const results = [];
+    for (const item of input.items) {
+      try {
+        const product = await withStoreTransaction(this.database, context, async (transaction) => {
+          const before = await this.loadProduct(transaction, request.storeId, item.product_id);
+          if (!before) throw new NotFoundException('Resource not found');
+          if (before.status === 'DISABLED' || before.version !== item.expected_version) {
+            throw new ConflictException('Product state or version conflict');
+          }
+          const update = await transaction.product.updateMany({
+            data: {
+              enabled: false,
+              status: 'DISABLED',
+              updatedBy: context.actor.id,
+              version: { increment: 1 },
+            },
+            where: {
+              id: item.product_id,
+              status: { not: 'DISABLED' },
+              storeId: request.storeId,
+              version: item.expected_version,
+            },
+          });
+          if (update.count !== 1) throw new ConflictException('Product version conflict');
+          const after = await this.loadProduct(transaction, request.storeId, item.product_id);
+          await this.admin.writeAudit(transaction, context, {
+            action: 'catalog.product.disabled',
+            after,
+            before,
+            targetId: item.product_id,
+            targetType: 'product',
+          });
+          return after!;
+        });
+        results.push({
+          product_id: item.product_id,
+          status: 'SUCCEEDED',
+          version: product.version,
+        });
+      } catch (error) {
+        const failure = batchFailure(error);
+        if (!failure) throw error;
+        results.push({ error: failure, product_id: item.product_id, status: 'FAILED' });
+      }
+    }
+    return {
+      results,
+      summary: {
+        failed: results.filter((item) => item.status === 'FAILED').length,
+        succeeded: results.filter((item) => item.status === 'SUCCEEDED').length,
+        total: results.length,
+      },
+    };
+  }
+
+  public async batchMoveProducts(request: CatalogContext, input: BatchMoveProductsInput) {
+    const context = await this.admin.authorize(
+      request.headers,
+      request.storeId,
+      'store.catalog.manage',
+    );
+    await withStoreTransaction(this.database, context, async (transaction) => {
+      await this.loadImportCategoryBinding(
+        transaction,
+        request.storeId,
+        input.main_category_id,
+        'id',
+      );
+    });
+    const results = [];
+    for (const item of input.items) {
+      try {
+        const product = await withStoreTransaction(this.database, context, async (transaction) => {
+          const before = await this.loadProduct(transaction, request.storeId, item.product_id);
+          if (!before) throw new NotFoundException('Resource not found');
+          if (
+            !['DRAFT', 'UNPUBLISHED'].includes(before.status) ||
+            before.version !== item.expected_version
+          ) {
+            throw new ConflictException('Product state or version conflict');
+          }
+          const target = await this.loadImportCategoryBinding(
+            transaction,
+            request.storeId,
+            input.main_category_id,
+            'id',
+          );
+          if (
+            before.attributeTemplateVersionId !== target.templateVersionId &&
+            (before.skus.length > 0 || before.product_attribute_values.length > 0)
+          ) {
+            throw new ConflictException('Target category uses an incompatible attribute template');
+          }
+          const update = await transaction.product.updateMany({
+            data: {
+              attributeTemplateVersionId: target.templateVersionId,
+              mainCategoryId: target.categoryId,
+              updatedBy: context.actor.id,
+              version: { increment: 1 },
+            },
+            where: {
+              id: item.product_id,
+              status: { in: ['DRAFT', 'UNPUBLISHED'] },
+              storeId: request.storeId,
+              version: item.expected_version,
+            },
+          });
+          if (update.count !== 1) throw new ConflictException('Product version conflict');
+          await transaction.productSecondaryCategory.deleteMany({
+            where: {
+              categoryId: target.categoryId,
+              productId: item.product_id,
+              storeId: request.storeId,
+            },
+          });
+          const after = await this.loadProduct(transaction, request.storeId, item.product_id);
+          await this.admin.writeAudit(transaction, context, {
+            action: 'catalog.product.main_category_moved',
+            after,
+            before,
+            targetId: item.product_id,
+            targetType: 'product',
+          });
+          return after!;
+        });
+        results.push({
+          product_id: item.product_id,
+          status: 'SUCCEEDED',
+          version: product.version,
+        });
+      } catch (error) {
+        const failure = batchFailure(error);
+        if (!failure) throw error;
+        results.push({ error: failure, product_id: item.product_id, status: 'FAILED' });
+      }
+    }
+    return {
+      results,
+      summary: {
+        failed: results.filter((item) => item.status === 'FAILED').length,
+        succeeded: results.filter((item) => item.status === 'SUCCEEDED').length,
+        total: results.length,
+      },
+    };
   }
 
   public async createProduct(request: CatalogContext, input: CreateProductDraftInput) {
@@ -556,6 +978,215 @@ export class ProductAdminService {
 
   public async publishProduct(request: CatalogContext, productId: string, expectedVersion: number) {
     return this.transitionProduct(request, productId, expectedVersion, true);
+  }
+
+  private async processProductImportGroup(
+    transaction: StoreTransaction,
+    context: StoreContext,
+    group: ImportGroup,
+    dryRun: boolean,
+  ): Promise<{ productId?: string }> {
+    const first = group.rows[0];
+    if (!first) throw new ImportGroupError('PRODUCT_GROUP_EMPTY', 'Product group has no rows');
+    if (group.rows.length > 500) {
+      throw new ImportGroupError(
+        'SKU_LIMIT_EXCEEDED',
+        'A product cannot import more than 500 SKUs',
+      );
+    }
+    const productSignature = JSON.stringify(first.product);
+    if (group.rows.some((row) => JSON.stringify(row.product) !== productSignature)) {
+      throw new ImportGroupError(
+        'PRODUCT_FIELDS_MISMATCH',
+        'Product fields must be identical on every SKU row',
+      );
+    }
+    const [brand, existingProduct, existingSkus] = await Promise.all([
+      transaction.brand.findUnique({
+        where: { storeId_code: { code: first.product.brandCode, storeId: context.storeId } },
+      }),
+      transaction.product.findUnique({
+        where: { storeId_code: { code: group.productCode, storeId: context.storeId } },
+      }),
+      transaction.sku.findMany({
+        select: { code: true },
+        where: { code: { in: group.rows.map((row) => row.sku.code) }, storeId: context.storeId },
+      }),
+    ]);
+    if (!brand) throw new ImportGroupError('REFERENCE_NOT_FOUND', 'Brand was not found');
+    if (brand.status !== 'ACTIVE') {
+      throw new ImportGroupError('REFERENCE_INVALID', 'Brand must be active');
+    }
+    if (existingProduct || existingSkus.length > 0) {
+      throw new ImportGroupError('CODE_CONFLICT', 'Product or SKU code already exists');
+    }
+    const mainCategory = await this.loadImportCategoryBinding(
+      transaction,
+      context.storeId,
+      first.product.mainCategoryCode,
+      'code',
+    );
+    const secondaryCategories = await transaction.category.findMany({
+      where: {
+        code: { in: first.product.secondaryCategoryCodes },
+        storeId: context.storeId,
+      },
+    });
+    if (secondaryCategories.length !== first.product.secondaryCategoryCodes.length) {
+      throw new ImportGroupError('REFERENCE_NOT_FOUND', 'A secondary category was not found');
+    }
+    if (secondaryCategories.some((category) => category.status !== 'ACTIVE')) {
+      throw new ImportGroupError('REFERENCE_INVALID', 'Secondary categories must be active');
+    }
+    const definitions = await transaction.attributeDefinition.findMany({
+      include: { attribute_options: true },
+      where: {
+        purpose: 'SPECIFICATION',
+        storeId: context.storeId,
+        templateVersionId: mainCategory.templateVersionId,
+      },
+    });
+    const definitionByCode = new Map(
+      definitions.map((definition) => [definition.code, definition]),
+    );
+    const prepared = group.rows.map((row) => {
+      const key = canonicalSkuCombinationKey(
+        row.sku.option_values.map((option) => ({
+          attributeCode: option.attribute_code,
+          optionCode: option.option_code,
+        })),
+      );
+      const selections = row.sku.option_values.map((selection) => {
+        const definition = definitionByCode.get(selection.attribute_code);
+        const option = definition?.attribute_options.find(
+          (candidate) => candidate.code === selection.option_code,
+        );
+        if (!definition || !option || option.status !== 'ACTIVE') {
+          throw new ImportGroupError(
+            'SKU_OPTIONS_INVALID',
+            `SKU options are invalid at line ${row.line}`,
+          );
+        }
+        return { attributeDefinitionId: definition.id, optionId: option.id };
+      });
+      const selectedDefinitionIds = new Set(
+        selections.map((selection) => selection.attributeDefinitionId),
+      );
+      if (
+        definitions.some(
+          (definition) => definition.required && !selectedDefinitionIds.has(definition.id),
+        )
+      ) {
+        throw new ImportGroupError(
+          'SKU_OPTIONS_INVALID',
+          `Required SKU options are missing at line ${row.line}`,
+        );
+      }
+      return { key, row, selections };
+    });
+    if (new Set(prepared.map((item) => item.key)).size !== prepared.length) {
+      throw new ImportGroupError(
+        'DUPLICATE_SKU_COMBINATION',
+        'SKU option combinations must be unique',
+      );
+    }
+    if (dryRun) return {};
+
+    const created = await transaction.product.create({
+      data: {
+        attributeTemplateVersionId: mainCategory.templateVersionId,
+        brandId: brand.id,
+        code: group.productCode,
+        createdBy: context.actor.id,
+        mainCategoryId: mainCategory.categoryId,
+        storeId: context.storeId,
+        updatedBy: context.actor.id,
+      },
+    });
+    await transaction.productLocalization.createMany({
+      data: first.product.create.localizations.map((localization) => ({
+        descriptionDocument: { type: 'text', value: localization.description ?? '' },
+        locale: localization.locale,
+        name: localization.name,
+        productId: created.id,
+        sellingPoints: localization.selling_points,
+        storeId: context.storeId,
+      })),
+    });
+    await transaction.productSecondaryCategory.createMany({
+      data: secondaryCategories.map((category) => ({
+        categoryId: category.id,
+        productId: created.id,
+        storeId: context.storeId,
+      })),
+    });
+    for (const item of prepared) {
+      const sku = await transaction.sku.create({
+        data: {
+          barcode: item.row.sku.barcode,
+          code: item.row.sku.code,
+          costPriceVnd: item.row.sku.cost_price_vnd,
+          createdBy: context.actor.id,
+          marketPriceVnd: item.row.sku.market_price_vnd,
+          optionCombinationHash: createHash('sha256').update(item.key).digest('hex'),
+          optionCombinationKey: item.key,
+          productId: created.id,
+          salePriceVnd: item.row.sku.sale_price_vnd,
+          status: 'ACTIVE',
+          storeId: context.storeId,
+          updatedBy: context.actor.id,
+          weightGrams: item.row.sku.weight_grams,
+        },
+      });
+      await transaction.skuOptionValue.createMany({
+        data: item.selections.map((selection) => ({
+          ...selection,
+          skuId: sku.id,
+          storeId: context.storeId,
+        })),
+      });
+    }
+    const after = await this.loadProduct(transaction, context.storeId, created.id);
+    await this.admin.writeAudit(transaction, context, {
+      action: 'catalog.product.imported',
+      after,
+      targetId: created.id,
+      targetType: 'product',
+    });
+    return { productId: created.id };
+  }
+
+  private async loadImportCategoryBinding(
+    transaction: StoreTransaction,
+    storeId: string,
+    reference: string,
+    by: 'code' | 'id',
+  ): Promise<{ categoryId: string; templateVersionId: string }> {
+    const category =
+      by === 'code'
+        ? await transaction.category.findUnique({
+            where: { storeId_code: { code: reference, storeId } },
+          })
+        : await transaction.category.findUnique({
+            where: { storeId_id: { id: reference, storeId } },
+          });
+    const fail = (code: 'REFERENCE_INVALID' | 'REFERENCE_NOT_FOUND', message: string): never => {
+      if (by === 'code') throw new ImportGroupError(code, message);
+      if (code === 'REFERENCE_NOT_FOUND') throw new NotFoundException('Resource not found');
+      throw new ConflictException(message);
+    };
+    if (!category) return fail('REFERENCE_NOT_FOUND', 'Main category was not found');
+    if (category.status !== 'ACTIVE' || category.depth !== 2) {
+      return fail('REFERENCE_INVALID', 'Main category must be an active leaf category');
+    }
+    const binding = await transaction.categoryAttributeTemplate.findFirst({
+      include: { attribute_template_versions: true },
+      where: { categoryId: category.id, isPrimary: true, storeId },
+    });
+    if (!binding || binding.attribute_template_versions.status !== 'ACTIVE') {
+      return fail('REFERENCE_INVALID', 'Main category requires an active attribute template');
+    }
+    return { categoryId: category.id, templateVersionId: binding.templateVersionId };
   }
 
   private async transitionProduct(

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   accessReasonSchema,
+  batchDisableProductsSchema,
+  batchMoveProductsSchema,
   catalogCodeSchema,
   catalogLocalizationsSchema,
   consentEventSchema,
@@ -10,6 +12,7 @@ import {
   createCategorySchema,
   createProductDraftSchema,
   pageModuleInputSchema,
+  productImportQuerySchema,
   publishPageSchema,
   publicBrandListQuerySchema,
   publicProductListQuerySchema,
@@ -48,6 +51,27 @@ describe('M1 API contracts', () => {
 });
 
 describe('M2 catalog API contracts', () => {
+  it('bounds M2.7 batch commands and parses dry-run without Boolean coercion surprises', () => {
+    const product = {
+      expected_version: 1,
+      product_id: '11111111-1111-4111-8111-111111111111',
+    };
+    expect(productImportQuerySchema.parse({ dry_run: 'false' })).toEqual({ dry_run: false });
+    expect(
+      batchDisableProductsSchema.parse({ confirmation_code: 'DISABLE', items: [product] }),
+    ).toMatchObject({ items: [product] });
+    expect(() =>
+      batchMoveProductsSchema.parse({
+        confirmation_code: 'MOVE',
+        items: [product, product],
+        main_category_id: '22222222-2222-4222-8222-222222222222',
+      }),
+    ).toThrow();
+    expect(() =>
+      batchDisableProductsSchema.parse({ confirmation_code: 'disable', items: [product] }),
+    ).toThrow();
+  });
+
   it('normalizes stable business codes and rejects unsafe identifiers', () => {
     expect(catalogCodeSchema.parse('  SERUM-01  ')).toBe('serum-01');
     expect(() => catalogCodeSchema.parse('../other-store')).toThrow();

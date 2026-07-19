@@ -245,6 +245,58 @@ export const productVersionCommandSchema = z
   .object({ expected_version: z.number().int().positive() })
   .strict();
 
+export const productVersionNumberSchema = z.coerce.number().int().positive();
+
+export const productImportQuerySchema = z
+  .object({
+    dry_run: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
+  })
+  .strict();
+
+const batchProductItemSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    product_id: z.string().uuid(),
+  })
+  .strict();
+
+function rejectDuplicateBatchProducts(
+  input: { items: Array<{ product_id: string }> },
+  context: z.RefinementCtx,
+): void {
+  const productIds = new Set<string>();
+  input.items.forEach((item, index) => {
+    if (productIds.has(item.product_id)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Duplicate product in batch',
+        path: ['items', index, 'product_id'],
+      });
+    }
+    productIds.add(item.product_id);
+  });
+}
+
+export const batchDisableProductsSchema = z
+  .object({
+    confirmation_code: z.literal('DISABLE'),
+    items: z.array(batchProductItemSchema).min(1).max(100),
+  })
+  .strict()
+  .superRefine(rejectDuplicateBatchProducts);
+
+export const batchMoveProductsSchema = z
+  .object({
+    confirmation_code: z.literal('MOVE'),
+    items: z.array(batchProductItemSchema).min(1).max(100),
+    main_category_id: z.string().uuid(),
+  })
+  .strict()
+  .superRefine(rejectDuplicateBatchProducts);
+
 export const skuOptionValueSchema = z
   .object({
     attribute_code: catalogCodeSchema,
@@ -466,9 +518,12 @@ export type CreateBrandInput = z.infer<typeof createBrandSchema>;
 export type CreateCategoryInput = z.infer<typeof createCategorySchema>;
 export type CreateProductDraftInput = z.infer<typeof createProductDraftSchema>;
 export type ConfirmMediaUploadInput = z.infer<typeof confirmMediaUploadSchema>;
+export type BatchDisableProductsInput = z.infer<typeof batchDisableProductsSchema>;
+export type BatchMoveProductsInput = z.infer<typeof batchMoveProductsSchema>;
 export type CreatePageDraftInput = z.infer<typeof createPageDraftSchema>;
 export type MediaUploadInput = z.infer<typeof mediaUploadInputSchema>;
 export type ProductMediaInput = z.infer<typeof productMediaInputSchema>;
+export type ProductImportQuery = z.infer<typeof productImportQuerySchema>;
 export type PublishPageInput = z.infer<typeof publishPageSchema>;
 export type PublicBrandListQuery = z.infer<typeof publicBrandListQuerySchema>;
 export type PublicCatalogLocaleQuery = z.infer<typeof publicCatalogLocaleQuerySchema>;
