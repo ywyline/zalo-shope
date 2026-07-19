@@ -9,6 +9,7 @@ import { createRuntimePrismaClient } from '@zalo-shop/database';
 import {
   DeterministicZaloTestProvider,
   S3MediaStorageProvider,
+  ZaloOpenApiIdentityProvider,
   type ZaloIdentityProvider,
 } from '@zalo-shop/integrations';
 import { createHttpLogger, createLogger } from '@zalo-shop/logger';
@@ -57,6 +58,15 @@ class DisabledZaloIdentityProvider implements ZaloIdentityProvider {
 }
 
 function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
+  if (config.ZALO_IDENTITY_PROVIDER === 'open-api') {
+    return new ZaloOpenApiIdentityProvider({
+      appSecret: config.ZALO_APP_SECRET!,
+      miniAppId: config.ZALO_MINI_APP_ID!,
+      parentAppId: config.ZALO_APP_ID!,
+      requestTimeoutMs: config.ZALO_OPEN_API_TIMEOUT_MS,
+      tokenMetadataTtlSeconds: config.ZALO_TOKEN_METADATA_TTL_SECONDS,
+    });
+  }
   if (config.ZALO_IDENTITY_PROVIDER === 'test') {
     return new DeterministicZaloTestProvider({
       audience: 'zalo-shop-test-provider',

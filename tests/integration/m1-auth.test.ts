@@ -5,7 +5,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { parseRuntimeConfig } from '@zalo-shop/config';
 import { createRuntimePrismaClient, PrismaClient } from '@zalo-shop/database';
-import { createZaloTestToken, DeterministicZaloTestProvider } from '@zalo-shop/integrations';
+import {
+  createZaloTestToken,
+  DeterministicZaloTestProvider,
+  ZaloProviderError,
+  type ZaloIdentityProvider,
+} from '@zalo-shop/integrations';
 import {
   decryptSensitive,
   encryptSensitive,
@@ -122,7 +127,28 @@ describe('M1 authentication integration', () => {
     );
     await expect(
       service.exchangeZalo({ accessToken, storeCode: 'beauty-local' }),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ status: 401 });
+  });
+
+  it('maps a sanitized Zalo upstream failure to service unavailable', async () => {
+    const unavailableProvider: ZaloIdentityProvider = {
+      decodePhoneToken: () =>
+        Promise.reject(
+          new ZaloProviderError('Zalo identity service is unavailable', 'UPSTREAM_UNAVAILABLE'),
+        ),
+      verifyAccessToken: () =>
+        Promise.reject(
+          new ZaloProviderError('Zalo identity service is unavailable', 'UPSTREAM_UNAVAILABLE'),
+        ),
+    };
+    const unavailableService = new AuthService(runtime, config, unavailableProvider);
+
+    await expect(
+      unavailableService.exchangeZalo({ accessToken: 'not-logged', storeCode: 'beauty-local' }),
+    ).rejects.toMatchObject({
+      message: 'Zalo identity service is unavailable',
+      status: 503,
+    });
   });
 
   it('stores manually supplied phone data encrypted with explicit consent', async () => {
@@ -236,7 +262,7 @@ describe('M1 authentication integration', () => {
         storeCode: 'beauty-local',
         storeId: BEAUTY_STORE_ID,
       }),
-    ).rejects.toThrow('already consumed');
+    ).rejects.toMatchObject({ message: 'Zalo credential is invalid', status: 401 });
     await expect(
       owner.memberPhoneContact.findUniqueOrThrow({
         where: { storeId_memberId: { memberId, storeId: BEAUTY_STORE_ID } },

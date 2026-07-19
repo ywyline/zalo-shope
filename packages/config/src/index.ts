@@ -5,6 +5,16 @@ const booleanFromString = z
   .default('true')
   .transform((value) => value === 'true');
 
+const optionalNumericIdentifier = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.string().regex(/^\d+$/, 'must contain digits only').optional(),
+);
+
+const optionalSecret = z.preprocess(
+  (value) => (typeof value === 'string' && value === '' ? undefined : value),
+  z.string().min(8).optional(),
+);
+
 const runtimeConfigSchema = z
   .object({
     AUTH_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
@@ -51,8 +61,13 @@ const runtimeConfigSchema = z
     S3_SECRET_KEY: z.string().min(8),
     WORKER_HOST: z.string().min(1).default('0.0.0.0'),
     WORKER_PORT: z.coerce.number().int().min(1).max(65_535).default(3001),
-    ZALO_IDENTITY_PROVIDER: z.enum(['disabled', 'test']).default('disabled'),
+    ZALO_APP_ID: optionalNumericIdentifier,
+    ZALO_APP_SECRET: optionalSecret,
+    ZALO_IDENTITY_PROVIDER: z.enum(['disabled', 'open-api', 'test']).default('disabled'),
+    ZALO_MINI_APP_ID: optionalNumericIdentifier,
+    ZALO_OPEN_API_TIMEOUT_MS: z.coerce.number().int().min(500).max(10_000).default(5_000),
     ZALO_TEST_TOKEN_SECRET: z.string().min(32).optional(),
+    ZALO_TOKEN_METADATA_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(300),
   })
   .superRefine((config, context) => {
     if (config.ZALO_IDENTITY_PROVIDER === 'test' && !config.ZALO_TEST_TOKEN_SECRET) {
@@ -68,6 +83,32 @@ const runtimeConfigSchema = z
         message: 'test provider is forbidden in production',
         path: ['ZALO_IDENTITY_PROVIDER'],
       });
+    }
+    if (config.ZALO_IDENTITY_PROVIDER === 'open-api') {
+      for (const [field, value] of [
+        ['ZALO_APP_ID', config.ZALO_APP_ID],
+        ['ZALO_MINI_APP_ID', config.ZALO_MINI_APP_ID],
+        ['ZALO_APP_SECRET', config.ZALO_APP_SECRET],
+      ] as const) {
+        if (!value) {
+          context.addIssue({
+            code: 'custom',
+            message: 'is required for the open-api provider',
+            path: [field],
+          });
+        }
+      }
+      if (
+        config.ZALO_APP_SECRET &&
+        (config.ZALO_APP_SECRET === config.ZALO_APP_ID ||
+          config.ZALO_APP_SECRET === config.ZALO_MINI_APP_ID)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'must not match a Zalo application identifier',
+          path: ['ZALO_APP_SECRET'],
+        });
+      }
     }
   });
 

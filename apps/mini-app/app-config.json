@@ -1,14 +1,14 @@
 {
   "app": {
-    "title": "Zalo Shop",
+    "title": "GoBeauty",
     "headerColor": "#FFFFFF",
     "textColor": "black",
     "statusBarColor": "#D8796B",
     "leftButton": "none"
   },
   "debug": false,
-  "listCSS": [],
-  "listSyncJS": [],
+  "listCSS": ["./assets/index.css"],
+  "listSyncJS": ["inline.js", "./assets/app.module.js"],
   "listAsyncJS": [],
   "pages": []
 }

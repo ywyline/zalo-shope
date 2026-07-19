@@ -41,7 +41,8 @@ const vi = {
   'identity.consent':
     'Tôi đồng ý lưu số điện thoại theo Chính sách quyền riêng tư phiên bản phone-v1.',
   'identity.error': 'Không thể xác minh danh tính Zalo. Hãy mở Mini App trong Zalo và thử lại.',
-  'identity.intro': 'Danh tính được xác minh riêng cho từng cửa hàng và chỉ xin quyền khi cần.',
+  'identity.intro':
+    'Danh tính được xác minh riêng cho từng cửa hàng. Số điện thoại chỉ được xin để liên hệ đơn hàng và giao hàng khi bạn chủ động chọn.',
   'identity.loading': 'Đang kết nối an toàn…',
   'identity.manual': 'Nhập số điện thoại',
   'identity.manualHint': 'Bạn có thể nhập số Việt Nam. Số được mã hóa và không hiển thị đầy đủ.',
@@ -108,7 +109,7 @@ const zh: Partial<Record<MessageKey, string>> = {
   'catalog.viewAll': '查看全部',
   'identity.consent': '我同意按 phone-v1 隐私政策保存手机号。',
   'identity.error': '无法验证 Zalo 身份。请在 Zalo 内打开 Mini App 后重试。',
-  'identity.intro': '身份按商城独立验证，只在确有需要时请求权限。',
+  'identity.intro': '身份按商城独立验证。只有你主动选择时，才会请求手机号用于订单联系和配送。',
   'identity.loading': '正在安全连接…',
   'identity.manual': '手工输入手机号',
   'identity.manualHint': '你可以输入越南手机号；号码会加密保存，不会完整显示。',
@@ -173,7 +174,8 @@ const en: Partial<Record<MessageKey, string>> = {
   'catalog.viewAll': 'View all',
   'identity.consent': 'I agree to save my phone number under privacy policy phone-v1.',
   'identity.error': 'Zalo identity could not be verified. Open this Mini App in Zalo and retry.',
-  'identity.intro': 'Identity is verified per store and access is requested only when needed.',
+  'identity.intro':
+    'Identity is verified per store. Your phone is requested for order contact and delivery only when you choose to share it.',
   'identity.loading': 'Connecting securely…',
   'identity.manual': 'Enter phone manually',
   'identity.manualHint': 'Enter a Vietnamese number. It is encrypted and never shown in full.',

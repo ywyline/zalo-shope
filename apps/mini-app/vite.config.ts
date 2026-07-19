@@ -8,8 +8,16 @@ export default defineConfig({
     emptyOutDir: true,
     outDir: '../dist',
     polyfillModulePreload: false,
+    rollupOptions: {
+      output: {
+        assetFileNames: 'assets/[name][extname]',
+        chunkFileNames: 'assets/[name].[hash].js',
+        entryFileNames: 'assets/app.module.js',
+      },
+    },
   },
   plugins: [reactRefresh()],
+  publicDir: '../public',
   resolve: {
     alias: {
       '@zalo-shop/i18n': path.resolve(__dirname, '../../packages/i18n/src/index.ts'),

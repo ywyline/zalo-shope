@@ -68,4 +68,60 @@ describe('parseRuntimeConfig', () => {
       expect(String(error)).not.toContain('not-a-database-url');
     }
   });
+
+  it('requires server-only Zalo Open API configuration', () => {
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnvironment,
+        ZALO_IDENTITY_PROVIDER: 'open-api',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+
+    const config = parseRuntimeConfig({
+      ...validEnvironment,
+      ZALO_APP_ID: '1364144247280182439',
+      ZALO_APP_SECRET: 'server-only-secret',
+      ZALO_IDENTITY_PROVIDER: 'open-api',
+      ZALO_MINI_APP_ID: '1054942727582608082',
+    });
+    expect(config).toMatchObject({
+      ZALO_APP_ID: '1364144247280182439',
+      ZALO_IDENTITY_PROVIDER: 'open-api',
+      ZALO_MINI_APP_ID: '1054942727582608082',
+      ZALO_OPEN_API_TIMEOUT_MS: 5_000,
+      ZALO_TOKEN_METADATA_TTL_SECONDS: 300,
+    });
+  });
+
+  it('does not expose an invalid Zalo secret in configuration errors', () => {
+    const secret = 'tiny';
+    try {
+      parseRuntimeConfig({
+        ...validEnvironment,
+        ZALO_APP_ID: '1364144247280182439',
+        ZALO_APP_SECRET: secret,
+        ZALO_IDENTITY_PROVIDER: 'open-api',
+        ZALO_MINI_APP_ID: '1054942727582608082',
+      });
+      throw new Error('expected configuration parsing to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidEnvironmentError);
+      expect(String(error)).toContain('ZALO_APP_SECRET');
+      expect(String(error)).not.toContain(secret);
+    }
+  });
+
+  it('rejects an application identifier pasted as the Zalo secret', () => {
+    const appId = '1364144247280182439';
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnvironment,
+        ZALO_APP_ID: appId,
+        ZALO_APP_SECRET: appId,
+        ZALO_IDENTITY_PROVIDER: 'open-api',
+        ZALO_MINI_APP_ID: '1054942727582608082',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+  });
 });

@@ -5,6 +5,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import type { RuntimeConfig } from '@zalo-shop/config';
@@ -12,7 +13,11 @@ import type { PrismaClient } from '@zalo-shop/database';
 import { withStoreTransaction } from '@zalo-shop/database';
 import { createStoreContext } from '@zalo-shop/domain';
 import { normalizeVietnamPhone } from '@zalo-shop/i18n';
-import type { ZaloIdentityProvider } from '@zalo-shop/integrations';
+import {
+  ZaloProviderError,
+  type ZaloIdentity,
+  type ZaloIdentityProvider,
+} from '@zalo-shop/integrations';
 import {
   createOpaqueToken,
   decryptSensitive,
@@ -53,6 +58,18 @@ type ConsentResponse = {
   status: 'DENIED' | 'GRANTED' | 'REVOKED';
 };
 
+async function useZaloProvider<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!(error instanceof ZaloProviderError)) throw error;
+    if (error.code === 'INVALID_CREDENTIAL') {
+      throw new UnauthorizedException('Zalo credential is invalid');
+    }
+    throw new ServiceUnavailableException('Zalo identity service is unavailable');
+  }
+}
+
 @Injectable()
 export class AuthService {
   public constructor(
@@ -82,10 +99,7 @@ export class AuthService {
     if (!zaloConfig?.enabled || !zaloConfig.miniAppId || !zaloConfig.parentAppId) {
       throw new UnauthorizedException('Zalo identity is not configured for this store');
     }
-    const identity = await this.zaloProvider.verifyAccessToken({
-      accessToken: input.accessToken,
-      expectedMiniAppId: zaloConfig.miniAppId,
-    });
+    const identity = await this.verifyZaloIdentity(input.accessToken, zaloConfig.miniAppId);
     if (identity.parentAppId !== zaloConfig.parentAppId) {
       throw new UnauthorizedException('Zalo identity does not belong to this store');
     }
@@ -529,10 +543,7 @@ export class AuthService {
     }
     const miniAppId = app.miniAppId;
     const parentAppId = app.parentAppId;
-    const identity = await this.zaloProvider.verifyAccessToken({
-      accessToken: input.accessToken,
-      expectedMiniAppId: miniAppId,
-    });
+    const identity = await this.verifyZaloIdentity(input.accessToken, miniAppId);
     if (identity.parentAppId !== parentAppId) {
       throw new UnauthorizedException('Zalo identity does not belong to this store');
     }
@@ -547,11 +558,13 @@ export class AuthService {
       }),
     );
     if (ownsIdentity !== 1) throw new UnauthorizedException('Zalo identity does not match member');
-    const decoded = await this.zaloProvider.decodePhoneToken({
-      accessToken: input.accessToken,
-      expectedMiniAppId: miniAppId,
-      token: input.phoneToken,
-    });
+    const decoded = await useZaloProvider(() =>
+      this.zaloProvider.decodePhoneToken({
+        accessToken: input.accessToken,
+        expectedMiniAppId: miniAppId,
+        token: input.phoneToken,
+      }),
+    );
     return this.persistPhone({
       consentEventId: input.consentEventId,
       memberId: input.memberId,
@@ -561,6 +574,15 @@ export class AuthService {
       store,
       verified: true,
     });
+  }
+
+  private verifyZaloIdentity(accessToken: string, miniAppId: string): Promise<ZaloIdentity> {
+    return useZaloProvider(() =>
+      this.zaloProvider.verifyAccessToken({
+        accessToken,
+        expectedMiniAppId: miniAppId,
+      }),
+    );
   }
 
   private async persistPhone(input: {

@@ -7,7 +7,9 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "dev": "zmp start",
     "dev:web": "vite --host 0.0.0.0",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "zmp:deploy:testing": "zmp deploy --existing --testing --outputDir dist",
+    "zmp:device": "zmp start --device --port 5174"
   },
   "dependencies": {
     "@zalo-shop/design-tokens": "workspace:*",
