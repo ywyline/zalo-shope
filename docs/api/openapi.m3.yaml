@@ -1,0 +1,1582 @@
+openapi: 3.1.0
+info:
+  title: Zalo Shop M3 Inventory, Search, Pricing and Cart API
+  version: 0.3.1-m3-freeze
+  description: >-
+    M3.1 冻结契约；作为 openapi.m1.yaml 与 openapi.m2.yaml 的向后兼容增量。
+    商城只从受信 X-Store-Code 与认证主体解析，请求体不接受 store_id。
+    本文档不表示接口已实现：schema、迁移与业务 API 从 M3.2 起按门禁实施。
+servers:
+  - url: http://localhost:3000
+tags:
+  - { name: Search }
+  - { name: Member search }
+  - { name: Member coupons }
+  - { name: Pricing }
+  - { name: Cart }
+  - { name: Admin inventory }
+  - { name: Admin promotions }
+paths:
+  /v1/search/products:
+    get:
+      tags: [Search]
+      summary: 搜索当前商城已发布商品
+      security: [{ StoreCode: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - name: q
+          in: query
+          description: 可选；缺省时作为筛选浏览，不写搜索历史
+          schema: { type: string, minLength: 1, maxLength: 100 }
+        - $ref: '#/components/parameters/Locale'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: brand_codes
+          in: query
+          description: 重复 query 参数，最多 20 个且不得重复
+          schema:
+            {
+              type: array,
+              maxItems: 20,
+              uniqueItems: true,
+              items: { $ref: '#/components/schemas/Code' },
+            }
+        - name: category_codes
+          in: query
+          schema:
+            {
+              type: array,
+              maxItems: 20,
+              uniqueItems: true,
+              items: { $ref: '#/components/schemas/Code' },
+            }
+        - name: attribute_filters
+          in: query
+          description: '`attribute-code:option-code`，最多 20 个'
+          schema:
+            type: array
+            maxItems: 20
+            uniqueItems: true
+            items:
+              {
+                type: string,
+                minLength: 3,
+                maxLength: 130,
+                pattern: '^[a-z][a-z0-9-]*:[a-z0-9-]+$',
+              }
+        - { name: min_price_vnd, in: query, schema: { $ref: '#/components/schemas/VndAmount' } }
+        - { name: max_price_vnd, in: query, schema: { $ref: '#/components/schemas/VndAmount' } }
+        - { name: in_stock, in: query, schema: { type: boolean } }
+        - { name: on_promotion, in: query, schema: { type: boolean } }
+        - name: sort
+          in: query
+          description: 未提供时，有 q 默认 relevance，无 q 默认 newest
+          schema: { type: string, enum: [relevance, newest, price_asc, price_desc] }
+      responses:
+        '200':
+          description: 同商城搜索结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchProductPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/search/suggestions:
+    get:
+      tags: [Search]
+      summary: 返回当前商城商品联想和热门词
+      security: [{ StoreCode: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/Locale'
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 20, default: 10 }
+      responses:
+        '200':
+          description: 联想列表
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 20
+                    items: { $ref: '#/components/schemas/SearchSuggestion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/members/me/search-history:
+    get:
+      tags: [Member search]
+      summary: 读取当前会员在当前商城的搜索历史
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        '200':
+          description: 最近搜索；不跨会员或商城
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 50
+                    items: { $ref: '#/components/schemas/SearchHistoryItem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Member search]
+      summary: 清空当前会员在当前商城的搜索历史
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+      responses:
+        '204': { description: 已清空；重复调用仍返回 204 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/members/me/coupons:
+    get:
+      tags: [Member coupons]
+      summary: 读取当前会员在当前商城领取的优惠券
+      description: M3 只返回领取与资格状态，不伪造订单核销。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/Cursor'
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+        - name: status
+          in: query
+          schema: { type: string, enum: [CLAIMED, EXPIRED, DISABLED] }
+      responses:
+        '200':
+          description: 当前商城当前会员优惠券分页
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/MemberCouponPage' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/members/me/coupons/by-code/{couponCode}:
+    put:
+      tags: [Member coupons]
+      summary: 确保当前会员已领取当前商城优惠券
+      description: >-
+        按会员和优惠券天然幂等；重复 PUT 返回同一领取记录，不增加 claimed_count。
+        M3 不创建 REDEEMED 状态或订单核销记录。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/CouponCode'
+      responses:
+        '200':
+          description: 首次领取或既有领取记录
+          content: { application/json: { schema: { $ref: '#/components/schemas/MemberCoupon' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/pricing/quotes:
+    post:
+      tags: [Pricing]
+      summary: 使用服务端商品与规则事实计算商品金额报价
+      description: >-
+        匿名请求不得携带 coupon_code；优惠券资格需要商城绑定会员令牌。
+        M3 不计算运费或最终订单应付，也不核销优惠券或锁库存。
+      security:
+        - StoreCode: []
+        - StoreCode: []
+          MemberBearer: []
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PricingQuoteRequest' }
+      responses:
+        '200':
+          description: 可解释的临时报价；M4 必须重新计算
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PricingQuote' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/cart:
+    get:
+      tags: [Cart]
+      summary: 读取当前商城会员活动购物车并实时重算
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+      responses:
+        '200':
+          description: 活动购物车；无车时返回空活动车
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cart' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/cart/items/by-sku/{skuCode}:
+    put:
+      tags: [Cart]
+      summary: 按同商城 SKU 设置购物车数量
+      description: 相同请求设置相同最终数量，不执行累加；加入购物车不锁库存。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/SkuCode'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetCartItemRequest' }
+      responses:
+        '200':
+          description: 已设置并重算
+          content: { application/json: { schema: { $ref: '#/components/schemas/Cart' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/cart/items/{itemId}:
+    patch:
+      tags: [Cart]
+      summary: 修改数量、选中状态或替换同商品 SKU
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateCartItemRequest' }
+      responses:
+        '200':
+          description: 已更新并重算
+          content: { application/json: { schema: { $ref: '#/components/schemas/Cart' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Cart]
+      summary: 删除当前会员购物车行
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/ItemId'
+        - name: expected_version
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '204': { description: 已删除 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/inventory/warehouses:
+    get:
+      tags: [Admin inventory]
+      summary: 列出当前商城仓库
+      description: 需要 `store.inventory.read`。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/AdminLimit'
+      responses:
+        '200':
+          description: 仓库分页
+          content: { application/json: { schema: { $ref: '#/components/schemas/WarehousePage' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin inventory]
+      summary: 创建当前商城仓库
+      description: 需要 `store.inventory.manage`；不创建虚假库存。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseInput' } } }
+      responses:
+        '201':
+          description: 已创建
+          content: { application/json: { schema: { $ref: '#/components/schemas/Warehouse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/inventory/warehouses/{warehouseId}:
+    patch:
+      tags: [Admin inventory]
+      summary: 编辑或停用当前商城仓库
+      description: 需要 `store.inventory.manage`；停用默认仓前必须先明确替代。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/WarehouseId'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseUpdate' } } }
+      responses:
+        '200':
+          description: 已更新
+          content: { application/json: { schema: { $ref: '#/components/schemas/Warehouse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/inventory/balances:
+    get:
+      tags: [Admin inventory]
+      summary: 查询当前商城库存余额
+      description: 需要 `store.inventory.read`；available 是只读派生值。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/AdminLimit'
+        - { name: warehouse_id, in: query, schema: { type: string, format: uuid } }
+        - { name: q, in: query, schema: { type: string, minLength: 1, maxLength: 100 } }
+        - { name: in_stock, in: query, schema: { type: boolean } }
+      responses:
+        '200':
+          description: 余额分页
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/InventoryBalancePage' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/admin/inventory/movements:
+    get:
+      tags: [Admin inventory]
+      summary: 查询当前商城只追加库存流水
+      description: 需要 `store.inventory.read`。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/AdminLimit'
+        - { name: warehouse_id, in: query, schema: { type: string, format: uuid } }
+        - { name: sku_id, in: query, schema: { type: string, format: uuid } }
+        - {
+            name: movement_type,
+            in: query,
+            schema: { $ref: '#/components/schemas/InventoryMovementType' },
+          }
+      responses:
+        '200':
+          description: 流水分页
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/InventoryMovementPage' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/admin/inventory/adjustments:
+    post:
+      tags: [Admin inventory]
+      summary: 对一条余额执行受审差量调整
+      description: >-
+        需要 `store.inventory.adjust`、二次确认和 Idempotency-Key。余额与流水同事务；
+        不允许直接 PUT 余额。相同键不同请求 hash 返回 409。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          {
+            application/json:
+              { schema: { $ref: '#/components/schemas/InventoryAdjustmentRequest' } },
+          }
+      responses:
+        '200':
+          description: 首次或幂等重放的调整结果
+          headers:
+            Idempotency-Replayed: { schema: { type: boolean } }
+          content:
+            {
+              application/json:
+                { schema: { $ref: '#/components/schemas/InventoryAdjustmentResult' } },
+            }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/inventory/imports:
+    post:
+      tags: [Admin inventory]
+      summary: 校验或执行受限初始库存 CSV/XLSX 导入
+      description: >-
+        dry_run 需要 `store.inventory.manage`；正式执行同时需要 `store.inventory.adjust`、
+        二次确认与 Idempotency-Key。最大 5 MiB/5000 行，返回逐行结果，不接受 store_id。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: dry_run
+          in: query
+          schema: { type: boolean, default: true }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                confirmation_code: { type: string, enum: [IMPORT], description: 正式执行必填 }
+      responses:
+        '200':
+          description: dry-run 或正式逐行报告
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/InventoryImportReport' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+  /v1/admin/promotions:
+    get:
+      tags: [Admin promotions]
+      summary: 查询当前商城促销
+      description: 需要 `store.promotions.read`。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/AdminLimit'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/PromotionStatus' } }
+      responses:
+        '200':
+          description: 促销分页
+          content: { application/json: { schema: { $ref: '#/components/schemas/PromotionPage' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin promotions]
+      summary: 创建当前商城促销根
+      description: 需要 `store.promotions.manage`。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties: { code: { $ref: '#/components/schemas/Code' } }
+      responses:
+        '201':
+          description: 已创建草稿根
+          content: { application/json: { schema: { $ref: '#/components/schemas/Promotion' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/promotions/{promotionId}/versions:
+    get:
+      tags: [Admin promotions]
+      summary: 查询当前商城促销的草稿与发布版本
+      description: 需要 `store.promotions.read`；发布版本只读。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/PromotionId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/AdminLimit'
+      responses:
+        '200':
+          description: 版本分页
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/PromotionVersionPage' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Admin promotions]
+      summary: 创建或替换下一草稿版本
+      description: 需要 `store.promotions.manage`；目标必须全部属于当前商城。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/PromotionId'
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/PromotionVersionInput' } } }
+      responses:
+        '201':
+          description: 草稿版本
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/PromotionVersion' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/promotions/{promotionId}/publish:
+    post:
+      tags: [Admin promotions]
+      summary: 发布不可变促销版本
+      description: 需要 `store.promotions.publish`、二次确认、乐观锁与 Idempotency-Key。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/PromotionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/PublishPromotionRequest' } } }
+      responses:
+        '200':
+          description: 已发布或幂等重放
+          content: { application/json: { schema: { $ref: '#/components/schemas/Promotion' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/promotions/{promotionId}/pause:
+    post:
+      tags: [Admin promotions]
+      summary: 暂停当前促销
+      description: 需要 `store.promotions.publish`、二次确认、乐观锁与 Idempotency-Key。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/PromotionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/PausePromotionRequest' } } }
+      responses:
+        '200':
+          {
+            description: 已暂停,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Promotion' } } },
+          }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/promotions/{promotionId}/end:
+    post:
+      tags: [Admin promotions]
+      summary: 不可逆结束当前促销
+      description: 需要 `store.promotions.publish`、二次确认、乐观锁与 Idempotency-Key。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/PromotionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/EndPromotionRequest' } } }
+      responses:
+        '200':
+          {
+            description: 已结束,
+            content: { application/json: { schema: { $ref: '#/components/schemas/Promotion' } } },
+          }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/coupons:
+    get:
+      tags: [Admin promotions]
+      summary: 查询当前商城优惠券
+      description: 需要 `store.promotions.read`。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/AdminLimit'
+      responses:
+        '200':
+          description: 优惠券分页
+          content: { application/json: { schema: { $ref: '#/components/schemas/CouponPage' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin promotions]
+      summary: 创建当前商城优惠券草稿
+      description: 需要 `store.promotions.manage`；引用已发布 COUPON 版本。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CouponInput' } } }
+      responses:
+        '201':
+          description: 已创建
+          content: { application/json: { schema: { $ref: '#/components/schemas/Coupon' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/coupons/{couponId}:
+    patch:
+      tags: [Admin promotions]
+      summary: 编辑优惠券草稿字段
+      description: 需要 `store.promotions.manage`；发布后的规则版本不可原地修改。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/CouponId'
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/CouponDraftUpdate' } } }
+      responses:
+        '200':
+          description: 已更新
+          content: { application/json: { schema: { $ref: '#/components/schemas/Coupon' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/coupons/{couponId}/status:
+    post:
+      tags: [Admin promotions]
+      summary: 激活、暂停或不可逆结束优惠券
+      description: 需要 `store.promotions.publish`、二次确认、乐观锁与 Idempotency-Key。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/CouponId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/CouponStatusRequest' } } }
+      responses:
+        '200':
+          description: 已转换或幂等重放
+          content: { application/json: { schema: { $ref: '#/components/schemas/Coupon' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+components:
+  securitySchemes:
+    StoreCode:
+      type: apiKey
+      in: header
+      name: X-Store-Code
+      description: 受信商城业务编码；不能由请求体 store_id 替代
+    MemberBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: Zalo-Shop-Member
+      description: 商城绑定会员访问令牌；商城必须与 X-Store-Code 一致
+    AdminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: Zalo-Shop-Admin
+      description: 完成密码与 TOTP 的商城管理员令牌
+  parameters:
+    StoreCode:
+      name: X-Store-Code
+      in: header
+      required: true
+      schema: { $ref: '#/components/schemas/Code' }
+    Locale:
+      name: locale
+      in: query
+      schema: { type: string, enum: [vi, zh, en], default: vi }
+    SearchQuery:
+      name: q
+      in: query
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 100 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string, minLength: 1, maxLength: 1000 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    AdminLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 当前商城范围 16–128 字符动作键；同键不同规范请求 hash 冲突
+      schema:
+        { type: string, minLength: 16, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$' }
+    SkuCode:
+      name: skuCode
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Code' }
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    WarehouseId:
+      name: warehouseId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PromotionId:
+      name: promotionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CouponId:
+      name: couponId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CouponCode:
+      name: couponCode
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Code' }
+  responses:
+    BadRequest:
+      description: 输入或商城 Header 无效
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    Unauthorized:
+      description: 认证缺失、过期或无效
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    Forbidden:
+      description: 商城不匹配、未授权或缺少权限；不泄露资源存在性
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    NotFound:
+      description: 当前商城内资源不存在
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    Conflict:
+      description: 版本、状态、库存或幂等键冲突
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    RateLimited:
+      description: 请求过于频繁
+      headers: { Retry-After: { schema: { type: integer, minimum: 1 } } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    PayloadTooLarge:
+      description: 上传文件超过 5 MiB 或允许行数
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+  schemas:
+    Code:
+      type: string
+      minLength: 2
+      maxLength: 64
+      pattern: '^[a-z][a-z0-9-]*$'
+    VndAmount:
+      type: integer
+      format: int64
+      minimum: 0
+      maximum: 9007199254740991
+    Quantity:
+      type: integer
+      minimum: 1
+      maximum: 99
+    Locale:
+      type: string
+      enum: [vi, zh, en]
+    CursorPage:
+      type: object
+      required: [next_cursor]
+      properties:
+        next_cursor: { type: [string, 'null'], maxLength: 1000 }
+    ApiError:
+      type: object
+      required: [code, correlation_id, message_key]
+      properties:
+        code:
+          type: string
+          enum:
+            - AUTHENTICATION_FAILED
+            - AUTHENTICATION_REQUIRED
+            - AUTHORIZATION_DENIED
+            - INPUT_INVALID
+            - RESOURCE_NOT_FOUND
+            - STORE_CONTEXT_INVALID
+            - CONFLICT
+            - RATE_LIMITED
+            - INTERNAL_ERROR
+        correlation_id: { type: string, minLength: 1, maxLength: 128 }
+        message_key: { type: string, minLength: 1, maxLength: 160 }
+        details:
+          type: object
+          description: >-
+            可含稳定 reason_code（例如 VERSION_CONFLICT、IDEMPOTENCY_KEY_REUSED、
+            AVAILABLE_INSUFFICIENT、COUPON_INVALID）与脱敏字段错误；不得含跨商城对象、SQL 或堆栈。
+          properties:
+            reason_code:
+              type: string
+              enum:
+                - VERSION_CONFLICT
+                - IDEMPOTENCY_KEY_REUSED
+                - AVAILABLE_INSUFFICIENT
+                - RESERVED_INSUFFICIENT
+                - RESERVATION_TRANSITION_INVALID
+                - QUANTITY_OVERFLOW
+                - PRODUCT_UNAVAILABLE
+                - SKU_UNAVAILABLE
+                - COUPON_INVALID
+                - COUPON_CLAIM_LIMIT
+                - COUPON_MEMBER_REQUIRED
+                - PROMOTION_STATE_CONFLICT
+                - PROMOTION_RULE_INVALID
+                - CART_LINE_CONFLICT
+                - IMPORT_INVALID
+    SearchProductPage:
+      unevaluatedProperties: false
+      allOf:
+        - $ref: '#/components/schemas/CursorPage'
+        - type: object
+          required: [items, normalized_query]
+          properties:
+            normalized_query: { type: [string, 'null'], maxLength: 100 }
+            items:
+              type: array
+              maxItems: 100
+              items: { $ref: '#/components/schemas/SearchProduct' }
+    SearchProduct:
+      type: object
+      additionalProperties: false
+      required: [product_code, name, minimum_sale_price_vnd, available, published_at]
+      properties:
+        product_code: { $ref: '#/components/schemas/Code' }
+        name: { type: string, minLength: 1, maxLength: 240 }
+        brand_code: { $ref: '#/components/schemas/Code' }
+        main_category_code: { $ref: '#/components/schemas/Code' }
+        minimum_sale_price_vnd: { $ref: '#/components/schemas/VndAmount' }
+        available: { type: boolean }
+        available_quantity: { type: integer, minimum: 0, maximum: 2147483647 }
+        promotion_summary:
+          type: [object, 'null']
+          additionalProperties: false
+          properties:
+            code: { $ref: '#/components/schemas/Code' }
+            label: { type: string, maxLength: 240 }
+        published_at: { type: string, format: date-time }
+        primary_media_url: { type: [string, 'null'], format: uri }
+    SearchSuggestion:
+      type: object
+      additionalProperties: false
+      required: [kind, text]
+      properties:
+        kind: { type: string, enum: [PRODUCT, QUERY] }
+        text: { type: string, minLength: 1, maxLength: 240 }
+        product_code: { oneOf: [{ $ref: '#/components/schemas/Code' }, { type: 'null' }] }
+    SearchHistoryItem:
+      type: object
+      additionalProperties: false
+      required: [query, locale, last_searched_at]
+      properties:
+        query: { type: string, minLength: 1, maxLength: 100 }
+        locale: { $ref: '#/components/schemas/Locale' }
+        last_searched_at: { type: string, format: date-time }
+    MemberCoupon:
+      type: object
+      additionalProperties: false
+      required: [id, code, status, claimed_at, expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        code: { $ref: '#/components/schemas/Code' }
+        status: { type: string, enum: [CLAIMED, EXPIRED, DISABLED] }
+        claimed_at: { type: string, format: date-time }
+        expires_at: { type: [string, 'null'], format: date-time }
+    MemberCouponPage:
+      unevaluatedProperties: false
+      allOf:
+        - $ref: '#/components/schemas/CursorPage'
+        - type: object
+          required: [items]
+          properties:
+            {
+              items:
+                { type: array, maxItems: 50, items: { $ref: '#/components/schemas/MemberCoupon' } },
+            }
+    PricingQuoteRequest:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        locale: { $ref: '#/components/schemas/Locale', default: vi }
+        coupon_code:
+          oneOf: [{ $ref: '#/components/schemas/Code' }, { type: 'null' }]
+          default: null
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [sku_code, quantity]
+            properties:
+              sku_code: { $ref: '#/components/schemas/Code' }
+              quantity: { $ref: '#/components/schemas/Quantity' }
+          description: SKU 必须唯一；请求不接受价格、折扣或应付金额
+    AppliedPriceRule:
+      type: object
+      additionalProperties: false
+      required: [bucket, code, version_id, basis_vnd, discount_vnd]
+      properties:
+        bucket: { type: string, enum: [ITEM, ORDER, COUPON] }
+        code: { $ref: '#/components/schemas/Code' }
+        version_id: { type: string, format: uuid }
+        basis_vnd: { $ref: '#/components/schemas/VndAmount' }
+        discount_vnd: { $ref: '#/components/schemas/VndAmount' }
+    RejectedPriceRule:
+      type: object
+      additionalProperties: false
+      required: [bucket, code, version_id, reason]
+      properties:
+        bucket: { type: string, enum: [ITEM, ORDER, COUPON, SHIPPING] }
+        code: { $ref: '#/components/schemas/Code' }
+        version_id: { type: string, format: uuid }
+        reason:
+          type: string
+          enum:
+            [
+              NOT_STARTED,
+              ENDED,
+              TARGET_MISMATCH,
+              MINIMUM_NOT_MET,
+              NOT_BEST,
+              NOT_STACKABLE,
+              MEMBER_INELIGIBLE,
+              COUPON_INVALID,
+            ]
+    PricingQuoteLine:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          sku_code,
+          quantity,
+          base_unit_price_vnd,
+          base_subtotal_vnd,
+          discount_vnd,
+          payable_vnd,
+          issues,
+        ]
+      properties:
+        sku_code: { $ref: '#/components/schemas/Code' }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        base_unit_price_vnd: { $ref: '#/components/schemas/VndAmount' }
+        base_subtotal_vnd: { $ref: '#/components/schemas/VndAmount' }
+        discount_vnd: { $ref: '#/components/schemas/VndAmount' }
+        payable_vnd: { $ref: '#/components/schemas/VndAmount' }
+        applied_rules: { type: array, items: { $ref: '#/components/schemas/AppliedPriceRule' } }
+        rejected_rules: { type: array, items: { $ref: '#/components/schemas/RejectedPriceRule' } }
+        issues:
+          type: array
+          items:
+            {
+              type: string,
+              enum: [PRODUCT_UNAVAILABLE, SKU_UNAVAILABLE, OUT_OF_STOCK, STOCK_INSUFFICIENT],
+            }
+    ShippingQualification:
+      type: object
+      additionalProperties: false
+      required: [status, candidates]
+      properties:
+        status: { type: string, enum: [NOT_REQUESTED, ELIGIBLE_PENDING_FREIGHT, NOT_ELIGIBLE] }
+        candidates:
+          type: array
+          maxItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, version_id]
+            properties:
+              code: { $ref: '#/components/schemas/Code' }
+              version_id: { type: string, format: uuid }
+    PricingQuote:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          currency,
+          quoted_at,
+          quote_hash,
+          lines,
+          base_subtotal_vnd,
+          discount_vnd,
+          merchandise_payable_vnd,
+          order_payable_vnd,
+          applied_rules,
+          rejected_rules,
+          shipping_qualification,
+        ]
+      properties:
+        currency: { type: string, const: VND }
+        quoted_at: { type: string, format: date-time }
+        quote_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        lines:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 100,
+            items: { $ref: '#/components/schemas/PricingQuoteLine' },
+          }
+        base_subtotal_vnd: { $ref: '#/components/schemas/VndAmount' }
+        discount_vnd: { $ref: '#/components/schemas/VndAmount' }
+        merchandise_payable_vnd: { $ref: '#/components/schemas/VndAmount' }
+        order_payable_vnd:
+          type: 'null'
+          description: M3 没有地址/运费事实，最终订单应付必须为 null
+        applied_rules: { type: array, items: { $ref: '#/components/schemas/AppliedPriceRule' } }
+        rejected_rules: { type: array, items: { $ref: '#/components/schemas/RejectedPriceRule' } }
+        shipping_qualification: { $ref: '#/components/schemas/ShippingQualification' }
+    SetCartItemRequest:
+      type: object
+      additionalProperties: false
+      required: [quantity]
+      properties:
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        selected: { type: boolean, default: true }
+    UpdateCartItemRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      minProperties: 2
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        selected: { type: boolean }
+        replacement_sku_code: { $ref: '#/components/schemas/Code' }
+    CartIssue:
+      type: object
+      additionalProperties: false
+      required: [code, blocking]
+      properties:
+        code:
+          {
+            type: string,
+            enum:
+              [
+                PRODUCT_UNAVAILABLE,
+                SKU_UNAVAILABLE,
+                OUT_OF_STOCK,
+                STOCK_INSUFFICIENT,
+                PRICE_CHANGED,
+                PROMOTION_CHANGED,
+              ],
+          }
+        blocking: { type: boolean }
+    CartItem:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          version,
+          sku_code,
+          quantity,
+          selected,
+          added_unit_price_vnd,
+          current_unit_price_vnd,
+          current_subtotal_vnd,
+          available_quantity,
+          issues,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 1 }
+        sku_code: { $ref: '#/components/schemas/Code' }
+        quantity: { $ref: '#/components/schemas/Quantity' }
+        selected: { type: boolean }
+        added_unit_price_vnd: { $ref: '#/components/schemas/VndAmount' }
+        current_unit_price_vnd: { $ref: '#/components/schemas/VndAmount' }
+        current_subtotal_vnd: { $ref: '#/components/schemas/VndAmount' }
+        available_quantity: { type: integer, minimum: 0, maximum: 2147483647 }
+        issues: { type: array, items: { $ref: '#/components/schemas/CartIssue' } }
+    Cart:
+      type: object
+      additionalProperties: false
+      required: [id, version, items, blocking, quote]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 1 }
+        items: { type: array, items: { $ref: '#/components/schemas/CartItem' } }
+        blocking: { type: boolean }
+        quote:
+          oneOf: [{ $ref: '#/components/schemas/PricingQuote' }, { type: 'null' }]
+          description: 仅选中且无阻断问题的行参与；空车或全部阻断时为 null
+    LocalizationInput:
+      type: object
+      additionalProperties: false
+      required: [locale, name]
+      properties:
+        locale: { $ref: '#/components/schemas/Locale' }
+        name: { type: string, minLength: 1, maxLength: 240 }
+        description: { type: [string, 'null'], minLength: 1, maxLength: 2000, default: null }
+    WarehouseLocalizationInput:
+      type: object
+      additionalProperties: false
+      required: [locale, name]
+      properties:
+        locale: { $ref: '#/components/schemas/Locale' }
+        name: { type: string, minLength: 1, maxLength: 160 }
+    WarehouseInput:
+      type: object
+      additionalProperties: false
+      required: [code, localizations]
+      properties:
+        code: { $ref: '#/components/schemas/Code' }
+        enabled: { type: boolean, default: true }
+        is_default_fulfillment: { type: boolean, default: false }
+        localizations:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 3,
+            items: { $ref: '#/components/schemas/WarehouseLocalizationInput' },
+          }
+    WarehouseUpdate:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      minProperties: 2
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        enabled: { type: boolean }
+        is_default_fulfillment: { type: boolean }
+        localizations:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 3,
+            items: { $ref: '#/components/schemas/WarehouseLocalizationInput' },
+          }
+    Warehouse:
+      type: object
+      additionalProperties: false
+      required:
+        [id, code, enabled, is_default_fulfillment, localizations, version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        code: { $ref: '#/components/schemas/Code' }
+        enabled: { type: boolean }
+        is_default_fulfillment: { type: boolean }
+        localizations:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 3,
+            items: { $ref: '#/components/schemas/WarehouseLocalizationInput' },
+          }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    WarehousePage:
+      unevaluatedProperties: false
+      allOf:
+        - $ref: '#/components/schemas/CursorPage'
+        - type: object
+          required: [items]
+          properties: { items: { type: array, items: { $ref: '#/components/schemas/Warehouse' } } }
+    InventoryBalance:
+      type: object
+      additionalProperties: false
+      required:
+        [id, warehouse_id, sku_id, sku_code, on_hand, reserved, available, version, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        warehouse_id: { type: string, format: uuid }
+        sku_id: { type: string, format: uuid }
+        sku_code: { $ref: '#/components/schemas/Code' }
+        on_hand: { type: integer, minimum: 0, maximum: 2147483647 }
+        reserved: { type: integer, minimum: 0, maximum: 2147483647 }
+        available: { type: integer, minimum: 0, maximum: 2147483647, readOnly: true }
+        version: { type: integer, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+    InventoryBalancePage:
+      unevaluatedProperties: false
+      allOf:
+        - $ref: '#/components/schemas/CursorPage'
+        - type: object
+          required: [items]
+          properties:
+            { items: { type: array, items: { $ref: '#/components/schemas/InventoryBalance' } } }
+    InventoryMovementType:
+      type: string
+      enum: [ADJUSTMENT_IN, ADJUSTMENT_OUT, RESERVE, RELEASE, CONSUME, RESTORE]
+    InventoryMovement:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          balance_id,
+          operation_id,
+          movement_type,
+          on_hand_before,
+          on_hand_after,
+          on_hand_delta,
+          reserved_before,
+          reserved_after,
+          reserved_delta,
+          reason_code,
+          created_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        balance_id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        movement_type: { $ref: '#/components/schemas/InventoryMovementType' }
+        on_hand_before: { type: integer, minimum: 0, maximum: 2147483647 }
+        on_hand_after: { type: integer, minimum: 0, maximum: 2147483647 }
+        on_hand_delta: { type: integer, minimum: -2147483647, maximum: 2147483647 }
+        reserved_before: { type: integer, minimum: 0, maximum: 2147483647 }
+        reserved_after: { type: integer, minimum: 0, maximum: 2147483647 }
+        reserved_delta: { type: integer, minimum: -2147483647, maximum: 2147483647 }
+        reason_code: { type: string, maxLength: 64 }
+        note: { type: [string, 'null'], maxLength: 500 }
+        created_at: { type: string, format: date-time }
+    InventoryMovementPage:
+      unevaluatedProperties: false
+      allOf:
+        - $ref: '#/components/schemas/CursorPage'
+        - type: object
+          required: [items]
+          properties:
+            { items: { type: array, items: { $ref: '#/components/schemas/InventoryMovement' } } }
+    InventoryAdjustmentRequest:
+      type: object
+      additionalProperties: false
+      required: [warehouse_id, sku_id, expected_version, delta, reason_code, confirmation_code]
+      properties:
+        warehouse_id: { type: string, format: uuid }
+        sku_id: { type: string, format: uuid }
+        expected_version: { type: integer, minimum: 1 }
+        delta: { type: integer, minimum: -2147483647, maximum: 2147483647, not: { const: 0 } }
+        reason_code:
+          {
+            type: string,
+            enum: [INITIAL_LOAD, CYCLE_COUNT, DAMAGED, LOST, RETURN_CORRECTION, OTHER],
+          }
+        note: { type: [string, 'null'], minLength: 1, maxLength: 500, default: null }
+        confirmation_code: { type: string, const: ADJUST }
+    InventoryAdjustmentResult:
+      type: object
+      additionalProperties: false
+      required: [operation_id, balance, movement]
+      properties:
+        operation_id: { type: string, format: uuid }
+        balance: { $ref: '#/components/schemas/InventoryBalance' }
+        movement: { $ref: '#/components/schemas/InventoryMovement' }
+    InventoryImportReport:
+      type: object
+      additionalProperties: false
+      required: [dry_run, row_count, success_count, error_count, rows]
+      properties:
+        dry_run: { type: boolean }
+        operation_id: { type: [string, 'null'], format: uuid }
+        row_count: { type: integer, minimum: 0, maximum: 5000 }
+        success_count: { type: integer, minimum: 0, maximum: 5000 }
+        error_count: { type: integer, minimum: 0, maximum: 5000 }
+        rows:
+          type: array
+          maxItems: 5000
+          items:
+            type: object
+            additionalProperties: false
+            required: [row, status]
+            properties:
+              row: { type: integer, minimum: 2, maximum: 5001 }
+              status: { type: string, enum: [VALID, APPLIED, ERROR] }
+              code: { type: [string, 'null'], maxLength: 64 }
+    PromotionStatus:
+      type: string
+      enum: [DRAFT, ACTIVE, PAUSED, ENDED]
+    PricingBucket:
+      type: string
+      enum: [ITEM, ORDER, COUPON, SHIPPING]
+    PromotionTarget:
+      type: object
+      additionalProperties: false
+      required: [target_type, target_id]
+      properties:
+        target_type: { type: string, enum: [STORE, BRAND, CATEGORY, PRODUCT, SKU] }
+        target_id:
+          {
+            type: [string, 'null'],
+            format: uuid,
+            description: STORE 时必须为 null；其他类型必须为同商城 ID,
+          }
+    PromotionBenefit:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [method, value]
+          properties:
+            method: { type: string, const: FIXED_VND }
+            value: { $ref: '#/components/schemas/VndAmount' }
+        - type: object
+          additionalProperties: false
+          required: [method, value]
+          properties:
+            method: { type: string, const: PERCENTAGE_BPS }
+            value: { type: integer, minimum: 1, maximum: 10000 }
+            maximum_discount_vnd:
+              { oneOf: [{ $ref: '#/components/schemas/VndAmount' }, { type: 'null' }] }
+        - type: object
+          additionalProperties: false
+          required: [method]
+          properties:
+            method: { type: string, const: FREE_SHIPPING_QUALIFICATION }
+    PromotionVersionInput:
+      type: object
+      additionalProperties: false
+      required:
+        [expected_promotion_version, bucket, benefit, starts_at, priority, localizations, targets]
+      properties:
+        expected_promotion_version: { type: integer, minimum: 1 }
+        bucket: { $ref: '#/components/schemas/PricingBucket' }
+        benefit: { $ref: '#/components/schemas/PromotionBenefit' }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: [string, 'null'], format: date-time, default: null }
+        minimum_spend_vnd: { oneOf: [{ $ref: '#/components/schemas/VndAmount' }, { type: 'null' }] }
+        minimum_quantity: { type: [integer, 'null'], minimum: 1, maximum: 99 }
+        priority: { type: integer, minimum: 0, maximum: 1000000 }
+        stackable_with:
+          {
+            type: array,
+            maxItems: 3,
+            uniqueItems: true,
+            items: { $ref: '#/components/schemas/PricingBucket' },
+          }
+        localizations:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 3,
+            items: { $ref: '#/components/schemas/LocalizationInput' },
+          }
+        targets:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 500,
+            items: { $ref: '#/components/schemas/PromotionTarget' },
+          }
+    PromotionVersion:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          version_number,
+          status,
+          bucket,
+          benefit,
+          starts_at,
+          ends_at,
+          minimum_spend_vnd,
+          minimum_quantity,
+          priority,
+          stackable_with,
+          localizations,
+          targets,
+          created_at,
+          published_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        version_number: { type: integer, minimum: 1 }
+        status: { type: string, enum: [DRAFT, PUBLISHED] }
+        bucket: { $ref: '#/components/schemas/PricingBucket' }
+        benefit: { $ref: '#/components/schemas/PromotionBenefit' }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: [string, 'null'], format: date-time }
+        minimum_spend_vnd: { oneOf: [{ $ref: '#/components/schemas/VndAmount' }, { type: 'null' }] }
+        minimum_quantity: { type: [integer, 'null'], minimum: 1, maximum: 99 }
+        priority: { type: integer, minimum: 0, maximum: 1000000 }
+        stackable_with:
+          {
+            type: array,
+            maxItems: 3,
+            uniqueItems: true,
+            items: { $ref: '#/components/schemas/PricingBucket' },
+          }
+        localizations:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 3,
+            items: { $ref: '#/components/schemas/LocalizationInput' },
+          }
+        targets:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 500,
+            items: { $ref: '#/components/schemas/PromotionTarget' },
+          }
+        created_at: { type: string, format: date-time }
+        published_at: { type: [string, 'null'], format: date-time }
+    Promotion:
+      type: object
+      additionalProperties: false
+      required: [id, code, status, version, active_version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        code: { $ref: '#/components/schemas/Code' }
+        status: { $ref: '#/components/schemas/PromotionStatus' }
+        version: { type: integer, minimum: 1 }
+        active_version:
+          { oneOf: [{ $ref: '#/components/schemas/PromotionVersion' }, { type: 'null' }] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    PromotionPage:
+      unevaluatedProperties: false
+      allOf:
+        - $ref: '#/components/schemas/CursorPage'
+        - type: object
+          required: [items]
+          properties: { items: { type: array, items: { $ref: '#/components/schemas/Promotion' } } }
+    PromotionVersionPage:
+      unevaluatedProperties: false
+      allOf:
+        - $ref: '#/components/schemas/CursorPage'
+        - type: object
+          required: [items]
+          properties:
+            { items: { type: array, items: { $ref: '#/components/schemas/PromotionVersion' } } }
+    PublishPromotionRequest:
+      type: object
+      additionalProperties: false
+      required: [version_id, expected_promotion_version, confirmation_code]
+      properties:
+        version_id: { type: string, format: uuid }
+        expected_promotion_version: { type: integer, minimum: 1 }
+        confirmation_code: { type: string, const: PUBLISH }
+    PausePromotionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_promotion_version, confirmation_code]
+      properties:
+        expected_promotion_version: { type: integer, minimum: 1 }
+        confirmation_code: { type: string, const: PAUSE }
+    EndPromotionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_promotion_version, confirmation_code]
+      properties:
+        expected_promotion_version: { type: integer, minimum: 1 }
+        confirmation_code: { type: string, const: END }
+    CouponInput:
+      type: object
+      additionalProperties: false
+      required: [code, promotion_version_id]
+      properties:
+        code: { $ref: '#/components/schemas/Code' }
+        promotion_version_id: { type: string, format: uuid }
+        total_claim_limit: { type: [integer, 'null'], minimum: 1 }
+        per_member_claim_limit: { type: integer, const: 1, default: 1 }
+    CouponDraftUpdate:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      minProperties: 2
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        promotion_version_id: { type: string, format: uuid }
+        total_claim_limit: { type: [integer, 'null'], minimum: 1 }
+        per_member_claim_limit: { type: integer, const: 1 }
+    CouponStatusRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [expected_version, status, confirmation_code]
+          properties:
+            expected_version: { type: integer, minimum: 1 }
+            status: { type: string, const: ACTIVE }
+            confirmation_code: { type: string, const: ACTIVATE }
+        - type: object
+          additionalProperties: false
+          required: [expected_version, status, confirmation_code]
+          properties:
+            expected_version: { type: integer, minimum: 1 }
+            status: { type: string, const: PAUSED }
+            confirmation_code: { type: string, const: PAUSE }
+        - type: object
+          additionalProperties: false
+          required: [expected_version, status, confirmation_code]
+          properties:
+            expected_version: { type: integer, minimum: 1 }
+            status: { type: string, const: ENDED }
+            confirmation_code: { type: string, const: END }
+    Coupon:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          code,
+          promotion_version_id,
+          total_claim_limit,
+          per_member_claim_limit,
+          status,
+          claimed_count,
+          version,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        code: { $ref: '#/components/schemas/Code' }
+        promotion_version_id: { type: string, format: uuid }
+        total_claim_limit: { type: [integer, 'null'], minimum: 1 }
+        per_member_claim_limit: { type: integer, const: 1 }
+        status: { type: string, enum: [DRAFT, ACTIVE, PAUSED, ENDED] }
+        claimed_count: { type: integer, minimum: 0 }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CouponPage:
+      unevaluatedProperties: false
+      allOf:
+        - $ref: '#/components/schemas/CursorPage'
+        - type: object
+          required: [items]
+          properties: { items: { type: array, items: { $ref: '#/components/schemas/Coupon' } } }
