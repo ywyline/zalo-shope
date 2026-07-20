@@ -8,6 +8,8 @@ import {
 
 const BEAUTY_STORE_ID = '10000000-0000-4000-8000-000000000001';
 const FASHION_STORE_ID = '10000000-0000-4000-8000-000000000002';
+const BEAUTY_WAREHOUSE_ID = '17000000-0000-4000-8000-000000000001';
+const FASHION_WAREHOUSE_ID = '17000000-0000-4000-8000-000000000002';
 
 const permissionSeeds = [
   ['platform.stores.read', PermissionScope.PLATFORM, 'Read platform store registry'],
@@ -28,6 +30,12 @@ const permissionSeeds = [
   ['store.compliance.review', PermissionScope.STORE, 'Review current store compliance records'],
   ['store.content.read', PermissionScope.STORE, 'Read current store page content'],
   ['store.content.manage', PermissionScope.STORE, 'Manage current store page content'],
+  ['store.inventory.read', PermissionScope.STORE, 'Read current store inventory'],
+  ['store.inventory.manage', PermissionScope.STORE, 'Manage current store warehouses'],
+  ['store.inventory.adjust', PermissionScope.STORE, 'Adjust current store inventory'],
+  ['store.promotions.read', PermissionScope.STORE, 'Read current store promotions'],
+  ['store.promotions.manage', PermissionScope.STORE, 'Manage promotion drafts'],
+  ['store.promotions.publish', PermissionScope.STORE, 'Publish current store promotions'],
 ] as const;
 
 async function seed(): Promise<void> {
@@ -144,6 +152,69 @@ async function seedStore(
   }
 
   await seedCatalogFoundation(client, input);
+  await seedCommerceFoundation(client, input);
+}
+
+async function seedCommerceFoundation(
+  client: PrismaClient,
+  input: { id: string; industry: StoreIndustry },
+): Promise<void> {
+  const isBeauty = input.industry === StoreIndustry.BEAUTY;
+  const warehouseId = isBeauty ? BEAUTY_WAREHOUSE_ID : FASHION_WAREHOUSE_ID;
+  const warehouse = await client.warehouse.upsert({
+    create: {
+      code: 'local-default',
+      enabled: true,
+      id: warehouseId,
+      isDefaultFulfillment: true,
+      storeId: input.id,
+    },
+    update: { enabled: true, isDefaultFulfillment: true },
+    where: { storeId_code: { code: 'local-default', storeId: input.id } },
+  });
+
+  const warehouseNames: Record<Locale, string> = isBeauty
+    ? {
+        [Locale.en]: 'Beauty local test warehouse',
+        [Locale.vi]: 'Kho thử nghiệm mỹ phẩm',
+        [Locale.zh]: '美妆本地测试仓',
+      }
+    : {
+        [Locale.en]: 'Fashion local test warehouse',
+        [Locale.vi]: 'Kho thử nghiệm thời trang',
+        [Locale.zh]: '服装本地测试仓',
+      };
+  for (const locale of Object.values(Locale)) {
+    await client.warehouseLocalization.upsert({
+      create: {
+        locale,
+        name: warehouseNames[locale],
+        storeId: input.id,
+        warehouseId: warehouse.id,
+      },
+      update: { name: warehouseNames[locale] },
+      where: {
+        storeId_warehouseId_locale: { locale, storeId: input.id, warehouseId: warehouse.id },
+      },
+    });
+  }
+
+  // Existing local/test SKUs receive explicit zero balances. No non-zero stock
+  // is fabricated; M3.3 must create audited operations and movements for that.
+  const skus = await client.sku.findMany({ select: { id: true }, where: { storeId: input.id } });
+  for (const sku of skus) {
+    await client.inventoryBalance.upsert({
+      create: { skuId: sku.id, storeId: input.id, warehouseId: warehouse.id },
+      update: {},
+      where: {
+        storeId_warehouseId_skuId: {
+          skuId: sku.id,
+          storeId: input.id,
+          warehouseId: warehouse.id,
+        },
+      },
+    });
+  }
 }
 
 async function seedCatalogFoundation(

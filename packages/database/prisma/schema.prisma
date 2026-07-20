@@ -91,24 +91,42 @@ model Store {
   createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  localizations          StoreLocalization[]
-  theme                  StoreTheme?
-  zaloApps               StoreZaloApp[]
-  storeRoles             StoreRole[]
-  adminStoreRoles        AdminStoreRole[]
-  members                Member[]
-  memberIdentities       MemberExternalIdentity[]
-  memberPhoneContact     MemberPhoneContact[]
-  consents               Consent[]
-  memberSessions         MemberSession[]
-  auditLogs              AuditLog[]
-  brands                 Brand[]
-  categories             Category[]
-  attributeTemplates     AttributeTemplate[]
-  products               Product[]
-  mediaAssets            MediaAsset[]
-  complianceRequirements ComplianceRequirement[]
-  pages                  Page[]
+  localizations                 StoreLocalization[]
+  theme                         StoreTheme?
+  zaloApps                      StoreZaloApp[]
+  storeRoles                    StoreRole[]
+  adminStoreRoles               AdminStoreRole[]
+  members                       Member[]
+  memberIdentities              MemberExternalIdentity[]
+  memberPhoneContact            MemberPhoneContact[]
+  consents                      Consent[]
+  memberSessions                MemberSession[]
+  auditLogs                     AuditLog[]
+  brands                        Brand[]
+  categories                    Category[]
+  attributeTemplates            AttributeTemplate[]
+  products                      Product[]
+  mediaAssets                   MediaAsset[]
+  complianceRequirements        ComplianceRequirement[]
+  pages                         Page[]
+  warehouses                    Warehouse[]
+  inventoryBalances             InventoryBalance[]
+  inventoryOperations           InventoryOperation[]
+  inventoryReservations         InventoryReservation[]
+  inventoryReservationItems     InventoryReservationItem[]
+  inventoryMovements            InventoryMovement[]
+  productSearchDocuments        ProductSearchDocument[]
+  memberSearchHistory           MemberSearchHistory[]
+  searchQueryStats              SearchQueryStat[]
+  promotions                    Promotion[]
+  promotionVersions             PromotionVersion[]
+  promotionVersionLocalizations PromotionVersionLocalization[]
+  promotionTargets              PromotionTarget[]
+  coupons                       Coupon[]
+  memberCoupons                 MemberCoupon[]
+  carts                         Cart[]
+  cartItems                     CartItem[]
+  warehouseLocalizations        WarehouseLocalization[]
 
   @@map("stores")
 }
@@ -172,11 +190,15 @@ model AdminUser {
   createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  platformRolesGranted   AdminPlatformRole[] @relation("AdminPlatformRoleAdmin")
-  platformRolesGrantedBy AdminPlatformRole[] @relation("AdminPlatformRoleGrantor")
-  storeRoles             AdminStoreRole[]    @relation("AdminStoreRoleAdmin")
-  storeRolesGrantedBy    AdminStoreRole[]    @relation("AdminStoreRoleGrantor")
-  adminSessions          AdminSession[]
+  platformRolesGranted       AdminPlatformRole[]  @relation("AdminPlatformRoleAdmin")
+  platformRolesGrantedBy     AdminPlatformRole[]  @relation("AdminPlatformRoleGrantor")
+  storeRoles                 AdminStoreRole[]     @relation("AdminStoreRoleAdmin")
+  storeRolesGrantedBy        AdminStoreRole[]     @relation("AdminStoreRoleGrantor")
+  adminSessions              AdminSession[]
+  inventoryOperations        InventoryOperation[]
+  promotionsCreated          Promotion[]          @relation("PromotionCreatedBy")
+  promotionsUpdated          Promotion[]          @relation("PromotionUpdatedBy")
+  promotionVersionsPublished PromotionVersion[]   @relation("PromotionVersionPublishedBy")
 
   @@map("admin_users")
 }
@@ -288,11 +310,14 @@ model Member {
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store        Store                    @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  identities   MemberExternalIdentity[]
-  phoneContact MemberPhoneContact?
-  consents     Consent[]
-  sessions     MemberSession[]
+  store         Store                    @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  identities    MemberExternalIdentity[]
+  phoneContact  MemberPhoneContact?
+  consents      Consent[]
+  sessions      MemberSession[]
+  searchHistory MemberSearchHistory[]
+  coupons       MemberCoupon[]
+  carts         Cart[]
 
   @@unique([storeId, id])
   @@index([storeId, status])
@@ -538,24 +563,26 @@ model BrandMedia {
 }
 
 model Brand {
-  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId             String              @map("store_id") @db.Uuid
-  code                String              @db.VarChar(64)
-  status              RecordStatus        @default(ACTIVE)
-  countryCode         String?             @map("country_code") @db.Char(2)
-  websiteUrl          String?             @map("website_url")
-  recommended         Boolean             @default(false)
-  sortOrder           Int                 @default(0) @map("sort_order")
-  version             Int                 @default(1)
-  deletedAt           DateTime?           @map("deleted_at") @db.Timestamptz(6)
-  createdAt           DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy           String?             @map("created_by") @db.Uuid
-  updatedAt           DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy           String?             @map("updated_by") @db.Uuid
-  brand_localizations BrandLocalization[]
-  brand_media         BrandMedia[]
-  stores              Store               @relation(fields: [storeId], references: [id])
-  products            Product[]
+  id                     String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                String                  @map("store_id") @db.Uuid
+  code                   String                  @db.VarChar(64)
+  status                 RecordStatus            @default(ACTIVE)
+  countryCode            String?                 @map("country_code") @db.Char(2)
+  websiteUrl             String?                 @map("website_url")
+  recommended            Boolean                 @default(false)
+  sortOrder              Int                     @default(0) @map("sort_order")
+  version                Int                     @default(1)
+  deletedAt              DateTime?               @map("deleted_at") @db.Timestamptz(6)
+  createdAt              DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy              String?                 @map("created_by") @db.Uuid
+  updatedAt              DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy              String?                 @map("updated_by") @db.Uuid
+  brand_localizations    BrandLocalization[]
+  brand_media            BrandMedia[]
+  stores                 Store                   @relation(fields: [storeId], references: [id])
+  products               Product[]
+  productSearchDocuments ProductSearchDocument[]
+  promotionTargets       PromotionTarget[]
 
   @@unique([storeId, code])
   @@unique([storeId, id])
@@ -630,6 +657,8 @@ model Category {
   compliance_requirements      ComplianceRequirement[]
   product_secondary_categories ProductSecondaryCategory[]
   products                     Product[]
+  productSearchDocuments       ProductSearchDocument[]
+  promotionTargets             PromotionTarget[]
 
   @@unique([storeId, code])
   @@unique([storeId, id])
@@ -942,6 +971,8 @@ model Product {
   stores                       Store                      @relation(fields: [storeId], references: [id])
   attribute_template_versions  AttributeTemplateVersion?  @relation(fields: [storeId, attributeTemplateVersionId], references: [storeId, id], map: "products_template_version_fkey")
   skus                         Sku[]
+  productSearchDocuments       ProductSearchDocument[]
+  promotionTargets             PromotionTarget[]
 
   @@unique([storeId, code])
   @@unique([storeId, id])
@@ -979,35 +1010,540 @@ model SkuOptionValue {
 }
 
 model Sku {
-  id                    String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId               String           @map("store_id") @db.Uuid
-  productId             String           @map("product_id") @db.Uuid
-  code                  String           @db.VarChar(64)
-  barcode               String?          @db.VarChar(64)
-  salePriceVnd          BigInt           @map("sale_price_vnd")
-  marketPriceVnd        BigInt?          @map("market_price_vnd")
-  costPriceVnd          BigInt?          @map("cost_price_vnd")
-  weightGrams           Int?             @map("weight_grams")
-  lengthMillimeters     Int?             @map("length_millimeters")
-  widthMillimeters      Int?             @map("width_millimeters")
-  heightMillimeters     Int?             @map("height_millimeters")
-  optionCombinationKey  String           @map("option_combination_key")
-  optionCombinationHash String           @map("option_combination_hash") @db.Char(64)
-  status                RecordStatus     @default(ACTIVE)
-  version               Int              @default(1)
-  createdAt             DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy             String?          @map("created_by") @db.Uuid
-  updatedAt             DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy             String?          @map("updated_by") @db.Uuid
-  sku_media             SkuMedia[]
-  sku_option_values     SkuOptionValue[]
-  products              Product          @relation(fields: [storeId, productId], references: [storeId, id], map: "skus_product_fkey")
+  id                        String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                   String                     @map("store_id") @db.Uuid
+  productId                 String                     @map("product_id") @db.Uuid
+  code                      String                     @db.VarChar(64)
+  barcode                   String?                    @db.VarChar(64)
+  salePriceVnd              BigInt                     @map("sale_price_vnd")
+  marketPriceVnd            BigInt?                    @map("market_price_vnd")
+  costPriceVnd              BigInt?                    @map("cost_price_vnd")
+  weightGrams               Int?                       @map("weight_grams")
+  lengthMillimeters         Int?                       @map("length_millimeters")
+  widthMillimeters          Int?                       @map("width_millimeters")
+  heightMillimeters         Int?                       @map("height_millimeters")
+  optionCombinationKey      String                     @map("option_combination_key")
+  optionCombinationHash     String                     @map("option_combination_hash") @db.Char(64)
+  status                    RecordStatus               @default(ACTIVE)
+  version                   Int                        @default(1)
+  createdAt                 DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                 String?                    @map("created_by") @db.Uuid
+  updatedAt                 DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy                 String?                    @map("updated_by") @db.Uuid
+  sku_media                 SkuMedia[]
+  sku_option_values         SkuOptionValue[]
+  products                  Product                    @relation(fields: [storeId, productId], references: [storeId, id], map: "skus_product_fkey")
+  inventoryBalances         InventoryBalance[]
+  inventoryReservationItems InventoryReservationItem[]
+  promotionTargets          PromotionTarget[]
+  cartItems                 CartItem[]
 
   @@unique([storeId, code])
   @@unique([storeId, id])
   @@unique([storeId, productId, optionCombinationHash])
   @@index([storeId, productId, status])
   @@map("skus")
+}
+
+model Warehouse {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId              String   @map("store_id") @db.Uuid
+  code                 String   @db.VarChar(64)
+  enabled              Boolean  @default(true)
+  isDefaultFulfillment Boolean  @default(false) @map("is_default_fulfillment")
+  version              Int      @default(1)
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store            Store                      @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  localizations    WarehouseLocalization[]
+  balances         InventoryBalance[]
+  reservationItems InventoryReservationItem[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, code])
+  @@index([storeId, enabled, code])
+  @@map("warehouses")
+}
+
+model WarehouseLocalization {
+  storeId     String   @map("store_id") @db.Uuid
+  warehouseId String   @map("warehouse_id") @db.Uuid
+  locale      Locale
+  name        String   @db.VarChar(160)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  warehouse Warehouse @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict)
+
+  @@id([storeId, warehouseId, locale])
+  @@map("warehouse_localizations")
+}
+
+model InventoryBalance {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId     String   @map("store_id") @db.Uuid
+  warehouseId String   @map("warehouse_id") @db.Uuid
+  skuId       String   @map("sku_id") @db.Uuid
+  onHand      Int      @default(0) @map("on_hand")
+  reserved    Int      @default(0)
+  available   Int      @default(dbgenerated())
+  version     Int      @default(1)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store     Store               @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  warehouse Warehouse           @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict)
+  sku       Sku                 @relation(fields: [storeId, skuId], references: [storeId, id], onDelete: Restrict)
+  movements InventoryMovement[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, warehouseId, skuId])
+  @@index([storeId, warehouseId, available])
+  @@index([storeId, skuId])
+  @@map("inventory_balances")
+}
+
+model InventoryOperation {
+  id             String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId        String                 @map("store_id") @db.Uuid
+  operationKey   String                 @map("operation_key") @db.VarChar(128)
+  requestHash    String                 @map("request_hash") @db.Char(64)
+  operationType  InventoryOperationType @map("operation_type")
+  resultSnapshot Json                   @map("result_snapshot")
+  adminId        String?                @map("admin_id") @db.Uuid
+  sourceType     String?                @map("source_type") @db.VarChar(32)
+  sourceId       String?                @map("source_id") @db.Uuid
+  createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store                Store                  @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  admin                AdminUser?             @relation(fields: [adminId], references: [id], onDelete: Restrict)
+  movements            InventoryMovement[]
+  terminalReservations InventoryReservation[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, operationKey])
+  @@index([storeId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("inventory_operations")
+}
+
+model InventoryReservation {
+  id                  String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId             String                     @map("store_id") @db.Uuid
+  reservationKey      String                     @map("reservation_key") @db.VarChar(128)
+  status              InventoryReservationStatus @default(ACTIVE)
+  expiresAt           DateTime                   @map("expires_at") @db.Timestamptz(6)
+  terminalOperationId String?                    @map("terminal_operation_id") @db.Uuid
+  sourceType          String?                    @map("source_type") @db.VarChar(32)
+  sourceId            String?                    @map("source_id") @db.Uuid
+  createdAt           DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  terminalAt          DateTime?                  @map("terminal_at") @db.Timestamptz(6)
+
+  store             Store                      @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  terminalOperation InventoryOperation?        @relation(fields: [storeId, terminalOperationId], references: [storeId, id], onDelete: Restrict)
+  items             InventoryReservationItem[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, reservationKey])
+  @@index([storeId, status, expiresAt])
+  @@map("inventory_reservations")
+}
+
+model InventoryReservationItem {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId       String   @map("store_id") @db.Uuid
+  reservationId String   @map("reservation_id") @db.Uuid
+  warehouseId   String   @map("warehouse_id") @db.Uuid
+  skuId         String   @map("sku_id") @db.Uuid
+  quantity      Int
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store       Store                @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  reservation InventoryReservation @relation(fields: [storeId, reservationId], references: [storeId, id], onDelete: Restrict)
+  warehouse   Warehouse            @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict)
+  sku         Sku                  @relation(fields: [storeId, skuId], references: [storeId, id], onDelete: Restrict)
+  movements   InventoryMovement[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, reservationId, warehouseId, skuId])
+  @@map("inventory_reservation_items")
+}
+
+model InventoryMovement {
+  id                String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId           String                @map("store_id") @db.Uuid
+  balanceId         String                @map("balance_id") @db.Uuid
+  operationId       String                @map("operation_id") @db.Uuid
+  reservationItemId String?               @map("reservation_item_id") @db.Uuid
+  movementType      InventoryMovementType @map("movement_type")
+  onHandBefore      Int                   @map("on_hand_before")
+  onHandAfter       Int                   @map("on_hand_after")
+  onHandDelta       Int                   @map("on_hand_delta")
+  reservedBefore    Int                   @map("reserved_before")
+  reservedAfter     Int                   @map("reserved_after")
+  reservedDelta     Int                   @map("reserved_delta")
+  reasonCode        String                @map("reason_code") @db.VarChar(64)
+  note              String?               @db.VarChar(500)
+  createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store           Store                     @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  balance         InventoryBalance          @relation(fields: [storeId, balanceId], references: [storeId, id], onDelete: Restrict)
+  operation       InventoryOperation        @relation(fields: [storeId, operationId], references: [storeId, id], onDelete: Restrict)
+  reservationItem InventoryReservationItem? @relation(fields: [storeId, reservationItemId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@index([storeId, balanceId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([storeId, operationId])
+  @@map("inventory_movements")
+}
+
+model ProductSearchDocument {
+  id                  String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId             String                  @map("store_id") @db.Uuid
+  productId           String                  @map("product_id") @db.Uuid
+  locale              Locale
+  displayText         String                  @map("display_text")
+  canonicalText       String                  @map("canonical_text")
+  foldedText          String                  @map("folded_text")
+  searchVector        Unsupported("tsvector") @default(dbgenerated()) @map("search_vector")
+  brandId             String                  @map("brand_id") @db.Uuid
+  mainCategoryId      String                  @map("main_category_id") @db.Uuid
+  categoryIds         String[]                @map("category_ids") @db.Uuid
+  filterValues        Json                    @default("{}") @map("filter_values")
+  minimumSalePriceVnd BigInt                  @map("minimum_sale_price_vnd")
+  publishedAt         DateTime                @map("published_at") @db.Timestamptz(6)
+  sourceVersion       Int                     @map("source_version")
+  updatedAt           DateTime                @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store        Store    @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  product      Product  @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict)
+  brand        Brand    @relation(fields: [storeId, brandId], references: [storeId, id], onDelete: Restrict)
+  mainCategory Category @relation(fields: [storeId, mainCategoryId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, productId, locale])
+  @@index([storeId, locale, publishedAt(sort: Desc), id(sort: Desc)])
+  @@index([storeId, locale, minimumSalePriceVnd, id])
+  @@map("product_search_documents")
+}
+
+model MemberSearchHistory {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId        String   @map("store_id") @db.Uuid
+  memberId       String   @map("member_id") @db.Uuid
+  displayQuery   String   @map("display_query") @db.VarChar(100)
+  canonicalQuery String   @map("canonical_query") @db.VarChar(100)
+  foldedQuery    String   @map("folded_query") @db.VarChar(100)
+  locale         Locale
+  lastSearchedAt DateTime @default(now()) @map("last_searched_at") @db.Timestamptz(6)
+
+  store  Store  @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  member Member @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, memberId, locale, foldedQuery])
+  @@index([storeId, memberId, lastSearchedAt(sort: Desc), id(sort: Desc)])
+  @@map("member_search_history")
+}
+
+model SearchQueryStat {
+  storeId          String   @map("store_id") @db.Uuid
+  locale           Locale
+  foldedQuery      String   @map("folded_query") @db.VarChar(100)
+  displayQuery     String   @map("display_query") @db.VarChar(100)
+  searchCount      BigInt   @default(0) @map("search_count")
+  resultClickCount BigInt   @default(0) @map("result_click_count")
+  lastSearchedAt   DateTime @default(now()) @map("last_searched_at") @db.Timestamptz(6)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict)
+
+  @@id([storeId, locale, foldedQuery])
+  @@index([storeId, locale, searchCount(sort: Desc), foldedQuery])
+  @@map("search_query_stats")
+}
+
+model Promotion {
+  id               String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId          String          @map("store_id") @db.Uuid
+  code             String          @db.VarChar(64)
+  status           PromotionStatus @default(DRAFT)
+  activeVersionId  String?         @map("active_version_id") @db.Uuid
+  version          Int             @default(1)
+  createdByAdminId String          @map("created_by_admin_id") @db.Uuid
+  updatedByAdminId String          @map("updated_by_admin_id") @db.Uuid
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store         Store              @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  createdBy     AdminUser          @relation("PromotionCreatedBy", fields: [createdByAdminId], references: [id], onDelete: Restrict)
+  updatedBy     AdminUser          @relation("PromotionUpdatedBy", fields: [updatedByAdminId], references: [id], onDelete: Restrict)
+  activeVersion PromotionVersion?  @relation("PromotionActiveVersion", fields: [storeId, activeVersionId], references: [storeId, id], onDelete: Restrict)
+  versions      PromotionVersion[] @relation("PromotionVersions")
+
+  @@unique([storeId, id])
+  @@unique([storeId, code])
+  @@index([storeId, status, updatedAt(sort: Desc), id(sort: Desc)])
+  @@map("promotions")
+}
+
+model PromotionVersion {
+  id                 String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId            String                 @map("store_id") @db.Uuid
+  promotionId        String                 @map("promotion_id") @db.Uuid
+  versionNumber      Int                    @map("version_number")
+  status             PromotionVersionStatus @default(DRAFT)
+  bucket             PricingBucket
+  benefitMethod      PromotionBenefitMethod @map("benefit_method")
+  fixedDiscountVnd   BigInt?                @map("fixed_discount_vnd")
+  percentageBps      Int?                   @map("percentage_bps")
+  maximumDiscountVnd BigInt?                @map("maximum_discount_vnd")
+  minimumSpendVnd    BigInt?                @map("minimum_spend_vnd")
+  minimumQuantity    Int?                   @map("minimum_quantity")
+  startsAt           DateTime               @map("starts_at") @db.Timestamptz(6)
+  endsAt             DateTime?              @map("ends_at") @db.Timestamptz(6)
+  priority           Int                    @default(0)
+  stackableWith      PricingBucket[]        @default([]) @map("stackable_with")
+  publishedAt        DateTime?              @map("published_at") @db.Timestamptz(6)
+  publishedByAdminId String?                @map("published_by_admin_id") @db.Uuid
+  createdAt          DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store         Store                          @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  promotion     Promotion                      @relation("PromotionVersions", fields: [storeId, promotionId], references: [storeId, id], onDelete: Restrict)
+  activeFor     Promotion[]                    @relation("PromotionActiveVersion")
+  publishedBy   AdminUser?                     @relation("PromotionVersionPublishedBy", fields: [publishedByAdminId], references: [id], onDelete: Restrict)
+  localizations PromotionVersionLocalization[]
+  targets       PromotionTarget[]
+  coupons       Coupon[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, promotionId, versionNumber])
+  @@index([storeId, status, startsAt, endsAt])
+  @@map("promotion_versions")
+}
+
+model PromotionVersionLocalization {
+  storeId            String   @map("store_id") @db.Uuid
+  promotionVersionId String   @map("promotion_version_id") @db.Uuid
+  locale             Locale
+  name               String   @db.VarChar(240)
+  description        String?  @db.VarChar(2000)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store            Store            @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  promotionVersion PromotionVersion @relation(fields: [storeId, promotionVersionId], references: [storeId, id], onDelete: Restrict)
+
+  @@id([storeId, promotionVersionId, locale])
+  @@map("promotion_version_localizations")
+}
+
+model PromotionTarget {
+  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId            String              @map("store_id") @db.Uuid
+  promotionVersionId String              @map("promotion_version_id") @db.Uuid
+  targetType         PromotionTargetType @map("target_type")
+  brandId            String?             @map("brand_id") @db.Uuid
+  categoryId         String?             @map("category_id") @db.Uuid
+  productId          String?             @map("product_id") @db.Uuid
+  skuId              String?             @map("sku_id") @db.Uuid
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store            Store            @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  promotionVersion PromotionVersion @relation(fields: [storeId, promotionVersionId], references: [storeId, id], onDelete: Restrict)
+  brand            Brand?           @relation(fields: [storeId, brandId], references: [storeId, id], onDelete: Restrict)
+  category         Category?        @relation(fields: [storeId, categoryId], references: [storeId, id], onDelete: Restrict)
+  product          Product?         @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict)
+  sku              Sku?             @relation(fields: [storeId, skuId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@index([storeId, promotionVersionId, targetType])
+  @@map("promotion_targets")
+}
+
+model Coupon {
+  id                  String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId             String       @map("store_id") @db.Uuid
+  code                String       @db.VarChar(64)
+  promotionVersionId  String       @map("promotion_version_id") @db.Uuid
+  status              CouponStatus @default(DRAFT)
+  totalClaimLimit     Int?         @map("total_claim_limit")
+  perMemberClaimLimit Int          @default(1) @map("per_member_claim_limit")
+  claimedCount        Int          @default(0) @map("claimed_count")
+  version             Int          @default(1)
+  createdAt           DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store            Store            @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  promotionVersion PromotionVersion @relation(fields: [storeId, promotionVersionId], references: [storeId, id], onDelete: Restrict)
+  memberCoupons    MemberCoupon[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, code])
+  @@index([storeId, status, updatedAt(sort: Desc), id(sort: Desc)])
+  @@map("coupons")
+}
+
+model MemberCoupon {
+  id        String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId   String             @map("store_id") @db.Uuid
+  couponId  String             @map("coupon_id") @db.Uuid
+  memberId  String             @map("member_id") @db.Uuid
+  status    MemberCouponStatus @default(CLAIMED)
+  claimedAt DateTime           @default(now()) @map("claimed_at") @db.Timestamptz(6)
+  expiresAt DateTime?          @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store  Store  @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  coupon Coupon @relation(fields: [storeId, couponId], references: [storeId, id], onDelete: Restrict)
+  member Member @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, couponId, memberId])
+  @@index([storeId, memberId, status, expiresAt])
+  @@map("member_coupons")
+}
+
+model Cart {
+  id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId   String     @map("store_id") @db.Uuid
+  memberId  String     @map("member_id") @db.Uuid
+  status    CartStatus @default(ACTIVE)
+  version   Int        @default(1)
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store  Store      @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  member Member     @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+  items  CartItem[]
+
+  @@unique([storeId, id])
+  @@index([storeId, memberId, status])
+  @@map("carts")
+}
+
+model CartItem {
+  id                        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                   String   @map("store_id") @db.Uuid
+  cartId                    String   @map("cart_id") @db.Uuid
+  skuId                     String   @map("sku_id") @db.Uuid
+  quantity                  Int
+  selected                  Boolean  @default(true)
+  addedUnitPriceVnd         BigInt   @map("added_unit_price_vnd")
+  addedPromotionFingerprint String?  @map("added_promotion_fingerprint") @db.Char(64)
+  version                   Int      @default(1)
+  createdAt                 DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  cart  Cart  @relation(fields: [storeId, cartId], references: [storeId, id], onDelete: Restrict)
+  sku   Sku   @relation(fields: [storeId, skuId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, cartId, skuId])
+  @@map("cart_items")
+}
+
+enum InventoryMovementType {
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  RESERVE
+  RELEASE
+  CONSUME
+  RESTORE
+
+  @@map("inventory_movement_type")
+}
+
+enum InventoryOperationType {
+  ADJUST
+  IMPORT
+  RESERVE
+  RELEASE
+  CONSUME
+  EXPIRE
+  RESTORE
+
+  @@map("inventory_operation_type")
+}
+
+enum InventoryReservationStatus {
+  ACTIVE
+  RELEASED
+  CONSUMED
+  EXPIRED
+
+  @@map("inventory_reservation_status")
+}
+
+enum PromotionStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ENDED
+
+  @@map("promotion_status")
+}
+
+enum PromotionVersionStatus {
+  DRAFT
+  PUBLISHED
+
+  @@map("promotion_version_status")
+}
+
+enum PricingBucket {
+  ITEM
+  ORDER
+  COUPON
+  SHIPPING
+
+  @@map("pricing_bucket")
+}
+
+enum PromotionBenefitMethod {
+  FIXED_VND
+  PERCENTAGE_BPS
+  FREE_SHIPPING_QUALIFICATION
+
+  @@map("promotion_benefit_method")
+}
+
+enum PromotionTargetType {
+  STORE
+  BRAND
+  CATEGORY
+  PRODUCT
+  SKU
+
+  @@map("promotion_target_type")
+}
+
+enum CouponStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ENDED
+
+  @@map("coupon_status")
+}
+
+enum MemberCouponStatus {
+  CLAIMED
+  EXPIRED
+  DISABLED
+
+  @@map("member_coupon_status")
+}
+
+enum CartStatus {
+  ACTIVE
+  CONVERTED
+  ABANDONED
+
+  @@map("cart_status")
 }
 
 enum ProductStatus {
