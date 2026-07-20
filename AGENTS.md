@@ -214,6 +214,7 @@
 - 本地开发：`corepack pnpm dev`。
 - 单元测试：`corepack pnpm test:unit`。
 - 基础设施集成测试：先运行 `corepack pnpm infra:up`，再运行 `corepack pnpm test:integration`。
+- 浏览器 E2E：首次运行 `corepack pnpm test:e2e:install` 安装 Chromium/WebKit；启动基础设施后运行 `corepack pnpm test:e2e`。
 - lint：`corepack pnpm lint`。
 - 格式检查：`corepack pnpm format:check`；格式化：`corepack pnpm format`。
 - 类型检查：`corepack pnpm typecheck`。
@@ -226,7 +227,7 @@
 - 创建首个管理员：配置一次性 `ADMIN_EMAIL`、`ADMIN_PASSWORD`、`ADMIN_TOTP_SECRET` 后运行 `corepack pnpm --filter @zalo-shop/database admin:create`；禁止将这些值写入仓库或 shell 历史。
 - 生产依赖审计：`corepack pnpm audit --prod --audit-level high`。
 
-M1 已提供身份/RBAC 数据迁移、种子及 API 集成测试。迁移回滚只允许在无真实业务数据的 local/test 环境按迁移目录中的 `down.sql` 人工执行；产生身份、同意或审计数据后只允许向前修复。浏览器 E2E 尚未形成可执行项目脚本，不能以构建检查替代。项目直接使用 `corepack pnpm`，不依赖需要管理员权限的全局 pnpm shim；Windows 也可使用 `corepack.cmd pnpm`，详见 `README.md`。
+M1 已提供身份/RBAC 数据迁移、种子及 API 集成测试。迁移回滚只允许在无真实业务数据的 local/test 环境按迁移目录中的 `down.sql` 人工执行；产生身份、同意或审计数据后只允许向前修复。M2 已提供基于 Chromium/WebKit 的可重复浏览器 E2E；它覆盖 Web 预览但不能替代 Zalo 宿主真机验收。项目直接使用 `corepack pnpm`，不依赖需要管理员权限的全局 pnpm shim；Windows 也可使用 `corepack.cmd pnpm`，详见 `README.md`。
 
 ## 12. 文档与变更管理
 

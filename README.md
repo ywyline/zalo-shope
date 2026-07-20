@@ -2,7 +2,7 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2.1-M2.4 商品目录数据、品牌/类目/属性模板、商品/SKU、媒体与合规后台 API 已实现。装修 UI、买家目录 UI、真实 Zalo 生产适配器、真机验收及交易领域尚未完成。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现，并建立 Chromium/WebKit 可重复浏览器 E2E。真实 Zalo 生产适配器、宿主真机验收、生产对象存储/CDN、越南专业合规复核及 M3 交易领域尚未完成。
 
 ## 应用与包
 
@@ -85,6 +85,17 @@ corepack pnpm infra:up
 corepack pnpm test:integration
 corepack pnpm infra:down
 ```
+
+浏览器 E2E 首次运行需安装 Chromium 与 WebKit。测试使用真实 API、PostgreSQL、Redis 和 MinIO，自动启动管理端以及美妆/服装两个 Mini App Web 预览进程；生成的报告位于 `playwright-report/`：
+
+```powershell
+corepack pnpm test:e2e:install
+corepack pnpm infra:up
+corepack pnpm test:e2e
+corepack pnpm infra:down
+```
+
+该 E2E 覆盖桌面 Chromium、Android Chromium 与 iPhone WebKit 的 Web 预览，不替代 Zalo Mini App 宿主真机测试。
 
 ## 数据库迁移与本地种子
 

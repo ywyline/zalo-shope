@@ -11,7 +11,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     steps:
       - name: Check out repository
@@ -42,10 +42,27 @@ jobs:
           S3_SECRET_KEY: minio_local_development_only
 
       - name: Start local dependencies
-        run: docker compose up -d --wait
+        run: pnpm infra:up
 
       - name: Run infrastructure integration tests
         run: pnpm test:integration
+
+      - name: Install browser test engines
+        run: pnpm exec playwright install --with-deps chromium webkit
+
+      - name: Run browser end-to-end tests
+        run: pnpm test:e2e
+
+      - name: Upload browser test evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Show dependency logs after a failure
         if: failure()

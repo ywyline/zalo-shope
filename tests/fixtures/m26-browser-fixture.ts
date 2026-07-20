@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-
 import { parseRuntimeConfig } from '@zalo-shop/config';
 import { PrismaClient } from '@zalo-shop/database';
 import { S3MediaStorageProvider } from '@zalo-shop/integrations';
@@ -489,18 +488,30 @@ async function removeFixtures(): Promise<void> {
   });
 }
 
-async function main(): Promise<void> {
+export async function setUpM26BrowserFixtures(): Promise<void> {
   await database.$connect();
   try {
     await removeFixtures();
-    if (process.argv[2] === 'up') {
-      for (const store of stores) await seedStore(store);
-    } else if (process.argv[2] !== 'down') {
-      throw new Error('Usage: m26-browser-fixture.ts <up|down>');
-    }
+    for (const store of stores) await seedStore(store);
   } finally {
     await database.$disconnect();
   }
 }
 
-void main();
+export async function tearDownM26BrowserFixtures(): Promise<void> {
+  await database.$connect();
+  try {
+    await removeFixtures();
+  } finally {
+    await database.$disconnect();
+  }
+}
+
+async function main(): Promise<void> {
+  if (process.argv[2] === 'up') await setUpM26BrowserFixtures();
+  else if (process.argv[2] === 'down') await tearDownM26BrowserFixtures();
+  else throw new Error('Usage: m26-browser-fixture.ts <up|down>');
+}
+
+const entryPoint = process.argv[1]?.replaceAll('\\', '/');
+if (entryPoint?.endsWith('/m26-browser-fixture.ts')) void main();
