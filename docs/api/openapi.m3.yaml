@@ -1,11 +1,11 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M3 Inventory, Search, Pricing and Cart API
-  version: 0.3.1-m3-freeze
+  version: 0.3.2-m3.4
   description: >-
     M3.1 冻结契约；作为 openapi.m1.yaml 与 openapi.m2.yaml 的向后兼容增量。
     商城只从受信 X-Store-Code 与认证主体解析，请求体不接受 store_id。
-    本文档不表示接口已实现：schema、迁移与业务 API 从 M3.2 起按门禁实施。
+    M3.2-M3.4 已实施数据库基础、库存与搜索接口；促销、报价与购物车接口仍按后续门禁实施。
 servers:
   - url: http://localhost:3000
 tags:
@@ -108,6 +108,25 @@ paths:
                     maxItems: 20
                     items: { $ref: '#/components/schemas/SearchSuggestion' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/search/facets:
+    get:
+      tags: [Search]
+      summary: 返回当前商城可用的品牌、类目、行业属性和价格筛选项
+      description: >-
+        M3.4 向后兼容补充；筛选项只来自当前商城的已发布搜索投影，标签按请求语言回退越南语。
+      security: [{ StoreCode: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/Locale'
+      responses:
+        '200':
+          description: 当前商城搜索筛选项及商品计数
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchFacets' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
   /v1/members/me/search-history:
     get:
@@ -912,6 +931,60 @@ components:
         kind: { type: string, enum: [PRODUCT, QUERY] }
         text: { type: string, minLength: 1, maxLength: 240 }
         product_code: { oneOf: [{ $ref: '#/components/schemas/Code' }, { type: 'null' }] }
+    SearchFacets:
+      type: object
+      additionalProperties: false
+      required: [attributes, brands, categories, price_range_vnd]
+      properties:
+        attributes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, label, options]
+            properties:
+              code: { $ref: '#/components/schemas/Code' }
+              label: { type: string, minLength: 1, maxLength: 240 }
+              options:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [code, count, label]
+                  properties:
+                    code: { $ref: '#/components/schemas/Code' }
+                    count: { type: integer, minimum: 0 }
+                    label: { type: string, minLength: 1, maxLength: 240 }
+        brands:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, count, name]
+            properties:
+              code: { $ref: '#/components/schemas/Code' }
+              count: { type: integer, minimum: 0 }
+              name: { type: string, minLength: 1, maxLength: 240 }
+        categories:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, count, depth, name]
+            properties:
+              code: { $ref: '#/components/schemas/Code' }
+              count: { type: integer, minimum: 0 }
+              depth: { type: integer, minimum: 0, maximum: 3 }
+              name: { type: string, minLength: 1, maxLength: 240 }
+        price_range_vnd:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [maximum, minimum]
+              properties:
+                maximum: { $ref: '#/components/schemas/VndAmount' }
+                minimum: { $ref: '#/components/schemas/VndAmount' }
+            - type: 'null'
     SearchHistoryItem:
       type: object
       additionalProperties: false

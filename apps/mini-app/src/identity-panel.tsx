@@ -1,25 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { translate, type MessageKey } from '@zalo-shop/i18n';
 
 import { API_BASE, STORE_CODE, type Locale } from './catalog-api';
-
-function isZaloRuntime(): boolean {
-  const hostname = window.location.hostname.toLowerCase();
-  return (
-    /zalo/i.test(window.navigator.userAgent) ||
-    'zmpGlobal' in window ||
-    hostname === 'zalo.me' ||
-    hostname.endsWith('.zalo.me') ||
-    hostname === 'zdn.vn' ||
-    hostname.endsWith('.zdn.vn')
-  );
-}
+import { useMemberSession } from './member-session';
 
 export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
-  const started = useRef(false);
-  const [startup, setStartup] = useState<'error' | 'loading' | 'ready'>('loading');
-  const [accessToken, setAccessToken] = useState<string>();
-  const [zaloToken, setZaloToken] = useState<string>();
+  const session = useMemberSession();
   const [manualOpen, setManualOpen] = useState(false);
   const [phone, setPhone] = useState('');
   const [consent, setConsent] = useState(false);
@@ -27,39 +13,8 @@ export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
   const [feedback, setFeedback] = useState<string>();
   const t = (key: MessageKey): string => translate(locale, key);
 
-  const startIdentity = async (): Promise<void> => {
-    setStartup('loading');
-    setFeedback(undefined);
-    try {
-      if (!isZaloRuntime()) throw new Error('Zalo runtime is unavailable');
-      const { getAccessToken } = await import('zmp-sdk');
-      const token = String(await getAccessToken());
-      if (!token) throw new Error('Zalo access token is unavailable');
-      const response = await fetch(`${API_BASE}/v1/auth/zalo/exchange`, {
-        headers: { 'X-Store-Code': STORE_CODE, 'X-Zalo-Access-Token': token },
-        method: 'POST',
-      });
-      if (!response.ok) throw new Error('Identity exchange failed');
-      const session = (await response.json()) as { access_token?: string };
-      if (!session.access_token) throw new Error('Identity response is invalid');
-      setAccessToken(session.access_token);
-      setZaloToken(token);
-      setStartup('ready');
-    } catch {
-      setAccessToken(undefined);
-      setZaloToken(undefined);
-      setStartup('error');
-    }
-  };
-
-  useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    void startIdentity();
-  }, []);
-
   const savePhone = async (input: { phone?: string; phoneToken?: string }): Promise<void> => {
-    if (!accessToken) {
+    if (!session.accessToken) {
       setFeedback(t('identity.signedOut'));
       return;
     }
@@ -76,10 +31,12 @@ export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
             policy_version: 'phone-v1',
           }),
           headers: {
-            Authorization: `Bearer ${accessToken}`,
+            Authorization: `Bearer ${session.accessToken}`,
             'Content-Type': 'application/json',
             'X-Store-Code': STORE_CODE,
-            ...(isZalo && zaloToken ? { 'X-Zalo-Access-Token': zaloToken } : {}),
+            ...(isZalo && session.zaloAccessToken
+              ? { 'X-Zalo-Access-Token': session.zaloAccessToken }
+              : {}),
           },
           method: 'PUT',
         },
@@ -125,21 +82,21 @@ export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
       <h1 id="identity-title">{t('catalog.profile')}</h1>
       <p>{t('identity.intro')}</p>
 
-      {startup === 'loading' && (
+      {session.status === 'loading' && (
         <div className="status-card loading" role="status">
           <span className="spinner" aria-hidden="true" /> {t('identity.loading')}
         </div>
       )}
-      {startup === 'error' && (
+      {session.status === 'error' && (
         <div className="status-card error" role="alert">
           <span aria-hidden="true">!</span>
           <strong>{t('identity.error')}</strong>
-          <button onClick={() => void startIdentity()} type="button">
+          <button onClick={() => void session.connect()} type="button">
             {t('app.retry')}
           </button>
         </div>
       )}
-      {startup === 'ready' && (
+      {session.status === 'ready' && (
         <div className="status-card success" role="status">
           <span aria-hidden="true">✓</span>
           <strong>{t('identity.ready')}</strong>
@@ -149,7 +106,7 @@ export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
       <div className="identity-actions">
         <button
           className="button-primary"
-          disabled={startup !== 'ready'}
+          disabled={session.status !== 'ready'}
           onClick={() => void requestZaloPhone()}
           type="button"
         >

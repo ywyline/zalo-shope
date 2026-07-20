@@ -151,7 +151,7 @@ test('inventory workbench stays isolated and validates an atomic initial-load fi
   await page.getByRole('button', { name: 'Initial stock import' }).click();
   await page.getByLabel('CSV / XLSX file').setInputFiles({
     buffer: Buffer.from(
-      'warehouse_code,sku_code,quantity,note\nlocal-default,beauty-local-primary-default,1,Browser validation only\n',
+      'warehouse_code,sku_code,quantity,note\nlocal-default,beauty-local-secondary-default,1,Browser validation only\n',
     ),
     mimeType: 'text/csv',
     name: 'inventory-browser-dry-run.csv',

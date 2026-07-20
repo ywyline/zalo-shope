@@ -439,6 +439,7 @@ describe('M2.6 buyer catalog API', () => {
       await transaction.pageVersion.deleteMany({ where: { id: fixture.pageVersionId } });
       await transaction.page.deleteMany({ where: { id: fixture.pageId } });
       const allSkuIds = [...fixture.beautySkuIds, fixture.fashionSkuId];
+      await transaction.inventoryBalance.deleteMany({ where: { skuId: { in: allSkuIds } } });
       await transaction.skuOptionValue.deleteMany({ where: { skuId: { in: allSkuIds } } });
       await transaction.productMedia.deleteMany({
         where: { productId: { in: [...fixture.beautyProductIds, fixture.fashionProductId] } },

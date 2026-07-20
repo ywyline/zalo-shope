@@ -17,18 +17,18 @@ export type NormalizedSearchText = Readonly<{
   tokens: readonly string[];
 }>;
 
-/**
- * Produces the forms stored by the M3 search projection. `display` keeps the
- * normalized user text, `canonical` lowercases it for exact matching, and
- * `folded` additionally supports accent-insensitive matching without losing
- * Chinese or English text.
- */
-export function normalizeSearchText(input: string): NormalizedSearchText {
+const SENSITIVE_SEARCH_PATTERNS = [
+  /(?:bearer|token|secret|password|mật\s*khẩu|密码)\s*[:=]/iu,
+  /\b(?:\+?84|0)(?:3[2-9]|5[25689]|7[06-9]|8[1-689]|9[0-46-9])\d{7}\b/u,
+  /\b[A-Za-z0-9_-]{32,}\b/u,
+] as const;
+
+function normalize(input: string, maximumLength?: number): NormalizedSearchText {
   if (typeof input !== 'string') throw new SearchRuleError('QUERY_TYPE_INVALID');
 
   const display = input.normalize('NFC').trim().replace(/\s+/gu, ' ');
   if (display.length === 0) throw new SearchRuleError('QUERY_EMPTY');
-  if ([...display].length > MAX_SEARCH_QUERY_LENGTH) {
+  if (maximumLength !== undefined && [...display].length > maximumLength) {
     throw new SearchRuleError('QUERY_TOO_LONG');
   }
 
@@ -51,4 +51,23 @@ export function normalizeSearchText(input: string): NormalizedSearchText {
     folded,
     tokens: Object.freeze(folded.split(' ')),
   });
+}
+
+/** Normalizes a user query and enforces the public query-length contract. */
+export function normalizeSearchText(input: string): NormalizedSearchText {
+  return normalize(input, MAX_SEARCH_QUERY_LENGTH);
+}
+
+/**
+ * Produces the forms stored by the M3 search projection. Product documents
+ * legitimately combine several bounded catalog fields and can exceed a query's
+ * 100-code-point input limit.
+ */
+export function normalizeSearchDocumentText(input: string): NormalizedSearchText {
+  return normalize(input);
+}
+
+/** Search remains available, but sensitive-looking text must not enter history or aggregates. */
+export function canPersistSearchTelemetry(input: string): boolean {
+  return !SENSITIVE_SEARCH_PATTERNS.some((pattern) => pattern.test(input));
 }

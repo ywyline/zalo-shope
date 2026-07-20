@@ -2,7 +2,7 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.3 已交付库存契约/数据库基础、仓库、余额/流水、受审调整、原子初始库存导入、预留终态原语、过期 worker 和三语库存工作台，并建立 Chromium/WebKit 可重复浏览器 E2E。M3.4 搜索及后续阶段、真实 Zalo 生产适配器、宿主真机验收、生产对象存储/CDN和越南专业合规复核尚未完成。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.4 已交付库存契约/数据库基础、仓库与库存服务、三语搜索/联想/筛选、会员搜索历史、商城级热门词、可重建搜索投影和移动端搜索体验，并建立 Chromium/WebKit 可重复浏览器 E2E。M3.5 促销计价及后续阶段、真实 Zalo 生产适配器、宿主真机验收、生产对象存储/CDN 和越南专业合规复核尚未完成。
 
 ## 应用与包
 
@@ -68,6 +68,8 @@ Mini App 身份启动和手机号授权直接调用官方 ZMP SDK，服务端生
 
 库存预留过期由 worker 按数据库事实逐商城轮询，默认每 5 秒处理最多 100 条；可通过 `INVENTORY_EXPIRATION_INTERVAL_MS`（1000–300000）和 `INVENTORY_EXPIRATION_BATCH_SIZE`（1–500）调整。动作键和数据库终态保证重复执行幂等；当前无需 BullMQ。
 
+公共搜索默认按来源地址每 60 秒最多 120 次请求；可通过 `SEARCH_RATE_LIMIT_WINDOW_SECONDS`（10–3600）和 `SEARCH_RATE_LIMIT_MAX_REQUESTS`（10–10000）调整。Redis 仅保存短期限流计数，不作为搜索或商城数据事实来源。
+
 ## 质量检查
 
 ```powershell
@@ -110,6 +112,14 @@ corepack pnpm --filter @zalo-shop/database migrate:dev
 corepack pnpm --filter @zalo-shop/database migrate:deploy
 $env:NODE_ENV='test'
 corepack pnpm --filter @zalo-shop/database seed
+```
+
+搜索文档属于可重建派生数据。需修复单个商城投影时，使用 runtime RLS 连接并显式记录执行人；命令会删除并在同一商城事务内重建该商城文档，同时写审计记录：
+
+```powershell
+$env:SEARCH_REBUILD_STORE_CODE='beauty-local'
+$env:SEARCH_REBUILD_ACTOR_ID='<authorized-admin-uuid>'
+corepack pnpm --filter @zalo-shop/database search:rebuild
 ```
 
 迁移目录提供人工审查的 `down.sql`，仅允许用于无真实身份/审计数据的 local/test 环境；有数据后采用向前修复。首个管理员使用 `admin:create` CLI 和一次性环境变量创建，不得把密码或 TOTP secret 写入文件。

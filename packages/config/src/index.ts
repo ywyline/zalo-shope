@@ -60,6 +60,8 @@ const runtimeConfigSchema = z
       .refine((value) => Buffer.from(value, 'base64').length === 32, 'must decode to 32 bytes'),
     PII_HASH_KEY: z.string().min(32),
     REDIS_URL: z.string().url().startsWith('redis://'),
+    SEARCH_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(10).max(10_000).default(120),
+    SEARCH_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(10).max(3_600).default(60),
     S3_ACCESS_KEY: z.string().min(1),
     S3_BUCKET: z.string().min(3),
     S3_ENDPOINT: z.string().url(),

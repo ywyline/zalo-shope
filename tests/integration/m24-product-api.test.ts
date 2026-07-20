@@ -200,6 +200,7 @@ describe('M2.4 product, media and compliance API', () => {
           where: { complianceRecordId: { in: recordIds } },
         });
         await transaction.complianceRecord.deleteMany({ where: { id: { in: recordIds } } });
+        await transaction.productSearchDocument.deleteMany({ where: { productId } });
         await transaction.productVersion.deleteMany({ where: { productId } });
         await transaction.productMedia.deleteMany({ where: { productId } });
         await transaction.inventoryBalance.deleteMany({ where: { skuId: { in: skuIds } } });

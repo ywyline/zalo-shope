@@ -27,6 +27,8 @@ describe('parseRuntimeConfig', () => {
     expect(config.WORKER_PORT).toBe(3001);
     expect(config.INVENTORY_EXPIRATION_INTERVAL_MS).toBe(5_000);
     expect(config.INVENTORY_EXPIRATION_BATCH_SIZE).toBe(100);
+    expect(config.SEARCH_RATE_LIMIT_MAX_REQUESTS).toBe(120);
+    expect(config.SEARCH_RATE_LIMIT_WINDOW_SECONDS).toBe(60);
     expect(config.S3_FORCE_PATH_STYLE).toBe(true);
     expect(config.CONTENT_EXTERNAL_TARGET_HOSTS).toEqual([]);
   });

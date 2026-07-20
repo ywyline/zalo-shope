@@ -11,6 +11,7 @@
     "generate": "prisma generate",
     "migrate:deploy": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",
+    "search:rebuild": "tsx prisma/rebuild-search.ts",
     "seed": "tsx prisma/seed.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p prisma/tsconfig.json --noEmit",
     "validate": "prisma validate"

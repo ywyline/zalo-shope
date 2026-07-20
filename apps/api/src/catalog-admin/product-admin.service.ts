@@ -24,7 +24,7 @@ import type {
   SubmitComplianceRecordInput,
 } from '@zalo-shop/contracts';
 import type { Prisma, PrismaClient, StoreTransaction } from '@zalo-shop/database';
-import { withStoreTransaction } from '@zalo-shop/database';
+import { syncProductSearchProjection, withStoreTransaction } from '@zalo-shop/database';
 import {
   canonicalSkuCombinationKey,
   evaluateProductPublication,
@@ -770,6 +770,7 @@ export class ProductAdminService {
             },
           });
           if (update.count !== 1) throw new ConflictException('Product version conflict');
+          await syncProductSearchProjection(transaction, request.storeId, item.product_id);
           const after = await this.loadProduct(transaction, request.storeId, item.product_id);
           await this.admin.writeAudit(transaction, context, {
             action: 'catalog.product.disabled',
@@ -1704,6 +1705,7 @@ export class ProductAdminService {
         },
         where: { storeId_id: { id: productId, storeId: request.storeId } },
       });
+      await syncProductSearchProjection(transaction, request.storeId, productId);
       await this.admin.writeAudit(transaction, context, {
         action: 'catalog.product.published',
         after: { product: after, version },

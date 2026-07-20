@@ -325,6 +325,7 @@ async function seedCatalogFoundation(
     create: {
       code: isBeauty ? 'shade' : 'size',
       dataType: 'OPTION',
+      filterable: true,
       id: definitionId,
       labelEn: isBeauty ? 'Shade' : 'Size',
       labelVi: isBeauty ? 'Tông màu' : 'Kích cỡ',
@@ -334,6 +335,8 @@ async function seedCatalogFoundation(
       storeId: input.id,
       templateVersionId,
     },
+    // Activated template versions are immutable. Existing installations retain
+    // their published definition; newly seeded environments get the M3.4 default.
     update: {},
     where: {
       storeId_templateVersionId_code: {

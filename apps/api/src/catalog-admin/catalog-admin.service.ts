@@ -9,7 +9,7 @@ import type {
   UpdateCategoryInput,
 } from '@zalo-shop/contracts';
 import type { Prisma, PrismaClient, StoreTransaction } from '@zalo-shop/database';
-import { withStoreTransaction } from '@zalo-shop/database';
+import { syncProductsSearchProjection, withStoreTransaction } from '@zalo-shop/database';
 
 import { AdminService, type AdminHeaders } from '../admin/admin.service';
 import { DATABASE_CLIENT } from '../auth/auth.tokens';
@@ -147,6 +147,15 @@ export class CatalogAdminService {
           },
         });
       }
+      const affectedProducts = await transaction.product.findMany({
+        select: { id: true },
+        where: { brandId, storeId: request.storeId },
+      });
+      await syncProductsSearchProjection(
+        transaction,
+        request.storeId,
+        affectedProducts.map(({ id }) => id),
+      );
       const after = await transaction.brand.findUniqueOrThrow({
         include: { brand_localizations: true },
         where: { storeId_id: { id: brandId, storeId: request.storeId } },
@@ -327,6 +336,27 @@ export class CatalogAdminService {
           },
         });
       }
+      const affectedProducts = await transaction.product.findMany({
+        select: { id: true },
+        where: {
+          OR: [
+            { mainCategoryId: categoryId },
+            { categories: { parentId: categoryId } },
+            { product_secondary_categories: { some: { categoryId } } },
+            {
+              product_secondary_categories: {
+                some: { categories: { parentId: categoryId } },
+              },
+            },
+          ],
+          storeId: request.storeId,
+        },
+      });
+      await syncProductsSearchProjection(
+        transaction,
+        request.storeId,
+        affectedProducts.map(({ id }) => id),
+      );
       const after = await transaction.category.findUniqueOrThrow({
         include: { category_localizations: true },
         where: { storeId_id: { id: categoryId, storeId: request.storeId } },

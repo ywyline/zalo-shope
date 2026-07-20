@@ -63,3 +63,4 @@ export async function withAdminAssignmentDiscoveryTransaction<T>(
 }
 
 export * from './inventory-primitives';
+export * from './search-projection';

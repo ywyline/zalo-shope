@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { parseRuntimeConfig } from '@zalo-shop/config';
-import { PrismaClient } from '@zalo-shop/database';
+import {
+  adjustInventory,
+  PrismaClient,
+  rebuildStoreSearchProjection,
+  withStoreTransaction,
+} from '@zalo-shop/database';
+import { createStoreContext } from '@zalo-shop/domain';
 import { S3MediaStorageProvider } from '@zalo-shop/integrations';
 
 const ACTOR_ID = '26000000-0000-4000-8000-000000000001';
@@ -10,8 +16,8 @@ const stores = [
     brandId: '26010000-0000-4000-8000-000000000001',
     categoryId: '12000000-0000-4000-8000-000000000001',
     colors: ['#f3b7ae', '#c8676d', '#71383f'],
-    definitionId: '15000000-0000-4000-8000-000000000001',
-    defaultOptionId: '16000000-0000-4000-8000-000000000001',
+    definitionId: '26090000-0000-4000-8000-000000000001',
+    defaultOptionId: '26091000-0000-4000-8000-000000000001',
     extraOptionId: '26080000-0000-4000-8000-000000000001',
     extraOptionLabels: { en: 'Rose', vi: 'Hồng', zh: '玫瑰色' },
     id: '10000000-0000-4000-8000-000000000001',
@@ -39,6 +45,8 @@ const stores = [
       '26040000-0000-4000-8000-000000000003',
     ],
     storeCode: 'beauty-local',
+    templateId: '26092000-0000-4000-8000-000000000001',
+    templateVersionId: '26093000-0000-4000-8000-000000000001',
     translations: {
       brand: { en: 'Lumière Lab', vi: 'Lumière Lab', zh: '微光实验室' },
       brandIntro: {
@@ -66,8 +74,8 @@ const stores = [
     brandId: '26010000-0000-4000-8000-000000000002',
     categoryId: '12000000-0000-4000-8000-000000000002',
     colors: ['#d8c8b8', '#897363', '#302a27'],
-    definitionId: '15000000-0000-4000-8000-000000000002',
-    defaultOptionId: '16000000-0000-4000-8000-000000000002',
+    definitionId: '26090000-0000-4000-8000-000000000002',
+    defaultOptionId: '26091000-0000-4000-8000-000000000002',
     extraOptionId: '26080000-0000-4000-8000-000000000002',
     extraOptionLabels: { en: 'L', vi: 'L', zh: 'L' },
     id: '10000000-0000-4000-8000-000000000002',
@@ -95,6 +103,8 @@ const stores = [
       '26040000-0000-4000-8000-000000000013',
     ],
     storeCode: 'fashion-local',
+    templateId: '26092000-0000-4000-8000-000000000002',
+    templateVersionId: '26093000-0000-4000-8000-000000000002',
     translations: {
       brand: { en: 'Forme Studio', vi: 'Forme Studio', zh: '廓形工作室' },
       brandIntro: {
@@ -183,17 +193,70 @@ async function uploadMedia(store: StoreFixture): Promise<void> {
 
 async function seedStore(store: StoreFixture): Promise<void> {
   await uploadMedia(store);
-  await database.attributeOption.create({
+  await database.attributeTemplate.create({
     data: {
-      attributeDefinitionId: store.definitionId,
-      code: store.optionCode,
-      id: store.extraOptionId,
-      labelEn: store.extraOptionLabels.en,
-      labelVi: store.extraOptionLabels.vi,
-      labelZh: store.extraOptionLabels.zh,
-      sortOrder: 1,
+      code: `m26-browser-${store.industry.toLowerCase()}`,
+      createdBy: ACTOR_ID,
+      id: store.templateId,
+      industry: store.industry,
       storeId: store.id,
     },
+  });
+  await database.attributeTemplateVersion.create({
+    data: {
+      createdBy: ACTOR_ID,
+      id: store.templateVersionId,
+      name: `M2.6 browser ${store.industry.toLowerCase()} v1`,
+      storeId: store.id,
+      templateId: store.templateId,
+      version: 1,
+    },
+  });
+  await database.attributeDefinition.create({
+    data: {
+      code: store.industry === 'BEAUTY' ? 'shade' : 'size',
+      dataType: 'OPTION',
+      filterable: true,
+      id: store.definitionId,
+      labelEn: store.industry === 'BEAUTY' ? 'Shade' : 'Size',
+      labelVi: store.industry === 'BEAUTY' ? 'Tông màu' : 'Kích cỡ',
+      labelZh: store.industry === 'BEAUTY' ? '色号' : '尺码',
+      purpose: 'SPECIFICATION',
+      required: true,
+      storeId: store.id,
+      templateVersionId: store.templateVersionId,
+    },
+  });
+  await database.attributeOption.createMany({
+    data: [
+      {
+        attributeDefinitionId: store.definitionId,
+        code: store.industry === 'BEAUTY' ? 'default' : 'm',
+        id: store.defaultOptionId,
+        labelEn: store.industry === 'BEAUTY' ? 'Default' : 'M',
+        labelVi: store.industry === 'BEAUTY' ? 'Mặc định' : 'M',
+        labelZh: store.industry === 'BEAUTY' ? '默认' : 'M',
+        storeId: store.id,
+      },
+      {
+        attributeDefinitionId: store.definitionId,
+        code: store.optionCode,
+        id: store.extraOptionId,
+        labelEn: store.extraOptionLabels.en,
+        labelVi: store.extraOptionLabels.vi,
+        labelZh: store.extraOptionLabels.zh,
+        sortOrder: 1,
+        storeId: store.id,
+      },
+    ],
+  });
+  await database.attributeTemplateVersion.update({
+    data: { activatedAt: new Date(), activatedBy: ACTOR_ID, status: 'ACTIVE' },
+    where: { id: store.templateVersionId },
+  });
+  await database.attributeTemplate.update({
+    data: { currentVersion: 1, status: 'ACTIVE', updatedBy: ACTOR_ID },
+    where: { id: store.templateId },
   });
   await database.brand.create({
     data: {
@@ -232,10 +295,7 @@ async function seedStore(store: StoreFixture): Promise<void> {
   for (const [index, productId] of store.productIds.entries()) {
     await database.product.create({
       data: {
-        attributeTemplateVersionId:
-          store.industry === 'BEAUTY'
-            ? '14000000-0000-4000-8000-000000000001'
-            : '14000000-0000-4000-8000-000000000002',
+        attributeTemplateVersionId: store.templateVersionId,
         brandId: store.brandId,
         code:
           store.industry === 'BEAUTY'
@@ -277,6 +337,19 @@ async function seedStore(store: StoreFixture): Promise<void> {
                 ? '轻柔洗涤并阴干。'
                 : 'Wash gently and dry in the shade.',
       })),
+    });
+    await database.productVersion.create({
+      data: {
+        contentHash: createHash('sha256').update(`${store.id}:${productId}:v1`).digest('hex'),
+        createdBy: ACTOR_ID,
+        productId,
+        publicationStatus: 'PUBLISHED',
+        publishedAt: new Date(Date.now() - index * 86_400_000),
+        publishedBy: ACTOR_ID,
+        snapshot: { fixture: 'm3.4-browser-search' },
+        storeId: store.id,
+        version: 1,
+      },
     });
     await database.productMedia.create({
       data: {
@@ -346,6 +419,35 @@ async function seedStore(store: StoreFixture): Promise<void> {
       data: { skuId: input.id, storeId: store.id, warehouseId: warehouse.id },
     });
   }
+
+  const warehouse = await database.warehouse.findUniqueOrThrow({
+    where: { storeId_code: { code: 'local-default', storeId: store.id } },
+  });
+  const inventoryContext = createStoreContext({
+    accessReason: 'M3.4 browser fixture initial stock',
+    actor: { id: ACTOR_ID, type: 'member' },
+    correlationId: `m34-browser-${store.storeCode}`,
+    locale: 'vi',
+    storeCode: store.storeCode,
+    storeId: store.id,
+  });
+  await adjustInventory(database, inventoryContext, {
+    audit: { action: 'test.inventory.initialized', targetType: 'inventory_operation' },
+    items: [
+      {
+        delta: 12,
+        expectedVersion: 1,
+        reasonCode: 'BROWSER_FIXTURE_INITIAL_LOAD',
+        skuId: store.skuIds[0],
+        warehouseId: warehouse.id,
+      },
+    ],
+    operationKey: `m34-browser-stock-${store.storeCode}`,
+    operationType: 'IMPORT',
+  });
+  await withStoreTransaction(database, inventoryContext, (transaction) =>
+    rebuildStoreSearchProjection(transaction, store.id),
+  );
 
   await database.page.create({
     data: {
@@ -468,11 +570,21 @@ async function removeFixtures(): Promise<void> {
     await transaction.page.deleteMany({
       where: { id: { in: stores.map(({ pageId }) => pageId) } },
     });
+    await transaction.productSearchDocument.deleteMany({
+      where: { productId: { in: productIds } },
+    });
+    await transaction.inventoryMovement.deleteMany({
+      where: { balance: { skuId: { in: skuIds } } },
+    });
+    await transaction.inventoryOperation.deleteMany({
+      where: { operationKey: { startsWith: 'm34-browser-stock-' } },
+    });
     await transaction.inventoryBalance.deleteMany({ where: { skuId: { in: skuIds } } });
     await transaction.skuOptionValue.deleteMany({ where: { skuId: { in: skuIds } } });
     await transaction.sku.deleteMany({ where: { id: { in: skuIds } } });
     await transaction.productMedia.deleteMany({ where: { productId: { in: productIds } } });
     await transaction.productLocalization.deleteMany({ where: { productId: { in: productIds } } });
+    await transaction.productVersion.deleteMany({ where: { productId: { in: productIds } } });
     await transaction.product.deleteMany({ where: { id: { in: productIds } } });
     await transaction.brandMedia.deleteMany({
       where: { brandId: { in: stores.map(({ brandId }) => brandId) } },
@@ -490,7 +602,26 @@ async function removeFixtures(): Promise<void> {
       where: { id: { in: stores.flatMap(({ mediaIds }) => [...mediaIds]) } },
     });
     await transaction.attributeOption.deleteMany({
-      where: { id: { in: stores.map(({ extraOptionId }) => extraOptionId) } },
+      where: {
+        id: {
+          in: stores.flatMap(({ defaultOptionId, extraOptionId }) => [
+            defaultOptionId,
+            extraOptionId,
+          ]),
+        },
+      },
+    });
+    await transaction.attributeDefinition.deleteMany({
+      where: { id: { in: stores.map(({ definitionId }) => definitionId) } },
+    });
+    await transaction.attributeTemplateVersion.deleteMany({
+      where: { id: { in: stores.map(({ templateVersionId }) => templateVersionId) } },
+    });
+    await transaction.attributeTemplate.deleteMany({
+      where: { id: { in: stores.map(({ templateId }) => templateId) } },
+    });
+    await transaction.auditLog.deleteMany({
+      where: { action: 'test.inventory.initialized', actorId: ACTOR_ID },
     });
   });
 }

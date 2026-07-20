@@ -23,6 +23,7 @@
     "@zalo-shop/platform": "workspace:*",
     "@zalo-shop/security": "workspace:*",
     "dotenv": "17.2.3",
+    "ioredis": "5.11.1",
     "read-excel-file": "9.3.2",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2",

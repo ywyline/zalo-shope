@@ -70,6 +70,12 @@ export const searchSuggestionQuerySchema = z
   })
   .strict();
 
+export const searchFacetQuerySchema = z
+  .object({
+    locale: z.enum(['vi', 'zh', 'en']).default('vi'),
+  })
+  .strict();
+
 export const searchHistoryQuerySchema = z
   .object({
     limit: z.coerce.number().int().min(1).max(50).default(20),
@@ -77,4 +83,5 @@ export const searchHistoryQuerySchema = z
   .strict();
 
 export type ProductSearchQuery = z.infer<typeof productSearchQuerySchema>;
+export type SearchFacetQuery = z.infer<typeof searchFacetQuerySchema>;
 export type SearchSuggestionQuery = z.infer<typeof searchSuggestionQuerySchema>;

@@ -82,3 +82,53 @@ test('buyer catalog exposes a recoverable localized error state', async ({ page 
   await expect(page.getByRole('heading', { name: storefronts[0].titles.vi })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });
+
+test('buyer search supports accent folding, three languages and mobile filters per store', async ({
+  page,
+}) => {
+  const browserErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+
+  for (const store of storefronts) {
+    await page.goto(`${store.url}#/search`);
+    const searchbox = page.getByRole('searchbox');
+    await expect(searchbox).toBeVisible();
+    await searchbox.fill(store.industry === 'beauty' ? 'suong mai' : 'so mi linen');
+    await page.getByRole('button', { name: 'Tìm kiếm', exact: true }).click();
+    await expect(page.getByText(store.product, { exact: true })).toBeVisible();
+    await expect(page.getByText(store.otherProduct, { exact: true })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'ZH', exact: true }).click();
+    await searchbox.fill(store.industry === 'beauty' ? '晨露' : '亚麻');
+    await page.getByRole('button', { name: '搜索', exact: true }).click();
+    await expect(page.getByText(store.productZh, { exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: 'EN', exact: true }).click();
+    await searchbox.fill(store.industry === 'beauty' ? 'renewal serum' : 'linen shirt');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await expect(page.getByText(store.productEn, { exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: 'VI', exact: true }).click();
+    await searchbox.fill('');
+    await page.getByRole('button', { name: 'Tìm kiếm', exact: true }).click();
+    await page.getByRole('button', { name: 'Bộ lọc', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Bộ lọc' });
+    await expect(dialog).toBeVisible();
+    await dialog
+      .getByRole('checkbox', { name: store.industry === 'beauty' ? /Hồng/ : /^L\s/ })
+      .check();
+    await dialog.getByRole('button', { name: 'Áp dụng bộ lọc', exact: true }).click();
+    await expect(page.getByText(store.product, { exact: true })).toBeVisible();
+    await expect(
+      page.getByText(store.industry === 'beauty' ? 'Son cánh hoa nhung' : 'Đầm suông ban ngày', {
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await expectNoHorizontalOverflow(page);
+  }
+
+  expect(browserErrors).toEqual([]);
+});

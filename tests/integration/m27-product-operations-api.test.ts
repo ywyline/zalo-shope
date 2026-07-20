@@ -190,6 +190,10 @@ describe('M2.7 product import, versions and batch operations API', () => {
         where: { productId: { in: productIds } },
       });
       const skuIds = skus.map((sku) => sku.id);
+      await transaction.inventoryBalance.deleteMany({ where: { skuId: { in: skuIds } } });
+      await transaction.productSearchDocument.deleteMany({
+        where: { productId: { in: productIds } },
+      });
       await transaction.productVersion.deleteMany({ where: { productId: { in: productIds } } });
       await transaction.skuOptionValue.deleteMany({ where: { skuId: { in: skuIds } } });
       await transaction.sku.deleteMany({ where: { id: { in: skuIds } } });

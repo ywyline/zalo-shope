@@ -24,6 +24,7 @@ import {
   type ProductSummary,
 } from './catalog-api';
 import { IdentityPanel } from './identity-panel';
+import { SearchView } from './search-view';
 
 type Loadable<T> = { data: T; status: 'ready' } | { status: 'error' } | { status: 'loading' };
 
@@ -312,10 +313,10 @@ function HomeView({ home, locale }: { home: Loadable<HomePage>; locale: Locale }
   if (home.data.modules.length === 0) return <StatePanel locale={locale} status="empty" />;
   return (
     <div className="home-view">
-      <Link className="browse-entry" to="/products">
+      <Link className="browse-entry" to="/search">
         <span aria-hidden="true">⌕</span>
         <strong>{text(locale, 'catalog.browse')}</strong>
-        <small>M3</small>
+        <small>{text(locale, 'search.title')}</small>
       </Link>
       {home.data.modules.map((module) => (
         <HomeSection key={module.id} locale={locale} module={module} />
@@ -760,6 +761,7 @@ export function CatalogApp(): JSX.Element {
           <Route element={<BrandDetailView locale={locale} />} path="/brands/:brandCode" />
           <Route element={<ProductsView locale={locale} />} path="/products" />
           <Route element={<ProductDetailView locale={locale} />} path="/products/:productCode" />
+          <Route element={<SearchView locale={locale} />} path="/search" />
           <Route element={<UnavailableView locale={locale} title="catalog.cart" />} path="/cart" />
           <Route
             element={<UnavailableView locale={locale} title="catalog.orders" />}

@@ -45,6 +45,9 @@ import { CatalogController } from './catalog/catalog.controller';
 import { CatalogService } from './catalog/catalog.service';
 import { InventoryAdminController } from './inventory-admin/inventory-admin.controller';
 import { InventoryAdminService } from './inventory-admin/inventory-admin.service';
+import { SearchController, SearchHistoryController } from './search/search.controller';
+import { SearchRateLimiter } from './search/search-rate-limiter';
+import { SearchService } from './search/search.service';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -93,6 +96,8 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     CatalogController,
     StoreController,
     InventoryAdminController,
+    SearchController,
+    SearchHistoryController,
   ],
   providers: [
     AdminService,
@@ -102,6 +107,8 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     CatalogService,
     AuthService,
     InventoryAdminService,
+    SearchService,
+    SearchRateLimiter,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
       provide: DATABASE_CLIENT,
