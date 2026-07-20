@@ -44,6 +44,11 @@ jobs:
       - name: Start local dependencies
         run: pnpm infra:up
 
+      - name: Initialize test database
+        run: |
+          pnpm exec dotenv -e .env.test.example -- pnpm --filter @zalo-shop/database migrate:deploy
+          pnpm exec dotenv -e .env.test.example -- pnpm --filter @zalo-shop/database seed
+
       - name: Run infrastructure integration tests
         run: pnpm test:integration
 
