@@ -41,6 +41,13 @@ import {
   productImportTemplateCsv,
   type ParsedProductImportRow,
 } from './product-import';
+import {
+  PRODUCT_EXPORT_MAX_ROWS,
+  parseProductImportXlsx,
+  productExportXlsx,
+  productImportTemplateXlsx,
+  type ProductExportRow,
+} from './product-xlsx';
 
 type CatalogContext = { headers: AdminHeaders; storeId: string };
 export type ProductImportUpload = {
@@ -140,6 +147,18 @@ function maskDocumentNumber(value: string | null): string | null {
   if (value === null) return null;
   if (value.length <= 4) return '*'.repeat(value.length);
   return `${value.slice(0, 2)}${'*'.repeat(Math.min(8, value.length - 4))}${value.slice(-2)}`;
+}
+
+function productDescriptionText(value: Prisma.JsonValue): string {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof value.value === 'string'
+  ) {
+    return value.value;
+  }
+  return '';
 }
 
 @Injectable()
@@ -399,35 +418,50 @@ export class ProductAdminService {
     return productImportTemplateCsv();
   }
 
+  public async getProductImportXlsxTemplate(request: CatalogContext): Promise<Buffer> {
+    await this.admin.authorize(request.headers, request.storeId, 'store.catalog.read');
+    return productImportTemplateXlsx();
+  }
+
   public async importProducts(
     request: CatalogContext,
     query: ProductImportQuery,
     upload: ProductImportUpload | undefined,
+    format: 'csv' | 'xlsx' = 'csv',
   ) {
     const context = await this.admin.authorize(
       request.headers,
       request.storeId,
       'store.catalog.manage',
     );
-    if (!upload) throw new BadRequestException('A CSV file is required');
-    const acceptedTypes = new Set([
-      'application/csv',
-      'application/octet-stream',
-      'application/vnd.ms-excel',
-      'text/csv',
-      'text/plain',
-    ]);
+    if (!upload) throw new BadRequestException(`An ${format.toUpperCase()} file is required`);
+    const acceptedTypes =
+      format === 'csv'
+        ? new Set([
+            'application/csv',
+            'application/octet-stream',
+            'application/vnd.ms-excel',
+            'text/csv',
+            'text/plain',
+          ])
+        : new Set([
+            'application/octet-stream',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          ]);
     if (
-      !upload.originalname.toLowerCase().endsWith('.csv') ||
+      !upload.originalname.toLowerCase().endsWith(`.${format}`) ||
       !acceptedTypes.has(upload.mimetype.toLowerCase()) ||
       upload.size !== upload.buffer.byteLength ||
       upload.size > PRODUCT_IMPORT_MAX_BYTES
     ) {
-      throw new BadRequestException('CSV file metadata is invalid');
+      throw new BadRequestException(`${format.toUpperCase()} file metadata is invalid`);
     }
     let parsedRows: ParsedProductImportRow[];
     try {
-      parsedRows = parseProductImportCsv(upload.buffer);
+      parsedRows =
+        format === 'csv'
+          ? parseProductImportCsv(upload.buffer)
+          : await parseProductImportXlsx(upload.buffer);
     } catch (error) {
       if (error instanceof ProductImportFileError) {
         throw new BadRequestException(`Product import file error: ${error.code}`);
@@ -538,6 +572,121 @@ export class ProductAdminService {
         rows_validated: rows.filter((row) => row.status === 'VALIDATED').length,
       },
     };
+  }
+
+  public async exportProductsXlsx(request: CatalogContext): Promise<Buffer> {
+    const context = await this.admin.authorize(
+      request.headers,
+      request.storeId,
+      'store.catalog.read',
+    );
+    const rows = await withStoreTransaction(this.database, context, async (transaction) => {
+      const [skuRows, productsWithoutSkus] = await Promise.all([
+        transaction.sku.count({
+          where: {
+            products: { deletedAt: null, storeId: request.storeId },
+            storeId: request.storeId,
+          },
+        }),
+        transaction.product.count({
+          where: {
+            deletedAt: null,
+            skus: { none: {} },
+            storeId: request.storeId,
+          },
+        }),
+      ]);
+      if (skuRows + productsWithoutSkus > PRODUCT_EXPORT_MAX_ROWS) {
+        throw new ConflictException(`Product export exceeds ${PRODUCT_EXPORT_MAX_ROWS} SKU rows`);
+      }
+
+      const products = await transaction.product.findMany({
+        include: {
+          brands: { select: { code: true } },
+          categories: { select: { code: true } },
+          product_localizations: {
+            select: {
+              descriptionDocument: true,
+              locale: true,
+              name: true,
+              sellingPoints: true,
+            },
+          },
+          product_secondary_categories: {
+            include: { categories: { select: { code: true } } },
+          },
+          skus: {
+            include: {
+              sku_option_values: {
+                include: {
+                  attribute_definitions: { select: { code: true } },
+                  attribute_options: { select: { code: true } },
+                },
+              },
+            },
+            orderBy: { code: 'asc' },
+          },
+        },
+        orderBy: { code: 'asc' },
+        where: { deletedAt: null, storeId: request.storeId },
+      });
+
+      const exportRows: ProductExportRow[] = [];
+      for (const product of products) {
+        const localizations = new Map(
+          product.product_localizations.map((localization) => [localization.locale, localization]),
+        );
+        const secondaryCategories = product.product_secondary_categories
+          .map((item) => item.categories.code)
+          .sort((left, right) => left.localeCompare(right, 'en'))
+          .join('|');
+        const skus = product.skus.length > 0 ? product.skus : [null];
+        for (const sku of skus) {
+          const row = {
+            barcode: sku?.barcode ?? '',
+            brand_code: product.brands.code,
+            main_category_code: product.categories.code,
+            market_price_vnd:
+              sku?.marketPriceVnd === null || sku === null ? null : Number(sku.marketPriceVnd),
+            product_code: product.code,
+            product_enabled: product.enabled,
+            product_status: product.status,
+            sale_price_vnd: sku === null ? null : Number(sku.salePriceVnd),
+            secondary_category_codes: secondaryCategories,
+            sku_code: sku?.code ?? '',
+            sku_options:
+              sku?.sku_option_values
+                .map(
+                  (option) =>
+                    `${option.attribute_definitions.code}=${option.attribute_options.code}`,
+                )
+                .sort((left, right) => left.localeCompare(right, 'en'))
+                .join('|') ?? '',
+            sku_status: sku?.status ?? '',
+            updated_at: product.updatedAt.toISOString(),
+            weight_grams: sku?.weightGrams ?? null,
+          } as ProductExportRow;
+          for (const locale of ['vi', 'zh', 'en'] as const) {
+            const localization = localizations.get(locale);
+            row[`name_${locale}`] = localization?.name ?? '';
+            row[`selling_points_${locale}`] = localization?.sellingPoints ?? '';
+            row[`description_${locale}`] = localization
+              ? productDescriptionText(localization.descriptionDocument)
+              : '';
+          }
+          exportRows.push(row);
+        }
+      }
+      return exportRows;
+    });
+    try {
+      return await productExportXlsx(rows);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        throw new ConflictException(error.message);
+      }
+      throw error;
+    }
   }
 
   public async listProductVersions(request: CatalogContext, productId: string) {

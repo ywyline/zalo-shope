@@ -108,6 +108,15 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function downloadApi(path: string, options: RequestInit = {}): Promise<Blob> {
+  const response = await fetch(`${API_BASE}${path}`, options);
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as { code?: string };
+    throw new Error(error.code ?? `HTTP_${response.status}`);
+  }
+  return response.blob();
+}
+
 function AdminApp(): JSX.Element {
   const [locale, setLocale] = useState<Locale>('vi');
   const [phase, setPhase] = useState<Phase>('password');
@@ -465,6 +474,7 @@ function AdminApp(): JSX.Element {
         )}
         {tab === 'catalog' && store && (
           <CatalogWorkbench
+            download={downloadApi}
             headers={() => authenticatedHeaders(store)}
             key={store.id}
             locale={locale}

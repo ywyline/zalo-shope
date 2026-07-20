@@ -53,17 +53,23 @@ export type ParsedProductImportRow = {
   sku?: SkuDraftInput;
 };
 
-type CsvRecord = { line: number; values: string[] };
+export type ProductImportRecord = { line: number; values: string[] };
 
 export class ProductImportFileError extends Error {
   public constructor(
     public readonly code:
+      | 'CELL_INVALID'
+      | 'COLUMN_LIMIT_EXCEEDED'
       | 'CSV_INVALID'
       | 'ENCODING_INVALID'
       | 'FILE_EMPTY'
       | 'FILE_TOO_LARGE'
+      | 'FORMULA_NOT_ALLOWED'
       | 'HEADER_INVALID'
-      | 'ROW_LIMIT_EXCEEDED',
+      | 'ROW_LIMIT_EXCEEDED'
+      | 'WORKBOOK_INVALID'
+      | 'WORKSHEET_INVALID'
+      | 'ZIP_LIMIT_EXCEEDED',
     message: string,
   ) {
     super(message);
@@ -85,11 +91,11 @@ function readUtf8(buffer: Buffer): string {
   }
 }
 
-function parseCsv(text: string): CsvRecord[] {
+function parseCsv(text: string): ProductImportRecord[] {
   if (text.includes('\0')) {
     throw new ProductImportFileError('CSV_INVALID', 'CSV contains a NUL control character');
   }
-  const records: CsvRecord[] = [];
+  const records: ProductImportRecord[] = [];
   let field = '';
   let inQuotes = false;
   let justClosedQuote = false;
@@ -263,7 +269,7 @@ function skuOptions(value: string, issues: ProductImportIssue[]) {
   return result;
 }
 
-function parseDataRecord(record: CsvRecord): ParsedProductImportRow {
+function parseDataRecord(record: ProductImportRecord): ParsedProductImportRow {
   const issues: ProductImportIssue[] = [];
   if (record.values.length !== PRODUCT_IMPORT_COLUMNS.length) {
     return {
@@ -363,22 +369,32 @@ function parseDataRecord(record: CsvRecord): ParsedProductImportRow {
 
 export function parseProductImportCsv(buffer: Buffer): ParsedProductImportRow[] {
   const records = parseCsv(readUtf8(buffer));
+  return parseProductImportRecords(records, 'CSV');
+}
+
+export function parseProductImportRecords(
+  records: ProductImportRecord[],
+  format: 'CSV' | 'XLSX',
+): ParsedProductImportRow[] {
   const header = records[0];
-  if (!header) throw new ProductImportFileError('FILE_EMPTY', 'CSV file has no header');
+  if (!header) throw new ProductImportFileError('FILE_EMPTY', `${format} file has no header`);
   if (
     header.values.length !== PRODUCT_IMPORT_COLUMNS.length ||
     header.values.some((value, index) => value.trim() !== PRODUCT_IMPORT_COLUMNS[index])
   ) {
-    throw new ProductImportFileError('HEADER_INVALID', 'CSV header does not match the template');
+    throw new ProductImportFileError(
+      'HEADER_INVALID',
+      `${format} header does not match the template`,
+    );
   }
   const data = records.slice(1);
   if (data.length === 0) {
-    throw new ProductImportFileError('FILE_EMPTY', 'CSV file has no data rows');
+    throw new ProductImportFileError('FILE_EMPTY', `${format} file has no data rows`);
   }
   if (data.length > PRODUCT_IMPORT_MAX_ROWS) {
     throw new ProductImportFileError(
       'ROW_LIMIT_EXCEEDED',
-      `CSV exceeds ${PRODUCT_IMPORT_MAX_ROWS} data rows`,
+      `${format} exceeds ${PRODUCT_IMPORT_MAX_ROWS} data rows`,
     );
   }
   return data.map(parseDataRecord);

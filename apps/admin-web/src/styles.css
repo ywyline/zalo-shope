@@ -891,6 +891,96 @@ label {
   font-size: 1.7rem;
   font-weight: 500;
 }
+.product-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.xlsx-import {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(230px, 1fr) minmax(210px, 1fr) auto;
+  margin: -4px 0 20px;
+  padding: 14px;
+  align-items: end;
+  border: 1px solid #e8ddd7;
+  border-radius: 14px;
+  background: #fffaf7;
+  gap: 12px;
+}
+.xlsx-import > div > strong,
+.xlsx-import > div > small,
+.xlsx-dry-run span,
+.xlsx-dry-run small {
+  display: block;
+}
+.xlsx-import > div > small,
+.xlsx-dry-run small {
+  margin-top: 4px;
+  color: #94837b;
+  font-size: 0.63rem;
+  font-weight: 550;
+}
+.xlsx-file {
+  min-width: 0;
+}
+.xlsx-file input {
+  padding: 7px;
+  background: #fff;
+  font-size: 0.7rem;
+}
+.xlsx-dry-run {
+  min-height: 44px;
+  align-items: flex-start;
+}
+.xlsx-report {
+  margin: -8px 0 20px;
+  overflow: hidden;
+  border: 1px solid #dfd5cf;
+  border-radius: 14px;
+}
+.xlsx-summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  padding: 12px;
+  background: #f5efeb;
+  gap: 8px;
+}
+.xlsx-summary span {
+  font-size: 0.68rem;
+}
+.xlsx-summary strong {
+  margin-right: 3px;
+  font-size: 0.95rem;
+}
+.xlsx-summary .failed {
+  color: #9c342c;
+}
+.xlsx-rows {
+  display: grid;
+  max-height: 260px;
+  padding: 8px;
+  overflow-y: auto;
+  gap: 5px;
+}
+.xlsx-rows > div {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: #476b57;
+  background: #edf7f1;
+  gap: 3px 10px;
+  font-size: 0.68rem;
+}
+.xlsx-rows > div.failed {
+  color: #933c35;
+  background: #fff0ee;
+}
+.xlsx-rows small {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+}
 .workbench-message {
   display: flex;
   margin-bottom: 12px;
@@ -1490,6 +1580,17 @@ label {
   .panel-title {
     align-items: stretch;
     flex-direction: column;
+  }
+  .product-heading-actions,
+  .product-heading-actions > button {
+    width: 100%;
+  }
+  .xlsx-import,
+  .xlsx-summary {
+    grid-template-columns: 1fr;
+  }
+  .xlsx-rows > div {
+    grid-template-columns: 1fr;
   }
   .catalog-toolbar nav,
   .catalog-toolbar > input {

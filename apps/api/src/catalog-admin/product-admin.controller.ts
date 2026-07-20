@@ -97,6 +97,23 @@ export class ProductAdminController {
     });
   }
 
+  @Get('imports/template.xlsx')
+  @Header('Cache-Control', 'no-store')
+  public async importXlsxTemplate(
+    @Query('store_id') storeId: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+  ): Promise<StreamableFile> {
+    const template = await this.products.getProductImportXlsxTemplate(
+      context(authorization, storeCode, accessReason, storeId),
+    );
+    return new StreamableFile(template, {
+      disposition: 'attachment; filename="product-import-template.xlsx"',
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+  }
+
   @Post('imports/csv')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -116,6 +133,45 @@ export class ProductAdminController {
       parse(productImportQuerySchema, { dry_run: dryRun ?? 'true' }),
       file,
     );
+  }
+
+  @Post('imports/xlsx')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: PRODUCT_IMPORT_MAX_BYTES, files: 1 },
+    }),
+  )
+  public importXlsx(
+    @Query('store_id') storeId: string | undefined,
+    @Query('dry_run') dryRun: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @UploadedFile() file: ProductImportUpload | undefined,
+  ): Promise<unknown> {
+    return this.products.importProducts(
+      context(authorization, storeCode, accessReason, storeId),
+      parse(productImportQuerySchema, { dry_run: dryRun ?? 'true' }),
+      file,
+      'xlsx',
+    );
+  }
+
+  @Get('exports/products.xlsx')
+  @Header('Cache-Control', 'no-store')
+  public async exportXlsx(
+    @Query('store_id') storeId: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+  ): Promise<StreamableFile> {
+    const exported = await this.products.exportProductsXlsx(
+      context(authorization, storeCode, accessReason, storeId),
+    );
+    return new StreamableFile(exported, {
+      disposition: 'attachment; filename="products.xlsx"',
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
   }
 
   @Get(':productId/versions')

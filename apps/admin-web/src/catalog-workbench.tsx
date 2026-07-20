@@ -4,6 +4,7 @@ import type { FormEvent, ReactNode } from 'react';
 type Locale = 'en' | 'vi' | 'zh';
 type Store = { code: string; default_locale: Locale; id: string };
 type Request = <T>(path: string, options?: RequestInit) => Promise<T>;
+type Download = (path: string, options?: RequestInit) => Promise<Blob>;
 type Localization = {
   description?: string | null;
   introduction?: string | null;
@@ -141,6 +142,24 @@ type ComplianceOverview = {
   }>;
 };
 type Section = 'brands' | 'categories' | 'compliance' | 'products' | 'templates';
+type ImportReport = {
+  dry_run: boolean;
+  rows: Array<{
+    errors: Array<{ code: string; message: string }>;
+    line: number;
+    product_code: string;
+    status: 'FAILED' | 'IMPORTED' | 'VALIDATED';
+  }>;
+  summary: {
+    products_failed: number;
+    products_imported: number;
+    products_validated: number;
+    rows_failed: number;
+    rows_imported: number;
+    rows_total: number;
+    rows_validated: number;
+  };
+};
 
 const copy = {
   vi: {
@@ -162,9 +181,15 @@ const copy = {
     description: 'Mô tả',
     disabled: 'Đã tắt',
     disableProduct: 'Ngừng bán',
+    downloadTemplate: 'Tải mẫu XLSX',
+    dryRun: 'Chỉ kiểm tra, chưa ghi dữ liệu',
+    dryRunHelp: 'Hãy kiểm tra trước; chỉ tắt lựa chọn này khi kết quả không còn lỗi.',
     edit: 'Chỉnh sửa',
     empty: 'Chưa có dữ liệu trong phạm vi cửa hàng này.',
     error: 'Không thể hoàn tất yêu cầu.',
+    exportProducts: 'Xuất sản phẩm',
+    fileLimit: 'Chỉ .xlsx · tối đa 2 MiB · 2.000 dòng · không công thức hoặc macro',
+    formalImport: 'Nhập bản nháp',
     files: 'tệp',
     filter: 'Tìm theo mã hoặc tên',
     leaf: 'Danh mục cuối',
@@ -182,6 +207,11 @@ const copy = {
     reject: 'Từ chối',
     required: 'Bắt buộc',
     retry: 'Thử lại',
+    row: 'Dòng',
+    rowsFailed: 'lỗi',
+    rowsImported: 'đã nhập',
+    rowsTotal: 'tổng dòng',
+    rowsValidated: 'hợp lệ',
     review: 'Duyệt hồ sơ',
     reviewNote: 'Ghi chú đánh giá',
     root: 'Danh mục gốc',
@@ -195,6 +225,10 @@ const copy = {
     typeCode: 'Nhập mã xác nhận',
     type: 'Kiểu dữ liệu',
     version: 'Phiên bản',
+    xlsxImport: 'Nhập XLSX có kiểm soát',
+    xlsxImportDone: 'Đã xử lý tệp XLSX.',
+    xlsxSelect: 'Chọn tệp XLSX',
+    xlsxValidate: 'Kiểm tra tệp',
     website: 'Website chính thức',
   },
   zh: {
@@ -216,9 +250,15 @@ const copy = {
     description: '描述',
     disabled: '已停用',
     disableProduct: '停用商品',
+    downloadTemplate: '下载 XLSX 模板',
+    dryRun: '仅校验，不写入数据',
+    dryRunHelp: '请先校验；结果无错误后再关闭此选项执行正式导入。',
     edit: '编辑',
     empty: '当前商城范围内暂无数据。',
     error: '请求未能完成。',
+    exportProducts: '导出商品',
+    fileLimit: '仅限 .xlsx · 最大 2 MiB · 2,000 行 · 禁止公式和宏',
+    formalImport: '导入草稿',
     files: '个文件',
     filter: '按编码或名称搜索',
     leaf: '末级类目',
@@ -236,6 +276,11 @@ const copy = {
     reject: '驳回',
     required: '必填',
     retry: '重试',
+    row: '行',
+    rowsFailed: '失败',
+    rowsImported: '已导入',
+    rowsTotal: '总行数',
+    rowsValidated: '校验通过',
     review: '审核记录',
     reviewNote: '审核意见',
     root: '根类目',
@@ -249,6 +294,10 @@ const copy = {
     typeCode: '输入确认码',
     type: '数据类型',
     version: '版本',
+    xlsxImport: '受限 XLSX 导入',
+    xlsxImportDone: 'XLSX 文件处理完成。',
+    xlsxSelect: '选择 XLSX 文件',
+    xlsxValidate: '校验文件',
     website: '官方网站',
   },
   en: {
@@ -270,9 +319,15 @@ const copy = {
     description: 'Description',
     disabled: 'Disabled',
     disableProduct: 'Disable product',
+    downloadTemplate: 'Download XLSX template',
+    dryRun: 'Validate only; do not write data',
+    dryRunHelp: 'Validate first, then clear this option only after the report has no errors.',
     edit: 'Edit',
     empty: 'No data exists in this store scope.',
     error: 'The request could not be completed.',
+    exportProducts: 'Export products',
+    fileLimit: 'Only .xlsx · 2 MiB max · 2,000 rows · no formulas or macros',
+    formalImport: 'Import drafts',
     files: 'files',
     filter: 'Search by code or name',
     leaf: 'Leaf category',
@@ -290,6 +345,11 @@ const copy = {
     reject: 'Reject',
     required: 'Required',
     retry: 'Retry',
+    row: 'Row',
+    rowsFailed: 'failed',
+    rowsImported: 'imported',
+    rowsTotal: 'total rows',
+    rowsValidated: 'validated',
     review: 'Review record',
     reviewNote: 'Review note',
     root: 'Root category',
@@ -303,6 +363,10 @@ const copy = {
     typeCode: 'Type confirmation code',
     type: 'Data type',
     version: 'Version',
+    xlsxImport: 'Restricted XLSX import',
+    xlsxImportDone: 'The XLSX file has been processed.',
+    xlsxSelect: 'Select XLSX file',
+    xlsxValidate: 'Validate file',
     website: 'Official website',
   },
 } as const;
@@ -1154,11 +1218,13 @@ function AttributeEditorPanel({
 }
 
 export function CatalogWorkbench({
+  download,
   headers,
   locale,
   request,
   store,
 }: {
+  download: Download;
   headers: () => Record<string, string>;
   locale: Locale;
   request: Request;
@@ -1185,6 +1251,10 @@ export function CatalogWorkbench({
   const [selectedProduct, setSelectedProduct] = useState<Product>();
   const [editor, setEditor] = useState<AttributeEditor>();
   const [issues, setIssues] = useState<PublicationIssue[]>([]);
+  const [importFile, setImportFile] = useState<File>();
+  const [importReport, setImportReport] = useState<ImportReport>();
+  const [importDryRun, setImportDryRun] = useState(true);
+  const [fileBusy, setFileBusy] = useState(false);
   const [confirm, setConfirm] = useState<{
     code: string;
     description: string;
@@ -1308,6 +1378,68 @@ export function CatalogWorkbench({
       expected_version: product.version,
     })) as { can_publish?: boolean; issues?: PublicationIssue[] } | undefined;
     if (result?.can_publish === false) setIssues(result.issues ?? []);
+  };
+
+  const saveDownload = async (path: string, filename: string): Promise<void> => {
+    setFileBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const blob = await download(`${path}?${query}`, { headers: headers() });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.hidden = true;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setNotice(t.notice);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'INTERNAL_ERROR');
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
+  const runXlsxImport = async (dryRun: boolean): Promise<void> => {
+    if (!importFile) return;
+    setConfirm(undefined);
+    setFileBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    setImportReport(undefined);
+    try {
+      const body = new FormData();
+      body.append('file', importFile);
+      const result = await request<ImportReport>(
+        `/v1/admin/catalog/products/imports/xlsx?${query}&dry_run=${dryRun ? 'true' : 'false'}`,
+        { body, headers: headers(), method: 'POST' },
+      );
+      setImportReport(result);
+      setNotice(t.xlsxImportDone);
+      if (!dryRun && result.summary.rows_imported > 0) await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'INTERNAL_ERROR');
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
+  const submitXlsxImport = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    if (!importFile) return;
+    if (importDryRun) {
+      void runXlsxImport(true);
+      return;
+    }
+    setConfirm({
+      code: 'IMPORT',
+      description: `${t.formalImport}: ${importFile.name}`,
+      label: t.formalImport,
+      run: () => void runXlsxImport(false),
+    });
   };
 
   if (loading && products.length === 0 && brands.length === 0)
@@ -1587,10 +1719,104 @@ export function CatalogWorkbench({
         <div className="catalog-panel">
           <div className="panel-title">
             <h3>{t.products}</h3>
-            <button className="primary" onClick={() => setProductDialog(true)}>
-              + {t.create}
-            </button>
+            <div className="product-heading-actions">
+              <button
+                className="secondary"
+                disabled={fileBusy}
+                onClick={() =>
+                  void saveDownload(
+                    '/v1/admin/catalog/products/imports/template.xlsx',
+                    'product-import-template.xlsx',
+                  )
+                }
+              >
+                {t.downloadTemplate}
+              </button>
+              <button
+                className="secondary"
+                disabled={fileBusy}
+                onClick={() =>
+                  void saveDownload(
+                    '/v1/admin/catalog/products/exports/products.xlsx',
+                    `${store.code}-products.xlsx`,
+                  )
+                }
+              >
+                {t.exportProducts}
+              </button>
+              <button className="primary" onClick={() => setProductDialog(true)}>
+                + {t.create}
+              </button>
+            </div>
           </div>
+          <form className="xlsx-import" onSubmit={submitXlsxImport}>
+            <div>
+              <strong>{t.xlsxImport}</strong>
+              <small>{t.fileLimit}</small>
+            </div>
+            <label className="xlsx-file">
+              {t.xlsxSelect}
+              <input
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                onChange={(event) => {
+                  setImportFile(event.target.files?.[0]);
+                  setImportReport(undefined);
+                }}
+                required
+                type="file"
+              />
+            </label>
+            <label className="check-field xlsx-dry-run">
+              <input
+                checked={importDryRun}
+                onChange={(event) => setImportDryRun(event.target.checked)}
+                type="checkbox"
+              />
+              <span>
+                {t.dryRun}
+                <small>{t.dryRunHelp}</small>
+              </span>
+            </label>
+            <button className={importDryRun ? 'secondary' : 'primary'} disabled={fileBusy}>
+              {importDryRun ? t.xlsxValidate : t.formalImport}
+            </button>
+          </form>
+          {importReport && (
+            <section className="xlsx-report" aria-live="polite">
+              <div className="xlsx-summary">
+                <span>
+                  <strong>{importReport.summary.rows_total}</strong> {t.rowsTotal}
+                </span>
+                <span>
+                  <strong>{importReport.summary.rows_validated}</strong> {t.rowsValidated}
+                </span>
+                <span>
+                  <strong>{importReport.summary.rows_imported}</strong> {t.rowsImported}
+                </span>
+                <span className={importReport.summary.rows_failed ? 'failed' : ''}>
+                  <strong>{importReport.summary.rows_failed}</strong> {t.rowsFailed}
+                </span>
+              </div>
+              <div className="xlsx-rows">
+                {importReport.rows.map((row) => (
+                  <div
+                    className={row.status.toLocaleLowerCase()}
+                    key={`${row.line}:${row.product_code}`}
+                  >
+                    <strong>
+                      {t.row} {row.line} · {row.product_code || '—'}
+                    </strong>
+                    <span>{row.status}</span>
+                    {row.errors.map((item) => (
+                      <small key={`${item.code}:${item.message}`}>
+                        {item.code} · {item.message}
+                      </small>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
           {filteredProducts.length ? (
             <div className="product-layout">
               <div className="product-list">

@@ -1,6 +1,6 @@
 # M2 商品内容权限矩阵
 
-> 状态：M2.1-M2.7、M2.8.1-M2.8.2 已实施；本矩阵覆盖目录、商品属性、合规、装修、导入、版本、批量命令与管理端工作台
+> 状态：M2.1-M2.7、M2.8.1-M2.8.3 已实施；本矩阵覆盖目录、商品属性、合规、装修、导入、导出、版本、批量命令与管理端工作台
 >
 > 日期：2026-07-19
 
@@ -30,24 +30,25 @@ local/test `store-admin` 系统角色可获得全部 M2 权限用于验收。迁
 
 ## 2. 命令权限
 
-| 命令                  | 必需权限                                         | 附加规则与审计动作                                        |
-| --------------------- | ------------------------------------------------ | --------------------------------------------------------- |
-| 创建/编辑品牌、类目   | `store.catalog.manage`                           | `catalog.brand.*`、`catalog.category.*`；记录前后版本     |
-| 移动类目/批量移动商品 | `store.catalog.manage`                           | 加锁校验父链、目标商城、末级类目；逐项结果入审计          |
-| 创建/编辑模板草稿     | `store.catalog.manage`                           | 激活版本不可原地修改                                      |
-| 激活属性模板版本      | `store.catalog.publish`                          | `catalog.attribute_template.activated`                    |
-| 创建/编辑商品与 SKU   | `store.catalog.manage`                           | 请求体不接收 `store_id`；成本价不写普通响应日志           |
-| 读取商品属性编辑器    | `store.catalog.read`                             | 只返回同商城固定模板、非规格定义、启用选项和当前值        |
-| 全量替换商品属性      | `store.catalog.manage`                           | 草稿状态 + 乐观锁；`catalog.product.attributes_replaced`  |
-| CSV 校验/导入商品草稿 | `store.catalog.manage`                           | 文件/行数受限；逐商品事务；不导入库存或自动发布           |
-| 读取商品发布版本      | `store.catalog.read`                             | 同商城 RLS；版本详情响应移除成本价                        |
-| 提交商品审核          | `store.catalog.publish`                          | 冻结业务版本并返回完整门禁问题列表                        |
-| 发布/下架/停用商品    | `store.catalog.publish`                          | 二次确认；生成不可变版本和状态转换审计                    |
-| 提交合规资料          | `store.catalog.manage` + `store.compliance.read` | 记录提交人；文件路径按商城隔离                            |
-| 审核合规资料          | `store.compliance.review`                        | 提交人与审核人不得相同；只追加审核记录                    |
-| 读取合规工作台概览    | `store.compliance.read`                          | 只返回掩码编号、日期、媒体计数与商品摘要，不返回文件/人员 |
-| 初始化/确认媒体上传   | `store.catalog.manage` 或 `store.content.manage` | MIME、大小、checksum、对象键与商城均校验                  |
-| 编辑/发布页面装修     | `store.content.manage`                           | 发布前校验三语、时间窗和内部跳转目标商城                  |
+| 命令                       | 必需权限                                         | 附加规则与审计动作                                        |
+| -------------------------- | ------------------------------------------------ | --------------------------------------------------------- |
+| 创建/编辑品牌、类目        | `store.catalog.manage`                           | `catalog.brand.*`、`catalog.category.*`；记录前后版本     |
+| 移动类目/批量移动商品      | `store.catalog.manage`                           | 加锁校验父链、目标商城、末级类目；逐项结果入审计          |
+| 创建/编辑模板草稿          | `store.catalog.manage`                           | 激活版本不可原地修改                                      |
+| 激活属性模板版本           | `store.catalog.publish`                          | `catalog.attribute_template.activated`                    |
+| 创建/编辑商品与 SKU        | `store.catalog.manage`                           | 请求体不接收 `store_id`；成本价不写普通响应日志           |
+| 读取商品属性编辑器         | `store.catalog.read`                             | 只返回同商城固定模板、非规格定义、启用选项和当前值        |
+| 全量替换商品属性           | `store.catalog.manage`                           | 草稿状态 + 乐观锁；`catalog.product.attributes_replaced`  |
+| CSV/XLSX 校验/导入商品草稿 | `store.catalog.manage`                           | 文件/行数/ZIP 受限；逐商品事务；不导入库存或自动发布      |
+| 导出脱敏商品与 SKU XLSX    | `store.catalog.read`                             | 只限当前商城；不含成本、内部 ID、合规证件或对象存储信息   |
+| 读取商品发布版本           | `store.catalog.read`                             | 同商城 RLS；版本详情响应移除成本价                        |
+| 提交商品审核               | `store.catalog.publish`                          | 冻结业务版本并返回完整门禁问题列表                        |
+| 发布/下架/停用商品         | `store.catalog.publish`                          | 二次确认；生成不可变版本和状态转换审计                    |
+| 提交合规资料               | `store.catalog.manage` + `store.compliance.read` | 记录提交人；文件路径按商城隔离                            |
+| 审核合规资料               | `store.compliance.review`                        | 提交人与审核人不得相同；只追加审核记录                    |
+| 读取合规工作台概览         | `store.compliance.read`                          | 只返回掩码编号、日期、媒体计数与商品摘要，不返回文件/人员 |
+| 初始化/确认媒体上传        | `store.catalog.manage` 或 `store.content.manage` | MIME、大小、checksum、对象键与商城均校验                  |
+| 编辑/发布页面装修          | `store.content.manage`                           | 发布前校验三语、时间窗和内部跳转目标商城                  |
 
 ## 3. 必测拒绝场景
 
@@ -57,6 +58,7 @@ local/test `store-admin` 系统角色可获得全部 M2 权限用于验收。迁
 - 平台跨店权限没有访问原因时拒绝；有原因时仍逐店执行 RLS 事务并写审计。
 - 买家目录 API 不接受管理员权限替代发布状态，只返回当前商城已发布版本。
 - 媒体签名 URL 不能用于另一个商城、过期对象、隔离/失败对象或未经授权的合规文件。
-- CSV 不接受库存、商城、状态或发布字段；跨商城品牌/类目编码只返回逐项失败，不泄露对象。
+- CSV/XLSX 不接受库存、商城、状态或发布字段；跨商城品牌/类目编码只返回逐项失败，不泄露对象。XLSX 额外拒绝公式、宏、外链、隐藏/额外工作表和超限 ZIP。
+- `store.catalog.read` 商品导出不得包含其他商城哨兵、成本价、内部/商城 ID、合规证件或媒体对象键；超出同步上限不得静默截断。
 - `store.catalog.read` 不能通过商品版本详情旁路读取成本价；批量目标重复时在写入前拒绝。
 - 只读运营不能替换属性；跨商城商品 ID、非当前模板定义、规格定义和停用选项均不得写入，失败不泄露其他商城对象。

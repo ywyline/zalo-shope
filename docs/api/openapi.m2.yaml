@@ -401,6 +401,82 @@ paths:
               schema: { $ref: '#/components/schemas/ProductImportReport' }
         '400': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/catalog/products/imports/template.xlsx:
+    parameters:
+      - $ref: '#/components/parameters/StoreCode'
+      - $ref: '#/components/parameters/StoreIdQuery'
+      - $ref: '#/components/parameters/AccessReason'
+    get:
+      tags: [Admin catalog]
+      summary: 下载冻结表头的 XLSX 商品草稿导入模板；需要 store.catalog.read
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 单一可见 products 工作表；不含库存、状态、商城或发布字段
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/catalog/products/imports/xlsx:
+    parameters:
+      - $ref: '#/components/parameters/StoreCode'
+      - $ref: '#/components/parameters/StoreIdQuery'
+      - $ref: '#/components/parameters/AccessReason'
+      - name: dry_run
+        in: query
+        schema: { type: boolean, default: true }
+    post:
+      tags: [Admin catalog]
+      summary: 校验或导入受限 XLSX 商品与 SKU 草稿；需要 store.catalog.manage
+      description: >-
+        单文件最多 2 MiB、2,000 个数据行；只接受一个名为 products 的可见工作表及冻结 20 列，
+        拒绝公式、宏、外链、隐藏/额外工作表和超出 ZIP 解压边界的文件。解析后复用 CSV 的逐商品事务、
+        dry_run、部分成功报告和只创建草稿规则；不创建库存、媒体、合规审批或发布版本。
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: 逐行校验/导入结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductImportReport' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/catalog/products/exports/products.xlsx:
+    parameters:
+      - $ref: '#/components/parameters/StoreCode'
+      - $ref: '#/components/parameters/StoreIdQuery'
+      - $ref: '#/components/parameters/AccessReason'
+    get:
+      tags: [Admin catalog]
+      summary: 导出当前授权商城的脱敏商品与 SKU 工作簿；需要 store.catalog.read
+      description: >-
+        products 工作表一行一个 SKU，无 SKU 草稿保留一行空 SKU；按商品/SKU 编码稳定排序，最多 10,000 行。
+        不返回成本价、内部 ID、store_id、合规证件或媒体对象键；危险公式前缀按文本中和。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 当前授权商城的同步 XLSX 导出
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /v1/admin/catalog/products/batch/disable:
     parameters:
       - $ref: '#/components/parameters/StoreCode'
