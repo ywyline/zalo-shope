@@ -339,6 +339,12 @@ async function seedStore(store: StoreFixture): Promise<void> {
         storeId: store.id,
       },
     });
+    const warehouse = await database.warehouse.findUniqueOrThrow({
+      where: { storeId_code: { code: 'local-default', storeId: store.id } },
+    });
+    await database.inventoryBalance.create({
+      data: { skuId: input.id, storeId: store.id, warehouseId: warehouse.id },
+    });
   }
 
   await database.page.create({
@@ -462,6 +468,7 @@ async function removeFixtures(): Promise<void> {
     await transaction.page.deleteMany({
       where: { id: { in: stores.map(({ pageId }) => pageId) } },
     });
+    await transaction.inventoryBalance.deleteMany({ where: { skuId: { in: skuIds } } });
     await transaction.skuOptionValue.deleteMany({ where: { skuId: { in: skuIds } } });
     await transaction.sku.deleteMany({ where: { id: { in: skuIds } } });
     await transaction.productMedia.deleteMany({ where: { productId: { in: productIds } } });

@@ -301,7 +301,7 @@ paths:
       security: [{ StoreCode: [], AdminBearer: [] }]
       parameters:
         - $ref: '#/components/parameters/StoreCode'
-        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/InventoryCursor'
         - $ref: '#/components/parameters/AdminLimit'
       responses:
         '200':
@@ -356,7 +356,7 @@ paths:
       security: [{ StoreCode: [], AdminBearer: [] }]
       parameters:
         - $ref: '#/components/parameters/StoreCode'
-        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/InventoryCursor'
         - $ref: '#/components/parameters/AdminLimit'
         - { name: warehouse_id, in: query, schema: { type: string, format: uuid } }
         - { name: q, in: query, schema: { type: string, minLength: 1, maxLength: 100 } }
@@ -376,7 +376,7 @@ paths:
       security: [{ StoreCode: [], AdminBearer: [] }]
       parameters:
         - $ref: '#/components/parameters/StoreCode'
-        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/InventoryCursor'
         - $ref: '#/components/parameters/AdminLimit'
         - { name: warehouse_id, in: query, schema: { type: string, format: uuid } }
         - { name: sku_id, in: query, schema: { type: string, format: uuid } }
@@ -431,7 +431,9 @@ paths:
       summary: 校验或执行受限初始库存 CSV/XLSX 导入
       description: >-
         dry_run 需要 `store.inventory.manage`；正式执行同时需要 `store.inventory.adjust`、
-        二次确认与 Idempotency-Key。最大 5 MiB/5000 行，返回逐行结果，不接受 store_id。
+        二次确认与 Idempotency-Key。最大 5 MiB/5000 行；CSV 与 inventory 工作表 XLSX
+        均严格使用 warehouse_code,sku_code,quantity,note 四列。返回逐行结果，文件不接受
+        store_id；任一行错误时正式请求整批不写入。
       security: [{ StoreCode: [], AdminBearer: [] }]
       parameters:
         - $ref: '#/components/parameters/StoreCode'
@@ -453,6 +455,8 @@ paths:
       responses:
         '200':
           description: dry-run 或正式逐行报告
+          headers:
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             { application/json: { schema: { $ref: '#/components/schemas/InventoryImportReport' } } }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -730,6 +734,11 @@ components:
       name: cursor
       in: query
       schema: { type: string, minLength: 1, maxLength: 1000 }
+    InventoryCursor:
+      name: cursor
+      in: query
+      description: 当前库存分页最后一条记录的内部 UUID；仅作不透明游标使用。
+      schema: { type: string, format: uuid }
     Limit:
       name: limit
       in: query

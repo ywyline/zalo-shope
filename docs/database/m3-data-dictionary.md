@@ -1,6 +1,6 @@
 # M3 库存、搜索、促销、报价与购物车数据字典
 
-> 状态：M3.1 冻结；M3.2 schema、迁移、初始回填与基础种子已实施
+> 状态：M3.1 冻结；M3.2 数据库基础与 M3.3 仓库/库存服务已实施
 >
 > 日期：2026-07-20
 > 依据：`REQUIREMENTS.md` 第 4、5、9、10、11、15、20、22、23、24 节与已批准的 `docs/plans/m3-implementation-plan.md`
@@ -14,7 +14,7 @@
 - 库存数量使用 `integer`，范围 0–2147483647；购物车单行数量为 1–99。`version` 为从 1 开始的正整数乐观锁。
 - 业务 code 统一转小写，格式为 `^[a-z][a-z0-9-]{1,63}$`；幂等键为 16–128 个受限 ASCII 字符，请求体以规范 JSON 计算 SHA-256。
 - 流水、发布后的促销版本和预留终态不可原地修改或删除。修正库存必须新增引用原动作的反向调整。
-- M3.2 只能按本字典新增向后兼容结构；如果字段或状态发生实质变化，先更新本字典和 OpenAPI 再创建迁移。
+- 后续阶段只能按本字典新增向后兼容结构；如果字段或状态发生实质变化，先更新本字典和 OpenAPI 再实施。
 
 ## 2. 枚举与状态机
 
@@ -85,7 +85,7 @@
 | `version`                              | integer           | `1`       | 每次成功变化加 1                   |
 | `created_at` / `updated_at`            | timestamptz       | `now()`   | 审计时间                           |
 
-唯一键：`(store_id, warehouse_id, sku_id)`；索引：`(store_id, warehouse_id, available)`、`(store_id, sku_id)`。无余额行和零可售量都表示不可售，不代表无限库存。
+唯一键：`(store_id, warehouse_id, sku_id)`；索引：`(store_id, warehouse_id, available)`、`(store_id, sku_id)`。无余额行和零可售量都表示不可售，不代表无限库存。M3.3 起，通过商品管理服务创建的新 SKU 在当前启用默认履约仓建立显式零余额；这不是非零库存事实。存在非零余额、流水、预留或购物车引用的 SKU 禁止通过“整组替换”物理删除，运营应停用历史 SKU。
 
 ### 3.4 `inventory_operations`
 
@@ -145,6 +145,14 @@
 | `created_at`                               | timestamptz  | `now()`   | 只追加时间                       |
 
 触发器拒绝 UPDATE/DELETE，并检查前后值、差量和余额约束。索引：`(store_id, balance_id, created_at DESC, id DESC)`、`(store_id, operation_id)`。
+
+### 3.8 M3.3 初始导入与过期执行约定
+
+- 初始库存导入只接受 UTF-8 CSV 或 XLSX；XLSX 工作表固定为 `inventory`，两种格式都必须严格使用 `warehouse_code,sku_code,quantity,note` 四列。
+- 文件最大 5 MiB、最多 5000 个数据行；数量必须为正整数且不超过库存上限，仓库必须启用，SKU 必须启用，备注不得包含手机号、Token 等敏感信息。
+- dry-run 和正式执行返回逐行报告。任一行错误时正式请求不写余额、动作、流水或审计；全部行有效时在一个商城事务内原子执行。初始导入只允许无余额或 `on_hand=reserved=0`、`version=1` 且无流水的目标。
+- 正式导入和调整都使用 `Idempotency-Key` 与规范请求 hash；同键同请求返回首次结果，同键不同请求返回 `IDEMPOTENCY_KEY_REUSED`。
+- 预留过期 worker 通过 `app_security.list_active_stores()` 逐商城扫描数据库事实，批大小由 `INVENTORY_EXPIRATION_BATCH_SIZE` 控制，轮询间隔由 `INVENTORY_EXPIRATION_INTERVAL_MS` 控制；固定动作键和终态条件保证重复扫描不产生第二笔流水。当前数据库轮询满足部署与可靠性要求，不引入 BullMQ。
 
 ## 4. 搜索
 

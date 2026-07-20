@@ -77,12 +77,12 @@ export class ProductImportFileError extends Error {
   }
 }
 
-function readUtf8(buffer: Buffer): string {
+export function readUtf8ImportFile(buffer: Buffer, maxBytes = PRODUCT_IMPORT_MAX_BYTES): string {
   if (buffer.byteLength === 0) {
     throw new ProductImportFileError('FILE_EMPTY', 'CSV file is empty');
   }
-  if (buffer.byteLength > PRODUCT_IMPORT_MAX_BYTES) {
-    throw new ProductImportFileError('FILE_TOO_LARGE', 'CSV file exceeds 2 MiB');
+  if (buffer.byteLength > maxBytes) {
+    throw new ProductImportFileError('FILE_TOO_LARGE', 'CSV file exceeds the size limit');
   }
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(buffer).replace(/^\uFEFF/, '');
@@ -91,7 +91,7 @@ function readUtf8(buffer: Buffer): string {
   }
 }
 
-function parseCsv(text: string): ProductImportRecord[] {
+export function parseCsvRecords(text: string): ProductImportRecord[] {
   if (text.includes('\0')) {
     throw new ProductImportFileError('CSV_INVALID', 'CSV contains a NUL control character');
   }
@@ -368,7 +368,7 @@ function parseDataRecord(record: ProductImportRecord): ParsedProductImportRow {
 }
 
 export function parseProductImportCsv(buffer: Buffer): ParsedProductImportRow[] {
-  const records = parseCsv(readUtf8(buffer));
+  const records = parseCsvRecords(readUtf8ImportFile(buffer));
   return parseProductImportRecords(records, 'CSV');
 }
 

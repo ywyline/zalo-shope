@@ -57,6 +57,13 @@ export const createWarehouseSchema = z
   })
   .strict();
 
+export const warehouseListQuerySchema = z
+  .object({
+    cursor: z.string().uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+
 export const updateWarehouseSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -99,7 +106,7 @@ export const inventoryAdjustmentSchema = z
 
 export const inventoryBalanceListQuerySchema = z
   .object({
-    cursor: z.string().trim().min(1).max(1_000).optional(),
+    cursor: z.string().uuid().optional(),
     in_stock: z
       .enum(['true', 'false'])
       .transform((value) => value === 'true')
@@ -112,7 +119,7 @@ export const inventoryBalanceListQuerySchema = z
 
 export const inventoryMovementListQuerySchema = z
   .object({
-    cursor: z.string().trim().min(1).max(1_000).optional(),
+    cursor: z.string().uuid().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(50),
     movement_type: z
       .enum(['ADJUSTMENT_IN', 'ADJUSTMENT_OUT', 'RESERVE', 'RELEASE', 'CONSUME', 'RESTORE'])
@@ -133,4 +140,8 @@ export const inventoryImportQuerySchema = z
 
 export type CreateWarehouseInput = z.infer<typeof createWarehouseSchema>;
 export type InventoryAdjustmentInput = z.infer<typeof inventoryAdjustmentSchema>;
+export type InventoryBalanceListQuery = z.infer<typeof inventoryBalanceListQuerySchema>;
+export type InventoryImportQuery = z.infer<typeof inventoryImportQuerySchema>;
+export type InventoryMovementListQuery = z.infer<typeof inventoryMovementListQuerySchema>;
 export type UpdateWarehouseInput = z.infer<typeof updateWarehouseSchema>;
+export type WarehouseListQuery = z.infer<typeof warehouseListQuerySchema>;

@@ -1047,6 +1047,33 @@ export class ProductAdminService {
           ) {
             throw new ConflictException('Detach SKU media before replacing SKUs');
           }
+          const [balances, reservationItems, cartItems] = await Promise.all([
+            transaction.inventoryBalance.findMany({
+              include: { _count: { select: { movements: true } } },
+              where: { skuId: { in: oldSkuIds }, storeId: request.storeId },
+            }),
+            transaction.inventoryReservationItem.count({
+              where: { skuId: { in: oldSkuIds }, storeId: request.storeId },
+            }),
+            transaction.cartItem.count({
+              where: { skuId: { in: oldSkuIds }, storeId: request.storeId },
+            }),
+          ]);
+          if (
+            reservationItems > 0 ||
+            cartItems > 0 ||
+            balances.some(
+              (balance) =>
+                balance.onHand !== 0 || balance.reserved !== 0 || balance._count.movements !== 0,
+            )
+          ) {
+            throw new ConflictException(
+              'SKUs with inventory or transaction history cannot be replaced; disable them instead',
+            );
+          }
+          await transaction.inventoryBalance.deleteMany({
+            where: { skuId: { in: oldSkuIds }, storeId: request.storeId },
+          });
           await transaction.skuOptionValue.deleteMany({
             where: { skuId: { in: oldSkuIds }, storeId: request.storeId },
           });
@@ -1080,6 +1107,7 @@ export class ProductAdminService {
               storeId: request.storeId,
             })),
           });
+          await this.initializeDefaultInventoryBalance(transaction, request.storeId, created.id);
         }
         await transaction.product.update({
           data: { updatedBy: context.actor.id, version: { increment: 1 } },
@@ -1542,6 +1570,7 @@ export class ProductAdminService {
           storeId: context.storeId,
         })),
       });
+      await this.initializeDefaultInventoryBalance(transaction, context.storeId, sku.id);
     }
     const after = await this.loadProduct(transaction, context.storeId, created.id);
     await this.admin.writeAudit(transaction, context, {
@@ -1584,6 +1613,21 @@ export class ProductAdminService {
       return fail('REFERENCE_INVALID', 'Main category requires an active attribute template');
     }
     return { categoryId: category.id, templateVersionId: binding.templateVersionId };
+  }
+
+  private async initializeDefaultInventoryBalance(
+    transaction: StoreTransaction,
+    storeId: string,
+    skuId: string,
+  ): Promise<void> {
+    const warehouse = await transaction.warehouse.findFirst({
+      select: { id: true },
+      where: { enabled: true, isDefaultFulfillment: true, storeId },
+    });
+    if (!warehouse) return;
+    await transaction.inventoryBalance.create({
+      data: { skuId, storeId, warehouseId: warehouse.id },
+    });
   }
 
   private async transitionProduct(

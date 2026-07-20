@@ -44,6 +44,13 @@ const runtimeConfigSchema = z
       ),
     DATABASE_URL: z.string().url().startsWith('postgresql://'),
     DATABASE_RUNTIME_URL: z.string().url().startsWith('postgresql://'),
+    INVENTORY_EXPIRATION_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
+    INVENTORY_EXPIRATION_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(300_000)
+      .default(5_000),
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
       .default('info'),

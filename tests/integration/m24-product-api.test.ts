@@ -202,6 +202,7 @@ describe('M2.4 product, media and compliance API', () => {
         await transaction.complianceRecord.deleteMany({ where: { id: { in: recordIds } } });
         await transaction.productVersion.deleteMany({ where: { productId } });
         await transaction.productMedia.deleteMany({ where: { productId } });
+        await transaction.inventoryBalance.deleteMany({ where: { skuId: { in: skuIds } } });
         await transaction.skuOptionValue.deleteMany({ where: { skuId: { in: skuIds } } });
         await transaction.sku.deleteMany({ where: { id: { in: skuIds } } });
         await transaction.productLocalization.deleteMany({ where: { productId } });
@@ -285,6 +286,16 @@ describe('M2.4 product, media and compliance API', () => {
       })
       .expect(200)
       .expect(({ body }) => expect(body).toMatchObject({ version: 2 }));
+
+    const createdSku = await owner.sku.findFirstOrThrow({
+      select: { id: true },
+      where: { productId },
+    });
+    expect(
+      await owner.inventoryBalance.findFirstOrThrow({
+        where: { skuId: createdSku.id, storeId: BEAUTY_STORE_ID },
+      }),
+    ).toMatchObject({ available: 0, onHand: 0, reserved: 0, version: 1 });
 
     const foreignMedia = await owner.mediaAsset.create({
       data: {

@@ -123,3 +123,53 @@ test('admin catalog stays isolated, localized and supports the XLSX dry-run flow
   expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
   expect(browserErrors).toEqual([]);
 });
+
+test('inventory workbench stays isolated and validates an atomic initial-load file', async ({
+  page,
+}) => {
+  const browserErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+
+  await signIn(page);
+  await page.getByRole('button', { name: 'Warehouses & inventory' }).click();
+  await expect(page.getByRole('heading', { name: 'Warehouses & inventory' })).toBeVisible();
+  await expect(page.getByText('beauty-local-primary-default', { exact: true })).toBeVisible();
+  await expect(page.getByText('fashion-local-primary-default', { exact: true })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Warehouses', exact: true }).click();
+  await expect(page.getByText('Beauty local test warehouse', { exact: true })).toBeVisible();
+
+  const storeSelect = page.getByLabel('Select store');
+  await storeSelect.selectOption(FASHION_STORE_ID);
+  await expect(page.getByText('fashion-local-primary-default', { exact: true })).toBeVisible();
+  await expect(page.getByText('beauty-local-primary-default', { exact: true })).toHaveCount(0);
+
+  await storeSelect.selectOption(BEAUTY_STORE_ID);
+  await page.getByRole('button', { name: 'Initial stock import' }).click();
+  await page.getByLabel('CSV / XLSX file').setInputFiles({
+    buffer: Buffer.from(
+      'warehouse_code,sku_code,quantity,note\nlocal-default,beauty-local-primary-default,1,Browser validation only\n',
+    ),
+    mimeType: 'text/csv',
+    name: 'inventory-browser-dry-run.csv',
+  });
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes('/v1/admin/inventory/imports') &&
+      response.url().includes('dry_run=true'),
+  );
+  await page.getByRole('button', { name: 'Validate file' }).click();
+  expect((await responsePromise).ok()).toBe(true);
+  await expect(page.locator('.inventory-import-report')).toContainText('VALID');
+
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+  expect(browserErrors).toEqual([]);
+});

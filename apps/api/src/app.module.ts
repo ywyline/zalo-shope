@@ -43,6 +43,8 @@ import { ContentAdminService } from './content-admin/content-admin.service';
 import { StoreController } from './store.controller';
 import { CatalogController } from './catalog/catalog.controller';
 import { CatalogService } from './catalog/catalog.service';
+import { InventoryAdminController } from './inventory-admin/inventory-admin.controller';
+import { InventoryAdminService } from './inventory-admin/inventory-admin.service';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -90,6 +92,7 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     ContentAdminController,
     CatalogController,
     StoreController,
+    InventoryAdminController,
   ],
   providers: [
     AdminService,
@@ -98,6 +101,7 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     ContentAdminService,
     CatalogService,
     AuthService,
+    InventoryAdminService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
       provide: DATABASE_CLIENT,

@@ -5,10 +5,11 @@ import '@zalo-shop/design-tokens/theme.css';
 import './styles.css';
 import { CatalogWorkbench } from './catalog-workbench';
 import { ContentEditor } from './content-editor';
+import { InventoryWorkbench } from './inventory-workbench';
 
 type Locale = 'en' | 'vi' | 'zh';
 type Phase = 'dashboard' | 'mfa' | 'password';
-type Tab = 'audit' | 'catalog' | 'content' | 'overview' | 'roles';
+type Tab = 'audit' | 'catalog' | 'content' | 'inventory' | 'overview' | 'roles';
 type Store = { code: string; default_locale: Locale; id: string };
 type Role = { code: string; id: string; name: string; permissions?: Array<unknown> };
 type Audit = { action: string; actorId: string; createdAt: string; id: string; reason?: string };
@@ -26,6 +27,7 @@ const labels = {
     errorAuth: 'Thông tin đăng nhập hoặc mã xác thực không hợp lệ.',
     errorDenied: 'Bạn không có quyền trong phạm vi này. Truy cập chéo cửa hàng cần lý do hợp lệ.',
     errorGeneric: 'Không thể hoàn tất yêu cầu. Vui lòng thử lại.',
+    inventory: 'Kho & tồn kho',
     loading: 'Đang tải dữ liệu an toàn…',
     login: 'Đăng nhập an toàn',
     mfa: 'Mã xác thực 6 số',
@@ -53,6 +55,7 @@ const labels = {
     errorAuth: '登录信息或验证码无效。',
     errorDenied: '你无权访问当前范围；跨商城访问必须填写有效原因。',
     errorGeneric: '请求未能完成，请重试。',
+    inventory: '仓库与库存',
     loading: '正在安全加载数据…',
     login: '安全登录',
     mfa: '6 位验证码',
@@ -80,6 +83,7 @@ const labels = {
     errorAuth: 'The credentials or verification code are invalid.',
     errorDenied: 'You cannot access this scope. Cross-store access requires a valid reason.',
     errorGeneric: 'The request could not be completed. Please retry.',
+    inventory: 'Warehouses & inventory',
     loading: 'Loading securely…',
     login: 'Secure sign in',
     mfa: '6-digit code',
@@ -348,6 +352,12 @@ function AdminApp(): JSX.Element {
             ◇ <span>{t.catalog}</span>
           </button>
           <button
+            className={tab === 'inventory' ? 'active' : ''}
+            onClick={() => setTab('inventory')}
+          >
+            ▦ <span>{t.inventory}</span>
+          </button>
+          <button
             className={tab === 'roles' ? 'active' : ''}
             onClick={() => {
               setTab('roles');
@@ -401,7 +411,9 @@ function AdminApp(): JSX.Element {
                 setStore(next);
                 setRoles([]);
                 setAudits([]);
-                if (tab !== 'content' && tab !== 'catalog') void loadScope(next);
+                if (tab !== 'content' && tab !== 'catalog' && tab !== 'inventory') {
+                  void loadScope(next);
+                }
               }}
               value={store?.id ?? ''}
             >
@@ -475,6 +487,15 @@ function AdminApp(): JSX.Element {
         {tab === 'catalog' && store && (
           <CatalogWorkbench
             download={downloadApi}
+            headers={() => authenticatedHeaders(store)}
+            key={store.id}
+            locale={locale}
+            request={api}
+            store={store}
+          />
+        )}
+        {tab === 'inventory' && store && (
+          <InventoryWorkbench
             headers={() => authenticatedHeaders(store)}
             key={store.id}
             locale={locale}

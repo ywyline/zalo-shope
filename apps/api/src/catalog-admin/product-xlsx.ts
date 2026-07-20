@@ -103,12 +103,12 @@ function validateZipPath(name: string): void {
   }
 }
 
-function inspectZipEntries(buffer: Buffer): Map<string, ZipEntry> {
+function inspectZipEntries(buffer: Buffer, maxBytes: number): Map<string, ZipEntry> {
   if (buffer.byteLength === 0) {
     throw workbookError('FILE_EMPTY', 'XLSX file is empty');
   }
-  if (buffer.byteLength > PRODUCT_IMPORT_MAX_BYTES) {
-    throw workbookError('FILE_TOO_LARGE', 'XLSX file exceeds 2 MiB');
+  if (buffer.byteLength > maxBytes) {
+    throw workbookError('FILE_TOO_LARGE', 'XLSX file exceeds the size limit');
   }
   if (buffer.byteLength < 22 || buffer.readUInt32LE(0) !== ZIP_LOCAL_SIGNATURE) {
     throw workbookError('WORKBOOK_INVALID', 'File is not an XLSX ZIP workbook');
@@ -246,8 +246,12 @@ function decodeXml(buffer: Buffer): string {
   }
 }
 
-export function preflightProductImportXlsx(buffer: Buffer): void {
-  const entries = inspectZipEntries(buffer);
+export function preflightProductImportXlsx(
+  buffer: Buffer,
+  sheetName = 'products',
+  maxBytes = PRODUCT_IMPORT_MAX_BYTES,
+): void {
+  const entries = inspectZipEntries(buffer, maxBytes);
   for (const required of ['[Content_Types].xml', 'xl/workbook.xml']) {
     if (!entries.has(required)) {
       throw workbookError('WORKBOOK_INVALID', 'XLSX is missing a required workbook entry');
@@ -280,11 +284,15 @@ export function preflightProductImportXlsx(buffer: Buffer): void {
     throw workbookError('WORKSHEET_INVALID', 'XLSX must contain exactly one worksheet');
   }
   const sheetTag = sheetTags[0];
+  const escapedSheetName = sheetName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   if (
-    !/\bname=(['"])products\1/i.test(sheetTag) ||
+    !new RegExp(`\\bname=(['"])${escapedSheetName}\\1`, 'i').test(sheetTag) ||
     /\bstate=(['"])(?!visible\1)[^'"]+\1/i.test(sheetTag)
   ) {
-    throw workbookError('WORKSHEET_INVALID', 'The only visible worksheet must be named products');
+    throw workbookError(
+      'WORKSHEET_INVALID',
+      `The only visible worksheet must be named ${sheetName}`,
+    );
   }
 
   for (const [name, entry] of entries) {
@@ -326,30 +334,43 @@ function xlsxCellToText(value: unknown): string {
   throw workbookError('CELL_INVALID', 'XLSX contains an unsupported cell type');
 }
 
-export async function parseProductImportXlsx(buffer: Buffer): Promise<ParsedProductImportRow[]> {
-  preflightProductImportXlsx(buffer);
+export async function readStrictXlsxRecords(input: {
+  buffer: Buffer;
+  columns: readonly string[];
+  maxBytes: number;
+  maxRows: number;
+  sheet: string;
+}): Promise<ProductImportRecord[]> {
+  preflightProductImportXlsx(input.buffer, input.sheet, input.maxBytes);
   try {
-    const sheets = await readXlsxFile(buffer, { trim: false });
-    if (sheets.length !== 1 || sheets[0]?.sheet !== 'products') {
-      throw workbookError('WORKSHEET_INVALID', 'The only worksheet must be named products');
+    const sheets = await readXlsxFile(input.buffer, { trim: false });
+    if (sheets.length !== 1 || sheets[0]?.sheet !== input.sheet) {
+      throw workbookError('WORKSHEET_INVALID', `The only worksheet must be named ${input.sheet}`);
     }
-    if (sheets[0].data.length > PRODUCT_IMPORT_MAX_ROWS + 1) {
-      throw workbookError(
-        'ROW_LIMIT_EXCEEDED',
-        `XLSX exceeds ${PRODUCT_IMPORT_MAX_ROWS} data rows`,
-      );
+    if (sheets[0].data.length > input.maxRows + 1) {
+      throw workbookError('ROW_LIMIT_EXCEEDED', `XLSX exceeds ${input.maxRows} data rows`);
     }
-    const records: ProductImportRecord[] = sheets[0].data.map((row, index) => {
-      if (row.length > PRODUCT_IMPORT_COLUMNS.length) {
+    return sheets[0].data.map((row, index) => {
+      if (row.length > input.columns.length) {
         throw workbookError('COLUMN_LIMIT_EXCEEDED', 'XLSX exceeds the fixed column limit');
       }
       return { line: index + 1, values: row.map(xlsxCellToText) };
     });
-    return parseProductImportRecords(records, 'XLSX');
   } catch (error) {
     if (error instanceof ProductImportFileError) throw error;
     throw workbookError('WORKBOOK_INVALID', 'XLSX workbook cannot be parsed');
   }
+}
+
+export async function parseProductImportXlsx(buffer: Buffer): Promise<ParsedProductImportRow[]> {
+  const records = await readStrictXlsxRecords({
+    buffer,
+    columns: PRODUCT_IMPORT_COLUMNS,
+    maxBytes: PRODUCT_IMPORT_MAX_BYTES,
+    maxRows: PRODUCT_IMPORT_MAX_ROWS,
+    sheet: 'products',
+  });
+  return parseProductImportRecords(records, 'XLSX');
 }
 
 function headerCell(value: string): Cell {

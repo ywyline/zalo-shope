@@ -61,3 +61,5 @@ export async function withAdminAssignmentDiscoveryTransaction<T>(
     return callback(transaction);
   });
 }
+
+export * from './inventory-primitives';

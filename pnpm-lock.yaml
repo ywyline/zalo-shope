@@ -233,6 +233,12 @@ importers:
       '@zalo-shop/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@zalo-shop/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      '@zalo-shop/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@zalo-shop/logger':
         specifier: workspace:*
         version: link:../../packages/logger

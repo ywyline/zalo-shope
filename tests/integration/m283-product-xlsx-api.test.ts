@@ -225,6 +225,7 @@ describe('M2.8.3 restricted product XLSX API', () => {
         where: { productId: { in: productIds } },
       });
       const skuIds = skus.map(({ id }) => id);
+      await transaction.inventoryBalance.deleteMany({ where: { skuId: { in: skuIds } } });
       await transaction.skuOptionValue.deleteMany({ where: { skuId: { in: skuIds } } });
       await transaction.sku.deleteMany({ where: { id: { in: skuIds } } });
       await transaction.productLocalization.deleteMany({

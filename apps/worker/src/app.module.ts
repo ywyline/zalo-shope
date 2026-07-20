@@ -1,9 +1,14 @@
 import { Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
 import { parseRuntimeConfig, type RuntimeConfig } from '@zalo-shop/config';
+import { createRuntimePrismaClient } from '@zalo-shop/database';
 import { createHttpLogger, createLogger } from '@zalo-shop/logger';
 import { checkInfrastructure } from '@zalo-shop/platform';
 
 import { HealthController, INFRASTRUCTURE_CHECKER, RUNTIME_CONFIG } from './health.controller';
+import {
+  InventoryExpirationService,
+  WORKER_DATABASE_CLIENT,
+} from './inventory/inventory-expiration.service';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('worker', runtimeConfig.LOG_LEVEL);
@@ -13,6 +18,11 @@ const logger = createLogger('worker', runtimeConfig.LOG_LEVEL);
   providers: [
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     { provide: INFRASTRUCTURE_CHECKER, useValue: checkInfrastructure },
+    {
+      provide: WORKER_DATABASE_CLIENT,
+      useFactory: () => createRuntimePrismaClient(runtimeConfig.DATABASE_RUNTIME_URL),
+    },
+    InventoryExpirationService,
   ],
 })
 export class AppModule implements NestModule {

@@ -25,6 +25,8 @@ describe('parseRuntimeConfig', () => {
     expect(config.NODE_ENV).toBe('development');
     expect(config.API_PORT).toBe(3000);
     expect(config.WORKER_PORT).toBe(3001);
+    expect(config.INVENTORY_EXPIRATION_INTERVAL_MS).toBe(5_000);
+    expect(config.INVENTORY_EXPIRATION_BATCH_SIZE).toBe(100);
     expect(config.S3_FORCE_PATH_STYLE).toBe(true);
     expect(config.CONTENT_EXTERNAL_TARGET_HOSTS).toEqual([]);
   });
