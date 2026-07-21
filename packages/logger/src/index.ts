@@ -5,12 +5,20 @@ import pino, { type Logger } from 'pino';
 import pinoHttp from 'pino-http';
 
 const REDACTED_PATHS = [
+  // pino-http uses these names before customAttributeKeys are applied.
   'req.headers.authorization',
   'req.headers.cookie',
-  'req.headers.x-zalo-access-token',
-  'req.headers.x-zalo-phone-token',
-  'req.headers.x-refresh-token',
-  'res.headers.set-cookie',
+  'req.headers["x-zalo-access-token"]',
+  'req.headers["x-zalo-phone-token"]',
+  'req.headers["x-refresh-token"]',
+  'res.headers["set-cookie"]',
+  // The HTTP logger exposes the serialized objects as request/response.
+  'request.headers.authorization',
+  'request.headers.cookie',
+  'request.headers["x-zalo-access-token"]',
+  'request.headers["x-zalo-phone-token"]',
+  'request.headers["x-refresh-token"]',
+  'response.headers["set-cookie"]',
 ] as const;
 
 const SENSITIVE_KEY_PATTERN =

@@ -4,7 +4,13 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['**/coverage/**', '**/dist/**', '**/node_modules/**', '**/.zmp/**'],
+    ignores: [
+      '**/coverage/**',
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/.zmp/**',
+      '**/.codex-zmp-qr-capture.cjs',
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked.map((config) => ({

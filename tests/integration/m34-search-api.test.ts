@@ -495,7 +495,11 @@ describe('M3.4 multilingual search, facets and member history', () => {
       .get('/v1/search/products?on_promotion=true')
       .set('X-Store-Code', 'beauty-local')
       .expect(200);
-    expect(promotion.body.items).toEqual([]);
+    for (const item of promotion.body.items as Array<{ promotion_summary: unknown }>) {
+      expect(item.promotion_summary).toEqual(
+        expect.objectContaining({ code: expect.any(String), label: expect.any(String) }),
+      );
+    }
   });
 
   it('aggregates safe suggestions and keeps authenticated history private and clearable', async () => {

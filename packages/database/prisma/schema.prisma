@@ -122,6 +122,7 @@ model Store {
   promotionVersions             PromotionVersion[]
   promotionVersionLocalizations PromotionVersionLocalization[]
   promotionTargets              PromotionTarget[]
+  promotionOperations           PromotionOperation[]
   coupons                       Coupon[]
   memberCoupons                 MemberCoupon[]
   carts                         Cart[]
@@ -199,6 +200,7 @@ model AdminUser {
   promotionsCreated          Promotion[]          @relation("PromotionCreatedBy")
   promotionsUpdated          Promotion[]          @relation("PromotionUpdatedBy")
   promotionVersionsPublished PromotionVersion[]   @relation("PromotionVersionPublishedBy")
+  promotionOperations        PromotionOperation[]
 
   @@map("admin_users")
 }
@@ -1362,6 +1364,27 @@ model PromotionTarget {
   @@map("promotion_targets")
 }
 
+model PromotionOperation {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId          String   @map("store_id") @db.Uuid
+  operationKey     String   @map("operation_key") @db.VarChar(128)
+  requestHash      String   @map("request_hash") @db.Char(64)
+  operationType    String   @map("operation_type") @db.VarChar(32)
+  targetType       String   @map("target_type") @db.VarChar(32)
+  targetId         String   @map("target_id") @db.Uuid
+  resultData       Json     @map("result_data")
+  createdByAdminId String   @map("created_by_admin_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  createdBy AdminUser @relation(fields: [createdByAdminId], references: [id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, operationKey])
+  @@index([storeId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("promotion_operations")
+}
+
 model Coupon {
   id                  String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   storeId             String       @map("store_id") @db.Uuid
@@ -1370,6 +1393,7 @@ model Coupon {
   status              CouponStatus @default(DRAFT)
   totalClaimLimit     Int?         @map("total_claim_limit")
   perMemberClaimLimit Int          @default(1) @map("per_member_claim_limit")
+  newCustomerOnly     Boolean      @default(false) @map("new_customer_only")
   claimedCount        Int          @default(0) @map("claimed_count")
   version             Int          @default(1)
   createdAt           DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)

@@ -682,7 +682,7 @@ export function InventoryWorkbench({
             <h2>{t.newWarehouse}</h2>
             <label>
               {t.code}
-              <input name="code" pattern="[a-z][a-z0-9-]{1,63}" required />
+              <input name="code" pattern="[a-z][a-z0-9\-]{1,63}" required />
             </label>
             <label>
               {t.nameVi}

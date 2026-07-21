@@ -2,6 +2,8 @@ import reactRefresh from '@vitejs/plugin-react-refresh';
 import path from 'node:path';
 import { defineConfig } from 'vite';
 
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:3000';
+
 export default defineConfig({
   base: './',
   build: {
@@ -31,7 +33,7 @@ export default defineConfig({
       '/api': {
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
-        target: 'http://127.0.0.1:3000',
+        target: apiProxyTarget,
       },
     },
   },

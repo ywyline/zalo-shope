@@ -35,6 +35,8 @@ type SearchRow = {
   object_key: string | null;
   product_code: string;
   product_name: string;
+  promotion_code: string | null;
+  promotion_label: string | null;
   published_at: Date;
   score: number;
 };
@@ -228,7 +230,13 @@ export class SearchService {
             : Prisma.sql`stock.available_quantity = 0`,
         );
       }
-      if (input.query.on_promotion === true) conditions.push(Prisma.sql`FALSE`);
+      if (input.query.on_promotion !== undefined) {
+        conditions.push(
+          input.query.on_promotion
+            ? Prisma.sql`promotion.code IS NOT NULL`
+            : Prisma.sql`promotion.code IS NULL`,
+        );
+      }
 
       const score = normalized
         ? Prisma.sql`round((
@@ -273,6 +281,8 @@ export class SearchService {
             LEAST(stock.available_quantity, 2147483647)::bigint AS available_quantity,
             d.published_at,
             media.object_key,
+            promotion.code AS promotion_code,
+            promotion.label AS promotion_label,
             ${score} AS score
           FROM product_search_documents d
           JOIN products p ON p.store_id = d.store_id AND p.id = d.product_id
@@ -299,6 +309,59 @@ export class SearchService {
             ORDER BY pm.sort_order, pm.media_id
             LIMIT 1
           ) media ON true
+          LEFT JOIN LATERAL (
+            SELECT
+              promotion_root.code,
+              COALESCE(localized.name, vietnamese.name, promotion_root.code) AS label
+            FROM promotions promotion_root
+            JOIN promotion_versions promotion_version
+              ON promotion_version.store_id = promotion_root.store_id
+             AND promotion_version.id = promotion_root.active_version_id
+             AND promotion_version.promotion_id = promotion_root.id
+             AND promotion_version.status = 'PUBLISHED'
+             AND promotion_version.bucket IN ('ITEM', 'ORDER')
+             AND promotion_version.starts_at <= CURRENT_TIMESTAMP
+             AND (promotion_version.ends_at IS NULL OR promotion_version.ends_at > CURRENT_TIMESTAMP)
+            JOIN promotion_targets promotion_target
+              ON promotion_target.store_id = promotion_version.store_id
+             AND promotion_target.promotion_version_id = promotion_version.id
+            LEFT JOIN promotion_version_localizations vietnamese
+              ON vietnamese.store_id = promotion_version.store_id
+             AND vietnamese.promotion_version_id = promotion_version.id
+             AND vietnamese.locale = 'vi'
+            LEFT JOIN promotion_version_localizations localized
+              ON localized.store_id = promotion_version.store_id
+             AND localized.promotion_version_id = promotion_version.id
+             AND localized.locale = ${input.query.locale}::"Locale"
+            WHERE promotion_root.store_id = p.store_id
+              AND promotion_root.status = 'ACTIVE'
+              AND (
+                promotion_target.target_type = 'STORE'
+                OR (promotion_target.target_type = 'BRAND' AND promotion_target.brand_id = p.brand_id)
+                OR (
+                  promotion_target.target_type = 'CATEGORY'
+                  AND promotion_target.category_id = ANY(d.category_ids)
+                )
+                OR (
+                  promotion_target.target_type = 'PRODUCT'
+                  AND promotion_target.product_id = p.id
+                )
+                OR (
+                  promotion_target.target_type = 'SKU'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM skus promotion_sku
+                    WHERE promotion_sku.store_id = p.store_id
+                      AND promotion_sku.product_id = p.id
+                      AND promotion_sku.id = promotion_target.sku_id
+                      AND promotion_sku.status = 'ACTIVE'
+                  )
+                )
+              )
+            ORDER BY promotion_version.priority, promotion_root.code,
+              promotion_version.version_number DESC, promotion_version.id
+            LIMIT 1
+          ) promotion ON true
           WHERE ${Prisma.join(conditions, ' AND ')}
         )
         SELECT * FROM candidates
@@ -386,7 +449,10 @@ export class SearchService {
             name: row.product_name,
             primary_media_url: media?.url ?? null,
             product_code: row.product_code,
-            promotion_summary: null,
+            promotion_summary:
+              row.promotion_code === null
+                ? null
+                : { code: row.promotion_code, label: row.promotion_label ?? row.promotion_code },
             published_at: row.published_at.toISOString(),
           };
         }),

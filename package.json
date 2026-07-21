@@ -38,6 +38,7 @@
     "@types/supertest": "7.2.1",
     "@vitest/coverage-v8": "3.2.7",
     "@zalo-shop/config": "workspace:*",
+    "@zalo-shop/contracts": "workspace:*",
     "@zalo-shop/database": "workspace:*",
     "@zalo-shop/domain": "workspace:*",
     "@zalo-shop/integrations": "workspace:*",

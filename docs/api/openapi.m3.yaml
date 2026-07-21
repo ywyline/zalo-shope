@@ -1,11 +1,12 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M3 Inventory, Search, Pricing and Cart API
-  version: 0.3.2-m3.4
+  version: 0.3.4-m3.6
   description: >-
     M3.1 冻结契约；作为 openapi.m1.yaml 与 openapi.m2.yaml 的向后兼容增量。
     商城只从受信 X-Store-Code 与认证主体解析，请求体不接受 store_id。
-    M3.2-M3.4 已实施数据库基础、库存与搜索接口；促销、报价与购物车接口仍按后续门禁实施。
+    M3.2-M3.5 已实施数据库基础、库存、搜索、促销、优惠券、可信报价与管理员预览；M3.6 已实施会员购物车与移动端接入。
+    本契约不进入 M4 订单、支付、物流或售后。
 servers:
   - url: http://localhost:3000
 tags:
@@ -211,12 +212,17 @@ paths:
       tags: [Pricing]
       summary: 使用服务端商品与规则事实计算商品金额报价
       description: >-
-        匿名请求不得携带 coupon_code；优惠券资格需要商城绑定会员令牌。
+        匿名请求不得携带 coupon_code；买家使用优惠券需要商城绑定会员令牌。
+        持有 store.promotions.read 的管理员可作无副作用预览；管理员券预览假设会员持券及新客资格，
+        不创建领取或核销事实。计价顺序固定为 ITEM、COUPON、ORDER；整单折扣按当前行应付比例
+        向下取整，再按最大余数和 SKU 内部 ID 稳定分摊。
         M3 不计算运费或最终订单应付，也不核销优惠券或锁库存。
       security:
         - StoreCode: []
         - StoreCode: []
           MemberBearer: []
+        - StoreCode: []
+          AdminBearer: []
       parameters:
         - $ref: '#/components/parameters/StoreCode'
       requestBody:
@@ -233,6 +239,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
   /v1/cart:
@@ -242,6 +249,7 @@ paths:
       security: [{ StoreCode: [], MemberBearer: [] }]
       parameters:
         - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/Locale'
       responses:
         '200':
           description: 活动购物车；无车时返回空活动车
@@ -259,6 +267,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/StoreCode'
         - $ref: '#/components/parameters/SkuCode'
+        - $ref: '#/components/parameters/Locale'
       requestBody:
         required: true
         content:
@@ -281,6 +290,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/StoreCode'
         - $ref: '#/components/parameters/ItemId'
+        - $ref: '#/components/parameters/Locale'
       requestBody:
         required: true
         content:
@@ -302,6 +312,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/StoreCode'
         - $ref: '#/components/parameters/ItemId'
+        - $ref: '#/components/parameters/Locale'
         - name: expected_version
           in: query
           required: true
@@ -524,6 +535,36 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/promotions/targets:
+    get:
+      tags: [Admin promotions]
+      summary: 查询当前商城促销目标候选
+      description: >-
+        需要 `store.promotions.read`。仅返回当前商城的品牌、类目、商品或 SKU
+        的编码与三语名称；不接受 STORE 目标，也不返回其他商城资源。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/AdminLimit'
+        - {
+            name: target_type,
+            in: query,
+            required: true,
+            schema: { type: string, enum: [BRAND, CATEGORY, PRODUCT, SKU] },
+          }
+        - { name: q, in: query, schema: { type: string, minLength: 1, maxLength: 100 } }
+      responses:
+        '200':
+          description: 同商城目标候选分页
+          content:
+            {
+              application/json:
+                { schema: { $ref: '#/components/schemas/PromotionTargetLookupPage' } },
+            }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /v1/admin/promotions/{promotionId}/versions:
     get:
       tags: [Admin promotions]
@@ -569,7 +610,10 @@ paths:
     post:
       tags: [Admin promotions]
       summary: 发布不可变促销版本
-      description: 需要 `store.promotions.publish`、二次确认、乐观锁与 Idempotency-Key。
+      description: >-
+        需要 `store.promotions.publish`、二次确认、乐观锁与 Idempotency-Key。
+        发布当前 active 的已发布版本可将同一促销从 PAUSED 恢复为 ACTIVE；不得借此恢复 ENDED
+        或切回其他历史发布版本。
       security: [{ StoreCode: [], AdminBearer: [] }]
       parameters:
         - $ref: '#/components/parameters/StoreCode'
@@ -887,7 +931,10 @@ components:
                 - COUPON_INVALID
                 - COUPON_CLAIM_LIMIT
                 - COUPON_MEMBER_REQUIRED
+                - COUPON_STATE_CONFLICT
+                - MEMBER_INELIGIBLE
                 - PROMOTION_STATE_CONFLICT
+                - PROMOTION_VERSION_STATE_CONFLICT
                 - PROMOTION_RULE_INVALID
                 - CART_LINE_CONFLICT
                 - IMPORT_INVALID
@@ -1061,6 +1108,7 @@ components:
               ENDED,
               TARGET_MISMATCH,
               MINIMUM_NOT_MET,
+              MINIMUM_QUANTITY_NOT_MET,
               NOT_BEST,
               NOT_STACKABLE,
               MEMBER_INELIGIBLE,
@@ -1184,6 +1232,16 @@ components:
               ],
           }
         blocking: { type: boolean }
+    CartMedia:
+      type: object
+      additionalProperties: false
+      required: [alt_text, expires_at, height, url, width]
+      properties:
+        alt_text: { type: string, maxLength: 500 }
+        expires_at: { type: string, format: date-time }
+        height: { type: [integer, 'null'], minimum: 1 }
+        url: { type: string, format: uri }
+        width: { type: [integer, 'null'], minimum: 1 }
     CartItem:
       type: object
       additionalProperties: false
@@ -1211,6 +1269,46 @@ components:
         current_subtotal_vnd: { $ref: '#/components/schemas/VndAmount' }
         available_quantity: { type: integer, minimum: 0, maximum: 2147483647 }
         issues: { type: array, items: { $ref: '#/components/schemas/CartIssue' } }
+        product:
+          type: object
+          additionalProperties: false
+          required: [code, name, requested_locale, resolved_locale, primary_media, available_skus]
+          properties:
+            code: { $ref: '#/components/schemas/Code' }
+            name: { type: string, minLength: 1, maxLength: 240 }
+            requested_locale: { $ref: '#/components/schemas/Locale' }
+            resolved_locale: { $ref: '#/components/schemas/Locale' }
+            primary_media:
+              oneOf:
+                - $ref: '#/components/schemas/CartMedia'
+                - type: 'null'
+            available_skus:
+              type: array
+              maxItems: 100
+              items:
+                type: object
+                additionalProperties: false
+                required: [code, option_values]
+                properties:
+                  code: { $ref: '#/components/schemas/Code' }
+                  option_values:
+                    type: array
+                    maxItems: 20
+                    items: { type: object, additionalProperties: true }
+        sku:
+          type: object
+          additionalProperties: false
+          required: [code, media, option_values]
+          properties:
+            code: { $ref: '#/components/schemas/Code' }
+            media:
+              oneOf:
+                - $ref: '#/components/schemas/CartMedia'
+                - type: 'null'
+            option_values:
+              type: array
+              maxItems: 20
+              items: { type: object, additionalProperties: true }
     Cart:
       type: object
       additionalProperties: false
@@ -1420,11 +1518,35 @@ components:
       properties:
         target_type: { type: string, enum: [STORE, BRAND, CATEGORY, PRODUCT, SKU] }
         target_id:
-          {
-            type: [string, 'null'],
-            format: uuid,
-            description: STORE 时必须为 null；其他类型必须为同商城 ID,
-          }
+          type: [string, 'null']
+          format: uuid
+          description: >-
+            STORE 时必须为 null；其他类型必须为同商城 ID。CATEGORY 只精确匹配商品主类目或
+            辅助类目的同一 ID，不递归包含后代类目。
+    PromotionTargetLookupPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, code, names]
+            properties:
+              id: { type: string, format: uuid }
+              code: { $ref: '#/components/schemas/Code' }
+              names:
+                type: object
+                additionalProperties: false
+                required: [vi, zh, en]
+                properties:
+                  vi: { type: [string, 'null'], maxLength: 240 }
+                  zh: { type: [string, 'null'], maxLength: 240 }
+                  en: { type: [string, 'null'], maxLength: 240 }
+        next_cursor: { type: [string, 'null'], format: uuid }
     PromotionBenefit:
       oneOf:
         - type: object
@@ -1452,7 +1574,7 @@ components:
       required:
         [expected_promotion_version, bucket, benefit, starts_at, priority, localizations, targets]
       properties:
-        expected_promotion_version: { type: integer, minimum: 1 }
+        expected_promotion_version: { type: integer, minimum: 1, maximum: 2147483647 }
         bucket: { $ref: '#/components/schemas/PricingBucket' }
         benefit: { $ref: '#/components/schemas/PromotionBenefit' }
         starts_at: { type: string, format: date-time }
@@ -1570,21 +1692,21 @@ components:
       required: [version_id, expected_promotion_version, confirmation_code]
       properties:
         version_id: { type: string, format: uuid }
-        expected_promotion_version: { type: integer, minimum: 1 }
+        expected_promotion_version: { type: integer, minimum: 1, maximum: 2147483647 }
         confirmation_code: { type: string, const: PUBLISH }
     PausePromotionRequest:
       type: object
       additionalProperties: false
       required: [expected_promotion_version, confirmation_code]
       properties:
-        expected_promotion_version: { type: integer, minimum: 1 }
+        expected_promotion_version: { type: integer, minimum: 1, maximum: 2147483647 }
         confirmation_code: { type: string, const: PAUSE }
     EndPromotionRequest:
       type: object
       additionalProperties: false
       required: [expected_promotion_version, confirmation_code]
       properties:
-        expected_promotion_version: { type: integer, minimum: 1 }
+        expected_promotion_version: { type: integer, minimum: 1, maximum: 2147483647 }
         confirmation_code: { type: string, const: END }
     CouponInput:
       type: object
@@ -1593,39 +1715,44 @@ components:
       properties:
         code: { $ref: '#/components/schemas/Code' }
         promotion_version_id: { type: string, format: uuid }
-        total_claim_limit: { type: [integer, 'null'], minimum: 1 }
+        total_claim_limit: { type: [integer, 'null'], minimum: 1, maximum: 2147483647 }
         per_member_claim_limit: { type: integer, const: 1, default: 1 }
+        new_customer_only:
+          type: boolean
+          default: false
+          description: M3 以零订单基线判断；M4 必须使用同商城真实已完成订单事实
     CouponDraftUpdate:
       type: object
       additionalProperties: false
       required: [expected_version]
       minProperties: 2
       properties:
-        expected_version: { type: integer, minimum: 1 }
+        expected_version: { type: integer, minimum: 1, maximum: 2147483647 }
         promotion_version_id: { type: string, format: uuid }
-        total_claim_limit: { type: [integer, 'null'], minimum: 1 }
+        total_claim_limit: { type: [integer, 'null'], minimum: 1, maximum: 2147483647 }
         per_member_claim_limit: { type: integer, const: 1 }
+        new_customer_only: { type: boolean }
     CouponStatusRequest:
       oneOf:
         - type: object
           additionalProperties: false
           required: [expected_version, status, confirmation_code]
           properties:
-            expected_version: { type: integer, minimum: 1 }
+            expected_version: { type: integer, minimum: 1, maximum: 2147483647 }
             status: { type: string, const: ACTIVE }
             confirmation_code: { type: string, const: ACTIVATE }
         - type: object
           additionalProperties: false
           required: [expected_version, status, confirmation_code]
           properties:
-            expected_version: { type: integer, minimum: 1 }
+            expected_version: { type: integer, minimum: 1, maximum: 2147483647 }
             status: { type: string, const: PAUSED }
             confirmation_code: { type: string, const: PAUSE }
         - type: object
           additionalProperties: false
           required: [expected_version, status, confirmation_code]
           properties:
-            expected_version: { type: integer, minimum: 1 }
+            expected_version: { type: integer, minimum: 1, maximum: 2147483647 }
             status: { type: string, const: ENDED }
             confirmation_code: { type: string, const: END }
     Coupon:
@@ -1638,6 +1765,7 @@ components:
           promotion_version_id,
           total_claim_limit,
           per_member_claim_limit,
+          new_customer_only,
           status,
           claimed_count,
           version,
@@ -1650,6 +1778,7 @@ components:
         promotion_version_id: { type: string, format: uuid }
         total_claim_limit: { type: [integer, 'null'], minimum: 1 }
         per_member_claim_limit: { type: integer, const: 1 }
+        new_customer_only: { type: boolean }
         status: { type: string, enum: [DRAFT, ACTIVE, PAUSED, ENDED] }
         claimed_count: { type: integer, minimum: 0 }
         version: { type: integer, minimum: 1 }

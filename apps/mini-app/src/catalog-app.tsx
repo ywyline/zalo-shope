@@ -23,7 +23,11 @@ import {
   type ProductDetail,
   type ProductSummary,
 } from './catalog-api';
+import { CartRequestError } from './cart-api';
+import { CartProvider, useCart } from './cart-state';
+import { CartView, cartQuantity } from './cart-view';
 import { IdentityPanel } from './identity-panel';
+import { useMemberSession } from './member-session';
 import { SearchView } from './search-view';
 
 type Loadable<T> = { data: T; status: 'ready' } | { status: 'error' } | { status: 'loading' };
@@ -157,6 +161,9 @@ function ProductCard({
         <h3>{product.name}</h3>
         {product.selling_points && <small>{product.selling_points}</small>}
         <Price locale={locale} product={product} />
+        {product.promotion_summary && (
+          <small className="promotion-chip">{product.promotion_summary.label}</small>
+        )}
       </div>
     </Link>
   );
@@ -568,11 +575,49 @@ function documentText(value: unknown): string {
 function ProductDetailView({ locale }: { locale: Locale }): JSX.Element {
   const { productCode = '' } = useParams();
   const state = useCatalog<ProductDetail>(`products/${encodeURIComponent(productCode)}`, locale);
+  const session = useMemberSession();
+  const cartState = useCart();
   const [selectedCode, setSelectedCode] = useState('');
+  const [quantity, setQuantity] = useState(1);
+  const [pendingSku, setPendingSku] = useState<string>();
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState(false);
+  const [added, setAdded] = useState(false);
   const product = state.status === 'ready' ? state.data : undefined;
   useEffect(() => {
     setSelectedCode(product?.skus[0]?.code ?? '');
+    setAdded(false);
   }, [product?.code, locale]);
+  useEffect(() => {
+    if (!selectedCode || cartState.status !== 'ready') return;
+    const existing = cartState.cart?.items.find((item) => item.sku_code === selectedCode);
+    setQuantity(existing?.quantity ?? 1);
+  }, [cartState.cart, cartState.status, selectedCode]);
+  const addToCart = React.useCallback(
+    async (skuCode: string, requestedQuantity: number): Promise<void> => {
+      if (cartState.status !== 'ready') {
+        setAddError(true);
+        return;
+      }
+      setAdding(true);
+      setAddError(false);
+      try {
+        await cartState.setItem(skuCode, { quantity: requestedQuantity, selected: true });
+        setAdded(true);
+      } catch (error: unknown) {
+        setAddError(error instanceof CartRequestError);
+      } finally {
+        setAdding(false);
+      }
+    },
+    [cartState],
+  );
+  useEffect(() => {
+    if (!pendingSku || session.status !== 'ready' || cartState.status !== 'ready') return;
+    const skuCode = pendingSku;
+    setPendingSku(undefined);
+    void addToCart(skuCode, quantity);
+  }, [addToCart, cartState.status, pendingSku, quantity, session.status]);
   if (state.status !== 'ready') {
     return (
       <div className="page-view">
@@ -618,6 +663,18 @@ function ProductDetailView({ locale }: { locale: Locale }): JSX.Element {
               <del>{formatVnd(selected.market_price_vnd, locale)}</del>
             )}
           </div>
+        )}
+        {selected?.available_quantity !== undefined && (
+          <p
+            className={`availability-note${selected.available_quantity === 0 ? ' unavailable' : ''}`}
+          >
+            {selected.available_quantity > 0
+              ? `${text(locale, 'catalog.available')}: ${selected.available_quantity}`
+              : text(locale, 'catalog.outOfStock')}
+          </p>
+        )}
+        {state.data.promotion_summary && (
+          <p className="promotion-detail">{state.data.promotion_summary.label}</p>
         )}
         <section className="sku-section">
           <div className="detail-section-title">
@@ -673,13 +730,69 @@ function ProductDetailView({ locale }: { locale: Locale }): JSX.Element {
         )}
       </div>
       <div className="purchase-dock" role="status">
-        <button disabled type="button">
-          {text(locale, 'catalog.cart')} · M3
+        <div className="detail-quantity" aria-label={text(locale, 'cart.quantity')}>
+          <button
+            aria-label={text(locale, 'cart.decrease')}
+            disabled={adding || quantity <= 1}
+            onClick={() => setQuantity((current) => Math.max(1, current - 1))}
+            type="button"
+          >
+            −
+          </button>
+          <span aria-live="polite">{quantity}</span>
+          <button
+            aria-label={text(locale, 'cart.increase')}
+            disabled={
+              adding ||
+              quantity >= 99 ||
+              (selected?.available_quantity !== undefined &&
+                quantity >= selected.available_quantity)
+            }
+            onClick={() =>
+              setQuantity((current) =>
+                Math.min(99, selected?.available_quantity ?? 99, current + 1),
+              )
+            }
+            type="button"
+          >
+            +
+          </button>
+        </div>
+        <button
+          className="button-quiet"
+          disabled={
+            !selected ||
+            adding ||
+            session.status === 'loading' ||
+            (session.status === 'ready' && cartState.status !== 'ready') ||
+            selected.available === false ||
+            selected.available_quantity === 0
+          }
+          onClick={() => {
+            if (!selected) return;
+            if (session.status !== 'ready') {
+              setPendingSku(selected.code);
+              void session.connect();
+              return;
+            }
+            void addToCart(selected.code, quantity);
+          }}
+          type="button"
+        >
+          {selected?.available === false || selected?.available_quantity === 0
+            ? text(locale, 'catalog.outOfStock')
+            : added
+              ? text(locale, 'cart.added')
+              : text(locale, 'cart.addToCart')}
         </button>
-        <button className="button-primary" disabled type="button">
-          {text(locale, 'catalog.notAvailable')}
-        </button>
-        <small>{text(locale, 'catalog.m3Notice')}</small>
+        <Link className="button-primary" to="/cart">
+          {text(locale, 'catalog.cart')}{' '}
+          <span className="dock-count">{cartQuantity(cartState.cart)}</span>
+        </Link>
+        {addError && <small className="purchase-error">{text(locale, 'cart.addError')}</small>}
+        {session.status === 'error' && !addError && (
+          <small className="purchase-error">{text(locale, 'cart.signInFailed')}</small>
+        )}
       </div>
     </article>
   );
@@ -707,9 +820,15 @@ function ScrollToTop(): null {
   return null;
 }
 
-export function CatalogApp(): JSX.Element {
-  const [locale, setLocale] = useState<Locale>('vi');
+function CatalogExperience({
+  locale,
+  setLocale,
+}: {
+  locale: Locale;
+  setLocale: React.Dispatch<React.SetStateAction<Locale>>;
+}): JSX.Element {
   const home = useCatalog<HomePage>('home', locale);
+  const cartState = useCart();
 
   useEffect(() => {
     const root = document.documentElement;
@@ -762,7 +881,7 @@ export function CatalogApp(): JSX.Element {
           <Route element={<ProductsView locale={locale} />} path="/products" />
           <Route element={<ProductDetailView locale={locale} />} path="/products/:productCode" />
           <Route element={<SearchView locale={locale} />} path="/search" />
-          <Route element={<UnavailableView locale={locale} title="catalog.cart" />} path="/cart" />
+          <Route element={<CartView locale={locale} />} path="/cart" />
           <Route
             element={<UnavailableView locale={locale} title="catalog.orders" />}
             path="/orders"
@@ -789,10 +908,24 @@ export function CatalogApp(): JSX.Element {
         ].map(([to, icon, key]) => (
           <NavLink end={to === '/'} key={to} to={to!}>
             <span aria-hidden="true">{icon}</span>
-            <small>{text(locale, key as MessageKey)}</small>
+            <small>
+              {text(locale, key as MessageKey)}
+              {to === '/cart' && cartQuantity(cartState.cart) > 0 && (
+                <b className="nav-badge">{cartQuantity(cartState.cart)}</b>
+              )}
+            </small>
           </NavLink>
         ))}
       </nav>
     </div>
+  );
+}
+
+export function CatalogApp(): JSX.Element {
+  const [locale, setLocale] = useState<Locale>('vi');
+  return (
+    <CartProvider locale={locale}>
+      <CatalogExperience locale={locale} setLocale={setLocale} />
+    </CartProvider>
   );
 }

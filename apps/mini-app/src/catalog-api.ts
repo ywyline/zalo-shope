@@ -30,6 +30,8 @@ export type Category = {
 };
 
 export type ProductSummary = {
+  available?: boolean;
+  available_quantity?: number;
   brand: Brand;
   code: string;
   main_category: Category;
@@ -37,6 +39,7 @@ export type ProductSummary = {
   name: string;
   price_range_vnd: { maximum: number; minimum: number };
   primary_media: CatalogMedia | null;
+  promotion_summary?: { code: string; label: string } | null;
   requested_locale: Locale;
   resolved_locale: Locale;
   selling_points: string | null;
@@ -54,6 +57,8 @@ export type ProductDetail = ProductSummary & {
   description_document: unknown;
   gallery: CatalogMedia[];
   skus: Array<{
+    available?: boolean;
+    available_quantity?: number;
     code: string;
     market_price_vnd: number | null;
     media: CatalogMedia | null;

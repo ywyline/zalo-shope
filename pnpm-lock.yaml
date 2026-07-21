@@ -35,6 +35,9 @@ importers:
       '@zalo-shop/config':
         specifier: workspace:*
         version: link:packages/config
+      '@zalo-shop/contracts':
+        specifier: workspace:*
+        version: link:packages/contracts
       '@zalo-shop/database':
         specifier: workspace:*
         version: link:packages/database

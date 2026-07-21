@@ -1491,6 +1491,8 @@ components:
       required: [code, market_price_vnd, media, option_values, sale_price_vnd]
       properties:
         code: { $ref: '#/components/schemas/CatalogCode' }
+        available: { type: boolean, description: M3.6 默认履约仓实时可售状态 }
+        available_quantity: { type: integer, minimum: 0, maximum: 2147483647 }
         sale_price_vnd: { type: integer, minimum: 0 }
         market_price_vnd: { type: [integer, 'null'], minimum: 0 }
         media: { $ref: '#/components/schemas/PublicMedia' }
@@ -1527,6 +1529,12 @@ components:
             brand: { $ref: '#/components/schemas/Brand' }
             main_category: { $ref: '#/components/schemas/Category' }
             primary_media: { $ref: '#/components/schemas/PublicMedia' }
+            available: { type: boolean, description: M3.6 启用 SKU 的默认履约仓实时可售状态 }
+            available_quantity: { type: integer, minimum: 0, maximum: 2147483647 }
+            promotion_summary:
+              oneOf:
+                - $ref: '#/components/schemas/PublicPromotionSummary'
+                - type: 'null'
             price_range_vnd:
               type: object
               required: [minimum, maximum]
@@ -1539,6 +1547,14 @@ components:
               properties:
                 minimum: { type: integer, minimum: 0 }
                 maximum: { type: integer, minimum: 0 }
+    PublicPromotionSummary:
+      type: object
+      additionalProperties: false
+      required: [code, label]
+      description: M3.6 当前商城活动规则的本地化展示摘要，不是订单价格承诺。
+      properties:
+        code: { $ref: '#/components/schemas/CatalogCode' }
+        label: { type: string, minLength: 1, maxLength: 240 }
     ProductDetail:
       allOf:
         - $ref: '#/components/schemas/ProductSummary'

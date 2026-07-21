@@ -21,7 +21,9 @@ function randomTotpSecret(): string {
 }
 
 async function removeAdmin(database: PrismaClient): Promise<void> {
-  await database.auditLog.deleteMany({ where: { actorId: E2E_ADMIN_ID } });
+  // Audit logs are intentionally append-only. They do not reference the admin
+  // row via a foreign key, so stale test-account history can remain while the
+  // account and its sessions/assignments are recreated for the next run.
   await database.adminStoreRole.deleteMany({ where: { adminUserId: E2E_ADMIN_ID } });
   await database.adminSession.deleteMany({ where: { adminUserId: E2E_ADMIN_ID } });
   await database.adminUser.deleteMany({ where: { id: E2E_ADMIN_ID } });

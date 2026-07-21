@@ -173,3 +173,108 @@ test('inventory workbench stays isolated and validates an atomic initial-load fi
   expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
   expect(browserErrors).toEqual([]);
 });
+
+test('promotion workbench creates and publishes a localized STORE rule with a live admin quote', async ({
+  page,
+}) => {
+  const browserErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+
+  const promotionCode = `m35-browser-${randomUUID().slice(0, 8)}`;
+  await signIn(page);
+  await page.getByRole('button', { name: 'Promotions & pricing' }).click();
+  await expect(page.getByRole('heading', { name: 'Promotions & pricing' })).toBeVisible();
+
+  const language = page.getByLabel('Language');
+  await language.selectOption('zh');
+  await expect(page.getByRole('heading', { name: '促销与价格' })).toBeVisible();
+  await language.selectOption('vi');
+  await expect(page.getByRole('heading', { name: 'Khuyến mãi & định giá' })).toBeVisible();
+  await language.selectOption('en');
+
+  await page.getByRole('button', { name: 'New promotion' }).click();
+  await page.getByLabel('Code').fill(promotionCode);
+  await page.getByLabel('Pricing bucket').selectOption('ITEM');
+  await page.getByLabel('Benefit method').selectOption('FIXED_VND');
+  await page.getByLabel('Benefit value').fill('50000');
+  await page
+    .getByLabel('Starts at')
+    .fill(new Date(Date.now() - 86_400_000).toISOString().slice(0, 16));
+  await page.getByLabel('Vietnamese name').fill('Giảm 50K toàn cửa hàng');
+  await page.getByLabel('Vietnamese description').fill('Ưu đãi kiểm tra trình duyệt');
+  await page.getByLabel('Chinese name').fill('全场立减 50K');
+  await page.getByLabel('Chinese description').fill('浏览器促销验收');
+  await page.getByLabel('English name').fill('Storewide VND 50K off');
+  await page.getByLabel('English description').fill('Browser promotion acceptance');
+
+  const draftResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      /\/v1\/admin\/promotions\/[^/]+\/versions/.test(response.url()),
+  );
+  await page.getByRole('button', { name: 'Save draft' }).click();
+  expect((await draftResponse).ok()).toBe(true);
+
+  const promotionRow = page.locator('.promotion-table tbody tr').filter({ hasText: promotionCode });
+  await expect(promotionRow).toContainText('Draft');
+  await promotionRow.getByRole('button', { name: 'Publish' }).click();
+
+  const confirmation = page.getByRole('dialog');
+  await expect(
+    confirmation.getByRole('heading', { name: 'Confirm high-risk action' }),
+  ).toBeVisible();
+  await confirmation.getByLabel('PUBLISH').fill('PUBLISH');
+  const publishResponse = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.url().includes('/publish'),
+  );
+  await confirmation.getByRole('button', { name: 'PUBLISH' }).click();
+  expect((await publishResponse).ok()).toBe(true);
+  await expect(promotionRow).toContainText('Active');
+
+  await language.selectOption('zh');
+  await expect(promotionRow).toContainText('全场立减 50K');
+  await language.selectOption('vi');
+  await expect(promotionRow).toContainText('Giảm 50K toàn cửa hàng');
+  await language.selectOption('en');
+  await expect(promotionRow).toContainText('Storewide VND 50K off');
+
+  await page.getByRole('button', { name: 'Live quote preview' }).click();
+  await page.getByLabel('SKU').fill('beauty-local-primary-default');
+  const quoteResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' && response.url().includes('/v1/pricing/quotes'),
+  );
+  await page.getByRole('button', { name: 'Get server quote' }).click();
+  const response = await quoteResponse;
+  expect(response.ok()).toBe(true);
+  const quote = (await response.json()) as {
+    applied_rules: Array<{ code: string; discount_vnd: number }>;
+    base_subtotal_vnd: number;
+    discount_vnd: number;
+    merchandise_payable_vnd: number;
+    order_payable_vnd: null;
+    quote_hash: string;
+  };
+  expect(quote).toMatchObject({
+    base_subtotal_vnd: 349_000,
+    discount_vnd: 50_000,
+    merchandise_payable_vnd: 299_000,
+    order_payable_vnd: null,
+  });
+  expect(quote.applied_rules).toContainEqual(
+    expect.objectContaining({ code: promotionCode, discount_vnd: 50_000 }),
+  );
+  expect(quote.quote_hash).toMatch(/^[a-f0-9]{64}$/);
+  await expect(page.locator('.quote-result')).toContainText('beauty-local-primary-default');
+  await expect(page.locator('.quote-result')).toContainText(promotionCode);
+
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+  expect(browserErrors).toEqual([]);
+});

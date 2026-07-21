@@ -6,10 +6,11 @@ import './styles.css';
 import { CatalogWorkbench } from './catalog-workbench';
 import { ContentEditor } from './content-editor';
 import { InventoryWorkbench } from './inventory-workbench';
+import { PromotionWorkbench } from './promotion-workbench';
 
 type Locale = 'en' | 'vi' | 'zh';
 type Phase = 'dashboard' | 'mfa' | 'password';
-type Tab = 'audit' | 'catalog' | 'content' | 'inventory' | 'overview' | 'roles';
+type Tab = 'audit' | 'catalog' | 'content' | 'inventory' | 'overview' | 'promotions' | 'roles';
 type Store = { code: string; default_locale: Locale; id: string };
 type Role = { code: string; id: string; name: string; permissions?: Array<unknown> };
 type Audit = { action: string; actorId: string; createdAt: string; id: string; reason?: string };
@@ -34,6 +35,7 @@ const labels = {
     next: 'Tiếp tục',
     overview: 'Tổng quan',
     password: 'Mật khẩu',
+    promotions: 'Khuyến mãi & giá',
     reason: 'Lý do truy cập chéo cửa hàng',
     retry: 'Thử lại',
     roleCode: 'Mã vai trò',
@@ -62,6 +64,7 @@ const labels = {
     next: '继续',
     overview: '概览',
     password: '密码',
+    promotions: '促销与价格',
     reason: '跨商城访问原因',
     retry: '重试',
     roleCode: '角色编码',
@@ -90,6 +93,7 @@ const labels = {
     next: 'Continue',
     overview: 'Overview',
     password: 'Password',
+    promotions: 'Promotions & pricing',
     reason: 'Cross-store access reason',
     retry: 'Retry',
     roleCode: 'Role code',
@@ -106,8 +110,11 @@ const labels = {
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, options);
   if (!response.ok) {
-    const error = (await response.json().catch(() => ({}))) as { code?: string };
-    throw new Error(error.code ?? `HTTP_${response.status}`);
+    const error = (await response.json().catch(() => ({}))) as {
+      code?: string;
+      details?: { reason_code?: string };
+    };
+    throw new Error(error.details?.reason_code ?? error.code ?? `HTTP_${response.status}`);
   }
   return response.json() as Promise<T>;
 }
@@ -115,8 +122,11 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
 async function downloadApi(path: string, options: RequestInit = {}): Promise<Blob> {
   const response = await fetch(`${API_BASE}${path}`, options);
   if (!response.ok) {
-    const error = (await response.json().catch(() => ({}))) as { code?: string };
-    throw new Error(error.code ?? `HTTP_${response.status}`);
+    const error = (await response.json().catch(() => ({}))) as {
+      code?: string;
+      details?: { reason_code?: string };
+    };
+    throw new Error(error.details?.reason_code ?? error.code ?? `HTTP_${response.status}`);
   }
   return response.blob();
 }
@@ -358,6 +368,12 @@ function AdminApp(): JSX.Element {
             ▦ <span>{t.inventory}</span>
           </button>
           <button
+            className={tab === 'promotions' ? 'active' : ''}
+            onClick={() => setTab('promotions')}
+          >
+            % <span>{t.promotions}</span>
+          </button>
+          <button
             className={tab === 'roles' ? 'active' : ''}
             onClick={() => {
               setTab('roles');
@@ -411,7 +427,12 @@ function AdminApp(): JSX.Element {
                 setStore(next);
                 setRoles([]);
                 setAudits([]);
-                if (tab !== 'content' && tab !== 'catalog' && tab !== 'inventory') {
+                if (
+                  tab !== 'content' &&
+                  tab !== 'catalog' &&
+                  tab !== 'inventory' &&
+                  tab !== 'promotions'
+                ) {
                   void loadScope(next);
                 }
               }}
@@ -503,6 +524,15 @@ function AdminApp(): JSX.Element {
             store={store}
           />
         )}
+        {tab === 'promotions' && store && (
+          <PromotionWorkbench
+            headers={() => authenticatedHeaders(store)}
+            key={store.id}
+            locale={locale}
+            request={api}
+            store={store}
+          />
+        )}
         {tab === 'roles' && (
           <section className="data-section">
             <div className="section-heading">
@@ -516,7 +546,7 @@ function AdminApp(): JSX.Element {
                 {t.roleCode}
                 <input
                   onChange={(event) => setRoleCode(event.target.value)}
-                  pattern="[a-z][a-z0-9-]{1,63}"
+                  pattern="[a-z][a-z0-9\-]{1,63}"
                   required
                   value={roleCode}
                 />

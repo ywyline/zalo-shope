@@ -2,7 +2,7 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.4 已交付库存契约/数据库基础、仓库与库存服务、三语搜索/联想/筛选、会员搜索历史、商城级热门词、可重建搜索投影和移动端搜索体验，并建立 Chromium/WebKit 可重复浏览器 E2E。M3.5 促销计价及后续阶段、真实 Zalo 生产适配器、宿主真机验收、生产对象存储/CDN 和越南专业合规复核尚未完成。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.6 已交付库存、仓库与预留原语、三语搜索/联想/筛选、会员搜索历史、商城级热门词、促销/优惠券/可信计价、会员购物车和移动端购物车体验，并建立 Chromium/WebKit 可重复浏览器 E2E。M3.7 并发/安全/完整 E2E 收口、真实 Zalo 生产适配器、宿主真机验收、生产对象存储/CDN 和越南专业合规复核仍未完成。
 
 ## 应用与包
 
@@ -99,7 +99,10 @@ corepack pnpm test:e2e
 corepack pnpm infra:down
 ```
 
-该 E2E 覆盖桌面 Chromium、Android Chromium 与 iPhone WebKit 的 Web 预览，不替代 Zalo Mini App 宿主真机测试。
+`test:e2e` 会从 `.env.test.example` 使用测试 API 端口；如需覆盖端口，可在 PowerShell 先设置
+`$env:E2E_API_PORT='3100'`。Windows 某些环境会将 2984–3083 列为排除端口，遇到
+`listen EACCES` 时应使用 3100 或其他未被排除的端口。该 E2E 覆盖桌面 Chromium、Android
+Chromium 与 iPhone WebKit 的 Web 预览，不替代 Zalo Mini App 宿主真机测试。
 
 ## 数据库迁移与本地种子
 

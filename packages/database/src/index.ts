@@ -5,6 +5,11 @@ import type { StoreContext } from '@zalo-shop/domain';
 export * from '@prisma/client';
 
 export type StoreTransaction = Prisma.TransactionClient;
+export type StoreTransactionOptions = {
+  isolationLevel?: Prisma.TransactionIsolationLevel;
+  maxWait?: number;
+  timeout?: number;
+};
 
 export function createRuntimePrismaClient(databaseUrl: string): PrismaClient {
   return new PrismaClient({
@@ -16,17 +21,18 @@ export async function withStoreTransaction<T>(
   client: PrismaClient,
   context: StoreContext,
   callback: (transaction: StoreTransaction) => Promise<T>,
+  options?: StoreTransactionOptions,
 ): Promise<T> {
   return client.$transaction(async (transaction) => {
     await transaction.$executeRaw`
-      SELECT
-        set_config('app.store_id', ${context.storeId}, true),
-        set_config('app.actor_id', ${context.actor.id}, true),
-        set_config('app.actor_type', ${context.actor.type}, true),
-        set_config('app.correlation_id', ${context.correlationId}, true)
-    `;
+        SELECT
+          set_config('app.store_id', ${context.storeId}, true),
+          set_config('app.actor_id', ${context.actor.id}, true),
+          set_config('app.actor_type', ${context.actor.type}, true),
+          set_config('app.correlation_id', ${context.correlationId}, true)
+      `;
     return callback(transaction);
-  });
+  }, options);
 }
 
 export async function withPlatformAuditTransaction<T>(

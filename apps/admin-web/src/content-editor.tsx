@@ -376,7 +376,7 @@ export function ContentEditor({ headers, locale, request, store }: Props): JSX.E
           <label>
             {t.pageCode}
             <input
-              pattern="[a-z][a-z0-9-]{1,63}"
+              pattern="[a-z][a-z0-9\-]{1,63}"
               required
               value={pageCode}
               onChange={(event) => setPageCode(event.target.value)}
@@ -432,7 +432,7 @@ export function ContentEditor({ headers, locale, request, store }: Props): JSX.E
           <label>
             {t.pageCode}
             <input
-              pattern="[a-z][a-z0-9-]{1,63}"
+              pattern="[a-z][a-z0-9\-]{1,63}"
               required
               value={pageCode}
               onChange={(event) => setPageCode(event.target.value)}

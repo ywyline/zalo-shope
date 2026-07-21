@@ -3,7 +3,63 @@ import { z } from 'zod';
 import { catalogCodeSchema } from './catalog';
 
 const vndAmountSchema = z.number().int().safe().nonnegative();
+const postgresPositiveIntSchema = z.number().int().min(1).max(2_147_483_647);
 const pricingBucketSchema = z.enum(['ITEM', 'ORDER', 'COUPON', 'SHIPPING']);
+const promotionTargetTypeSchema = z.enum(['BRAND', 'CATEGORY', 'PRODUCT', 'SKU']);
+
+export const promotionOperationKeySchema = z
+  .string()
+  .trim()
+  .min(16)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+
+export const promotionListQuerySchema = z
+  .object({
+    cursor: z.string().uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    status: z.enum(['DRAFT', 'ACTIVE', 'PAUSED', 'ENDED']).optional(),
+  })
+  .strict();
+
+/**
+ * Read-only catalogue lookup used by the promotion workbench.  The endpoint
+ * deliberately does not expose a generic table selector: callers must choose
+ * one of the four target types and may only search within the current store.
+ */
+export const promotionTargetLookupQuerySchema = z
+  .object({
+    cursor: z.string().uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    q: z.string().trim().min(1).max(100).optional(),
+    target_type: promotionTargetTypeSchema,
+  })
+  .strict();
+
+const promotionTargetLookupNamesSchema = z
+  .object({
+    en: z.string().trim().max(240).nullable(),
+    vi: z.string().trim().max(240).nullable(),
+    zh: z.string().trim().max(240).nullable(),
+  })
+  .strict();
+
+export const promotionTargetLookupItemSchema = z
+  .object({
+    code: catalogCodeSchema,
+    id: z.string().uuid(),
+    names: promotionTargetLookupNamesSchema,
+  })
+  .strict();
+
+export const promotionTargetLookupPageSchema = z
+  .object({
+    items: z.array(promotionTargetLookupItemSchema).max(100),
+    next_cursor: z.string().uuid().nullable(),
+  })
+  .strict();
+
+export const couponListQuerySchema = promotionListQuerySchema;
 
 const quoteItemSchema = z
   .object({
@@ -61,7 +117,7 @@ export const promotionVersionInputSchema = z
     ]),
     bucket: pricingBucketSchema,
     ends_at: z.coerce.date().nullable().default(null),
-    expected_promotion_version: z.number().int().positive(),
+    expected_promotion_version: postgresPositiveIntSchema,
     localizations: z
       .array(
         z
@@ -119,7 +175,7 @@ export const promotionVersionInputSchema = z
 export const publishPromotionSchema = z
   .object({
     confirmation_code: z.literal('PUBLISH'),
-    expected_promotion_version: z.number().int().positive(),
+    expected_promotion_version: postgresPositiveIntSchema,
     version_id: z.string().uuid(),
   })
   .strict();
@@ -128,13 +184,13 @@ export const promotionStateCommandSchema = z.discriminatedUnion('confirmation_co
   z
     .object({
       confirmation_code: z.literal('PAUSE'),
-      expected_promotion_version: z.number().int().positive(),
+      expected_promotion_version: postgresPositiveIntSchema,
     })
     .strict(),
   z
     .object({
       confirmation_code: z.literal('END'),
-      expected_promotion_version: z.number().int().positive(),
+      expected_promotion_version: postgresPositiveIntSchema,
     })
     .strict(),
 ]);
@@ -142,23 +198,26 @@ export const promotionStateCommandSchema = z.discriminatedUnion('confirmation_co
 export const couponInputSchema = z
   .object({
     code: catalogCodeSchema,
+    new_customer_only: z.boolean().default(false),
     promotion_version_id: z.string().uuid(),
-    total_claim_limit: z.number().int().positive().nullable().default(null),
+    total_claim_limit: postgresPositiveIntSchema.nullable().default(null),
     per_member_claim_limit: z.literal(1).default(1),
   })
   .strict();
 
 export const couponDraftUpdateSchema = z
   .object({
-    expected_version: z.number().int().positive(),
+    expected_version: postgresPositiveIntSchema,
+    new_customer_only: z.boolean().optional(),
     per_member_claim_limit: z.literal(1).optional(),
     promotion_version_id: z.string().uuid().optional(),
-    total_claim_limit: z.number().int().positive().nullable().optional(),
+    total_claim_limit: postgresPositiveIntSchema.nullable().optional(),
   })
   .strict()
   .refine(
     (value) =>
       value.per_member_claim_limit !== undefined ||
+      value.new_customer_only !== undefined ||
       value.promotion_version_id !== undefined ||
       value.total_claim_limit !== undefined,
     'At least one coupon draft field must change',
@@ -168,21 +227,21 @@ export const couponStatusCommandSchema = z.discriminatedUnion('status', [
   z
     .object({
       confirmation_code: z.literal('ACTIVATE'),
-      expected_version: z.number().int().positive(),
+      expected_version: postgresPositiveIntSchema,
       status: z.literal('ACTIVE'),
     })
     .strict(),
   z
     .object({
       confirmation_code: z.literal('PAUSE'),
-      expected_version: z.number().int().positive(),
+      expected_version: postgresPositiveIntSchema,
       status: z.literal('PAUSED'),
     })
     .strict(),
   z
     .object({
       confirmation_code: z.literal('END'),
-      expected_version: z.number().int().positive(),
+      expected_version: postgresPositiveIntSchema,
       status: z.literal('ENDED'),
     })
     .strict(),
@@ -199,4 +258,14 @@ export const memberCouponListQuerySchema = z
 export const memberCouponCodeParamsSchema = z.object({ couponCode: catalogCodeSchema }).strict();
 
 export type PricingQuoteRequest = z.infer<typeof pricingQuoteRequestSchema>;
+export type CouponDraftUpdate = z.infer<typeof couponDraftUpdateSchema>;
+export type CouponInput = z.infer<typeof couponInputSchema>;
+export type CouponListQuery = z.infer<typeof couponListQuerySchema>;
+export type CouponStatusCommand = z.infer<typeof couponStatusCommandSchema>;
+export type PromotionListQuery = z.infer<typeof promotionListQuerySchema>;
+export type PromotionTargetLookupQuery = z.infer<typeof promotionTargetLookupQuerySchema>;
+export type PromotionTargetLookupItem = z.infer<typeof promotionTargetLookupItemSchema>;
+export type PromotionStateCommand = z.infer<typeof promotionStateCommandSchema>;
 export type PromotionVersionInput = z.infer<typeof promotionVersionInputSchema>;
+export type PublishPromotionInput = z.infer<typeof publishPromotionSchema>;
+export type MemberCouponListQuery = z.infer<typeof memberCouponListQuerySchema>;

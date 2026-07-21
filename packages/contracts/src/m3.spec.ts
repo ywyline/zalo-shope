@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
-import { setCartItemSchema, updateCartItemSchema } from './cart';
+import {
+  cartLocaleQuerySchema,
+  cartSchema,
+  deleteCartItemQuerySchema,
+  setCartItemSchema,
+  updateCartItemSchema,
+} from './cart';
 import { inventoryAdjustmentSchema, inventoryOperationKeySchema } from './inventory';
 import {
+  couponDraftUpdateSchema,
+  couponInputSchema,
   couponStatusCommandSchema,
   pricingQuoteRequestSchema,
+  promotionTargetLookupQuerySchema,
   promotionVersionInputSchema,
 } from './pricing';
 import { productSearchQuerySchema } from './search';
@@ -94,9 +103,51 @@ describe('M3 pricing contracts', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('keeps coupon counters within PostgreSQL integer bounds', () => {
+    const base = {
+      code: 'welcome-2026',
+      new_customer_only: false,
+      per_member_claim_limit: 1,
+      promotion_version_id: '11111111-1111-4111-8111-111111111111',
+      total_claim_limit: 2_147_483_647,
+    };
+    expect(couponInputSchema.safeParse(base).success).toBe(true);
+    expect(couponInputSchema.safeParse({ ...base, total_claim_limit: 2_147_483_648 }).success).toBe(
+      false,
+    );
+    expect(
+      couponDraftUpdateSchema.safeParse({
+        expected_version: 1,
+        total_claim_limit: 2_147_483_648,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('bounds same-store promotion target lookups to typed catalogue resources', () => {
+    expect(
+      promotionTargetLookupQuerySchema.parse({ q: '  serum  ', target_type: 'PRODUCT' }),
+    ).toEqual({ limit: 50, q: 'serum', target_type: 'PRODUCT' });
+    expect(promotionTargetLookupQuerySchema.safeParse({ target_type: 'STORE' }).success).toBe(
+      false,
+    );
+    expect(
+      promotionTargetLookupQuerySchema.safeParse({ store_id: 'hidden', target_type: 'SKU' })
+        .success,
+    ).toBe(false);
+  });
 });
 
 describe('M3 cart contracts', () => {
+  it('defaults cart display locale to Vietnamese and accepts an explicit supported locale', () => {
+    expect(cartLocaleQuerySchema.parse({})).toEqual({ locale: 'vi' });
+    expect(deleteCartItemQuerySchema.parse({ expected_version: '2', locale: 'zh' })).toEqual({
+      expected_version: 2,
+      locale: 'zh',
+    });
+    expect(cartLocaleQuerySchema.safeParse({ locale: 'fr' }).success).toBe(false);
+  });
+
   it('freezes bounded set-quantity semantics and optimistic updates', () => {
     expect(setCartItemSchema.parse({ quantity: 2 })).toEqual({ quantity: 2, selected: true });
     expect(setCartItemSchema.safeParse({ quantity: 100 }).success).toBe(false);
@@ -104,5 +155,45 @@ describe('M3 cart contracts', () => {
     expect(updateCartItemSchema.safeParse({ expected_version: 1, selected: false }).success).toBe(
       true,
     );
+  });
+
+  it('accepts a server-priced cart while keeping the final order amount null', () => {
+    const response = {
+      blocking: false,
+      id: '11111111-1111-4111-8111-111111111111',
+      items: [
+        {
+          added_unit_price_vnd: 100_000,
+          available_quantity: 5,
+          current_subtotal_vnd: 180_000,
+          current_unit_price_vnd: 90_000,
+          id: '22222222-2222-4222-8222-222222222222',
+          issues: [{ blocking: false, code: 'PRICE_CHANGED' }],
+          quantity: 2,
+          selected: true,
+          sku_code: 'serum-rose',
+          version: 2,
+        },
+      ],
+      quote: {
+        applied_rules: [],
+        base_subtotal_vnd: 180_000,
+        currency: 'VND',
+        discount_vnd: 0,
+        lines: [{}],
+        merchandise_payable_vnd: 180_000,
+        order_payable_vnd: null,
+        quote_hash: 'a'.repeat(64),
+        quoted_at: '2026-07-22T00:00:00.000Z',
+        rejected_rules: [],
+        shipping_qualification: { candidates: [], status: 'NOT_REQUESTED' },
+      },
+      version: 2,
+    };
+    expect(cartSchema.safeParse(response).success).toBe(true);
+    expect(
+      cartSchema.safeParse({ ...response, quote: { ...response.quote, order_payable_vnd: 1 } })
+        .success,
+    ).toBe(false);
   });
 });

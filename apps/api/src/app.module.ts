@@ -48,6 +48,14 @@ import { InventoryAdminService } from './inventory-admin/inventory-admin.service
 import { SearchController, SearchHistoryController } from './search/search.controller';
 import { SearchRateLimiter } from './search/search-rate-limiter';
 import { SearchService } from './search/search.service';
+import { PromotionsAdminController } from './promotions-admin/promotions-admin.controller';
+import { PromotionsAdminService } from './promotions-admin/promotions-admin.service';
+import { MemberCouponController } from './pricing/member-coupon.controller';
+import { MemberCouponService } from './pricing/member-coupon.service';
+import { PricingController } from './pricing/pricing.controller';
+import { PricingService } from './pricing/pricing.service';
+import { CartController } from './cart/cart.controller';
+import { CartService } from './cart/cart.service';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -98,6 +106,10 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     InventoryAdminController,
     SearchController,
     SearchHistoryController,
+    PromotionsAdminController,
+    MemberCouponController,
+    PricingController,
+    CartController,
   ],
   providers: [
     AdminService,
@@ -109,6 +121,10 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     InventoryAdminService,
     SearchService,
     SearchRateLimiter,
+    PromotionsAdminService,
+    MemberCouponService,
+    PricingService,
+    CartService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
       provide: DATABASE_CLIENT,

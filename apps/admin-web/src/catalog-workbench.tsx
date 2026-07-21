@@ -525,7 +525,7 @@ function BrandDialog({
               defaultValue={brand?.code ?? ''}
               disabled={Boolean(brand)}
               name="code"
-              pattern="[a-z][a-z0-9-]{1,63}"
+              pattern="[a-z][a-z0-9\-]{1,63}"
               required
             />
           </label>
@@ -618,7 +618,7 @@ function CategoryDialog({
               defaultValue={category?.code ?? ''}
               disabled={Boolean(category)}
               name="code"
-              pattern="[a-z][a-z0-9-]{1,63}"
+              pattern="[a-z][a-z0-9\-]{1,63}"
               required
             />
           </label>
@@ -747,7 +747,7 @@ function TemplateDialog({
         <div className="form-grid">
           <label>
             {t.code}
-            <input name="code" pattern="[a-z][a-z0-9-]{1,63}" required />
+            <input name="code" pattern="[a-z][a-z0-9\-]{1,63}" required />
           </label>
           <label>
             {t.name}
@@ -765,7 +765,7 @@ function TemplateDialog({
                   {t.code}
                   <input
                     onChange={(event) => update(index, { code: event.target.value })}
-                    pattern="[a-z][a-z0-9-]{1,63}"
+                    pattern="[a-z][a-z0-9\-]{1,63}"
                     required
                     value={definition.code}
                   />
@@ -917,7 +917,7 @@ function ProductDialog({
         <div className="form-grid">
           <label>
             {t.code}
-            <input name="code" pattern="[a-z][a-z0-9-]{1,63}" required />
+            <input name="code" pattern="[a-z][a-z0-9\-]{1,63}" required />
           </label>
           <label>
             {t.brands}

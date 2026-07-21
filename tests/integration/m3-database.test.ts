@@ -22,6 +22,7 @@ const M3_TABLES = [
   'member_coupons',
   'member_search_history',
   'product_search_documents',
+  'promotion_operations',
   'promotion_targets',
   'promotion_version_localizations',
   'promotion_versions',
@@ -36,6 +37,7 @@ describe('M3 commerce database isolation and invariants', () => {
   const databaseUrl = process.env.DATABASE_RUNTIME_URL;
   if (!databaseUrl) throw new Error('DATABASE_RUNTIME_URL is required');
   const client = createRuntimePrismaClient(databaseUrl);
+  const contender = createRuntimePrismaClient(databaseUrl);
 
   const contextFor = (storeId: string, storeCode: string) =>
     createStoreContext({
@@ -73,8 +75,8 @@ describe('M3 commerce database isolation and invariants', () => {
     return { brandId, productId, skuId };
   }
 
-  beforeAll(async () => client.$connect());
-  afterAll(async () => client.$disconnect());
+  beforeAll(async () => Promise.all([client.$connect(), contender.$connect()]));
+  afterAll(async () => Promise.all([client.$disconnect(), contender.$disconnect()]));
 
   it('installs required search extensions and protects every M3 table with forced RLS', async () => {
     const extensions = await client.$queryRaw<Array<{ extname: string }>>`
@@ -330,6 +332,113 @@ describe('M3 commerce database isolation and invariants', () => {
             WHERE id = ${promotionId}::uuid`,
       ),
     ).rejects.toThrow();
+  });
+
+  it('serializes child mutations against publishing and rejects the late mutation', async () => {
+    const adminId = randomUUID();
+    const promotionId = randomUUID();
+    const versionId = randomUUID();
+    await client.$executeRaw`INSERT INTO admin_users
+      (id, email, email_normalized, display_name, password_hash, updated_at)
+      VALUES (${adminId}::uuid, ${`${adminId}@example.invalid`},
+        ${`${adminId}@example.invalid`}, 'M3 concurrent publish admin',
+        'not-a-real-login-hash', now())`;
+    await withStoreTransaction(
+      client,
+      contextFor(BEAUTY_STORE_ID, 'beauty-local'),
+      async (transaction) => {
+        await transaction.$executeRaw`INSERT INTO promotions
+          (id, store_id, code, created_by_admin_id, updated_by_admin_id, updated_at)
+          VALUES (${promotionId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${`promo-${promotionId.slice(0, 8)}`}, ${adminId}::uuid, ${adminId}::uuid, now())`;
+        await transaction.$executeRaw`INSERT INTO promotion_versions
+          (id, store_id, promotion_id, version_number, bucket, benefit_method,
+            fixed_discount_vnd, starts_at)
+          VALUES (${versionId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${promotionId}::uuid,
+            1, 'ITEM', 'FIXED_VND', 10000, now())`;
+        await transaction.$executeRaw`INSERT INTO promotion_version_localizations
+          (store_id, promotion_version_id, locale, name, updated_at)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${versionId}::uuid, 'vi',
+            'Khuyến mãi đồng thời', now())`;
+        await transaction.$executeRaw`INSERT INTO promotion_targets
+          (store_id, promotion_version_id, target_type)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${versionId}::uuid, 'STORE')`;
+      },
+    );
+
+    let markPublished!: () => void;
+    let releasePublisher!: () => void;
+    const publishedRowLocked = new Promise<void>((resolve) => (markPublished = resolve));
+    const publisherRelease = new Promise<void>((resolve) => (releasePublisher = resolve));
+    const publishing = withStoreTransaction(
+      client,
+      contextFor(BEAUTY_STORE_ID, 'beauty-local'),
+      async (transaction) => {
+        await transaction.$executeRaw`UPDATE promotion_versions
+          SET status = 'PUBLISHED', published_at = now(),
+            published_by_admin_id = ${adminId}::uuid
+          WHERE id = ${versionId}::uuid`;
+        markPublished();
+        await publisherRelease;
+      },
+    );
+    await publishedRowLocked;
+
+    let reportPid!: (pid: number) => void;
+    const pidReady = new Promise<number>((resolve) => (reportPid = resolve));
+    const mutationResult = withStoreTransaction(
+      contender,
+      contextFor(BEAUTY_STORE_ID, 'beauty-local'),
+      async (transaction) => {
+        const [{ pid }] = await transaction.$queryRaw<Array<{ pid: number }>>`
+          SELECT pg_backend_pid() AS pid
+        `;
+        if (typeof pid !== 'number') throw new Error('PostgreSQL backend PID is invalid');
+        reportPid(pid);
+        await transaction.$executeRaw`INSERT INTO promotion_version_localizations
+          (store_id, promotion_version_id, locale, name, updated_at)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${versionId}::uuid, 'en',
+            'Concurrent mutation', now())`;
+      },
+    ).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ error, ok: false as const }),
+    );
+    const contenderPid = await pidReady;
+    try {
+      await expect
+        .poll(
+          async () => {
+            const rows = await client.$queryRaw<Array<{ wait_event_type: string | null }>>`
+              SELECT wait_event_type FROM pg_stat_activity WHERE pid = ${contenderPid}
+            `;
+            return rows[0]?.wait_event_type ?? null;
+          },
+          { timeout: 3_000 },
+        )
+        .toBe('Lock');
+    } finally {
+      releasePublisher();
+    }
+    await publishing;
+    const result = await mutationResult;
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toBeInstanceOf(Error);
+
+    const facts = await withStoreTransaction(
+      client,
+      contextFor(BEAUTY_STORE_ID, 'beauty-local'),
+      async (transaction) => ({
+        localizationCount: await transaction.promotionVersionLocalization.count({
+          where: { promotionVersionId: versionId },
+        }),
+        version: await transaction.promotionVersion.findUniqueOrThrow({
+          select: { status: true },
+          where: { id: versionId },
+        }),
+      }),
+    );
+    expect(facts).toEqual({ localizationCount: 1, version: { status: 'PUBLISHED' } });
   });
 
   it('enforces one ACTIVE cart per member and safe line values', async () => {

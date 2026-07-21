@@ -62,6 +62,7 @@ test('buyer catalog is isolated and complete in all three languages', async ({ p
     await page.getByText(store.product, { exact: true }).click();
     await expect(page.getByRole('heading', { name: store.product })).toBeVisible();
     await expect(page.getByRole('radio').first()).toBeVisible();
+    await expect(page.getByText('Còn có thể đặt: 12', { exact: true })).toBeVisible();
     await expectNoHorizontalOverflow(page);
   }
 
@@ -130,5 +131,30 @@ test('buyer search supports accent folding, three languages and mobile filters p
     await expectNoHorizontalOverflow(page);
   }
 
+  expect(browserErrors).toEqual([]);
+});
+
+test('buyer cart keeps an explicit recoverable Zalo sign-in state on web preview', async ({
+  page,
+}) => {
+  const browserErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+
+  await page.goto(`${storefronts[0].url}#/cart`);
+  await expect(page.getByRole('heading', { name: 'Giỏ hàng', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Kết nối để dùng giỏ hàng', exact: true }),
+  ).toBeVisible();
+  const connect = page.getByRole('button', { name: 'Kết nối Zalo' });
+  await expect(connect).toBeVisible();
+  await connect.click();
+  await expect(page.getByText('Không thể xác minh Zalo.', { exact: false })).toBeVisible();
+
+  await page.getByRole('button', { name: 'ZH', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '连接后使用购物车' })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
   expect(browserErrors).toEqual([]);
 });

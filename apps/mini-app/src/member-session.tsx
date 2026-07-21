@@ -14,7 +14,8 @@ type SessionStatus = 'error' | 'loading' | 'ready';
 
 type MemberSession = {
   accessToken?: string;
-  connect(): Promise<void>;
+  connect(): Promise<boolean>;
+  invalidate(): void;
   status: SessionStatus;
   zaloAccessToken?: string;
 };
@@ -39,7 +40,13 @@ export function MemberSessionProvider({ children }: { children: React.ReactNode 
   const [accessToken, setAccessToken] = useState<string>();
   const [zaloAccessToken, setZaloAccessToken] = useState<string>();
 
-  const connect = useCallback(async (): Promise<void> => {
+  const invalidate = useCallback((): void => {
+    setAccessToken(undefined);
+    setZaloAccessToken(undefined);
+    setStatus('error');
+  }, []);
+
+  const connect = useCallback(async (): Promise<boolean> => {
     setStatus('loading');
     try {
       if (!isZaloRuntime()) throw new Error('Zalo runtime is unavailable');
@@ -56,10 +63,12 @@ export function MemberSessionProvider({ children }: { children: React.ReactNode 
       setAccessToken(session.access_token);
       setZaloAccessToken(token);
       setStatus('ready');
+      return true;
     } catch {
       setAccessToken(undefined);
       setZaloAccessToken(undefined);
       setStatus('error');
+      return false;
     }
   }, []);
 
@@ -70,8 +79,8 @@ export function MemberSessionProvider({ children }: { children: React.ReactNode 
   }, [connect]);
 
   const value = useMemo(
-    () => ({ accessToken, connect, status, zaloAccessToken }),
-    [accessToken, connect, status, zaloAccessToken],
+    () => ({ accessToken, connect, invalidate, status, zaloAccessToken }),
+    [accessToken, connect, invalidate, status, zaloAccessToken],
   );
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

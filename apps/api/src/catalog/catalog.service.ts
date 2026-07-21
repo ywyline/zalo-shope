@@ -22,6 +22,9 @@ type ProductCursor =
   | { id: string; published_at: string; sort: 'newest' }
   | { id: string; price_vnd: string; sort: 'price_asc' | 'price_desc' };
 type ProductRow = { id: string; minimum_price_vnd: bigint; published_at: Date };
+type PromotionSummary = { code: string; label: string };
+type PromotionSummaryRow = { code: string; label: string; product_id: string };
+const MAX_PUBLIC_AVAILABLE_QUANTITY = 2_147_483_647;
 
 const brandInclude = {
   brand_localizations: true,
@@ -53,6 +56,10 @@ const productInclude = {
   },
   skus: {
     include: {
+      inventoryBalances: {
+        include: { warehouse: true },
+        where: { warehouse: { enabled: true, isDefaultFulfillment: true } },
+      },
       sku_media: {
         include: { media_assets: true },
         orderBy: [{ sortOrder: 'asc' as const }, { mediaId: 'asc' as const }],
@@ -69,6 +76,20 @@ const productInclude = {
 type LoadedBrand = Prisma.BrandGetPayload<{ include: typeof brandInclude }>;
 type LoadedCategory = Prisma.CategoryGetPayload<{ include: typeof categoryInclude }>;
 type LoadedProduct = Prisma.ProductGetPayload<{ include: typeof productInclude }>;
+
+function availableQuantity(
+  skus: readonly Readonly<{ inventoryBalances: readonly Readonly<{ available: number }>[] }>[],
+): number {
+  const total = skus.reduce(
+    (productTotal, sku) =>
+      productTotal +
+      sku.inventoryBalances.reduce((skuTotal, balance) => skuTotal + BigInt(balance.available), 0n),
+    0n,
+  );
+  return Number(
+    total > BigInt(MAX_PUBLIC_AVAILABLE_QUANTITY) ? MAX_PUBLIC_AVAILABLE_QUANTITY : total,
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -274,8 +295,16 @@ export class CatalogService {
         where: { id: { in: visibleRows.map(({ id }) => id) }, storeId: store.id },
       });
       const byId = new Map(products.map((product) => [product.id, product]));
+      const promotions = await this.promotionSummaries(
+        transaction,
+        store.id,
+        visibleRows.map(({ id }) => id),
+        query.locale,
+      );
       const items = await Promise.all(
-        visibleRows.map(({ id }) => this.viewProductSummary(byId.get(id)!, query.locale)),
+        visibleRows.map(({ id }) =>
+          this.viewProductSummary(byId.get(id)!, query.locale, promotions.get(id) ?? null),
+        ),
       );
       const last = visibleRows.at(-1);
       const nextCursor =
@@ -322,7 +351,8 @@ export class CatalogService {
         },
       });
       if (!product) throw new NotFoundException('Resource not found');
-      return this.viewProductDetail(product, locale);
+      const promotions = await this.promotionSummaries(transaction, store.id, [product.id], locale);
+      return this.viewProductDetail(product, locale, promotions.get(product.id) ?? null);
     });
   }
 
@@ -445,6 +475,12 @@ export class CatalogService {
         }),
       ]);
       const productMap = new Map(products.map((item) => [item.id, item]));
+      const promotionMap = await this.promotionSummaries(
+        transaction,
+        store.id,
+        products.map(({ id }) => id),
+        locale,
+      );
       const brandMap = new Map(brands.map((item) => [item.id, item]));
       const categoryMap = new Map(categories.map((item) => [item.id, item]));
       const pageMap = new Map(pages.map((item) => [item.id, item]));
@@ -460,7 +496,9 @@ export class CatalogService {
                     configuredIds
                       .map((id) => productMap.get(id))
                       .filter((item): item is LoadedProduct => Boolean(item))
-                      .map((item) => this.viewProductSummary(item, locale)),
+                      .map((item) =>
+                        this.viewProductSummary(item, locale, promotionMap.get(item.id) ?? null),
+                      ),
                   )
                 : module.moduleType === 'BRAND_GRID'
                   ? await Promise.all(
@@ -593,7 +631,98 @@ export class CatalogService {
     };
   }
 
-  private async viewProductSummary(product: LoadedProduct, locale: Locale) {
+  private async promotionSummaries(
+    transaction: StoreTransaction,
+    storeId: string,
+    productIds: readonly string[],
+    locale: Locale,
+  ): Promise<Map<string, PromotionSummary>> {
+    if (productIds.length === 0) return new Map();
+    const rows = await transaction.$queryRaw<PromotionSummaryRow[]>(Prisma.sql`
+      WITH applicable AS (
+        SELECT
+          product.id AS product_id,
+          promotion_root.code,
+          COALESCE(localized.name, vietnamese.name, promotion_root.code) AS label,
+          row_number() OVER (
+            PARTITION BY product.id
+            ORDER BY promotion_version.priority, promotion_root.code,
+              promotion_version.version_number DESC, promotion_version.id
+          ) AS position
+        FROM products product
+        JOIN promotions promotion_root
+          ON promotion_root.store_id = product.store_id
+         AND promotion_root.status = 'ACTIVE'
+        JOIN promotion_versions promotion_version
+          ON promotion_version.store_id = promotion_root.store_id
+         AND promotion_version.id = promotion_root.active_version_id
+         AND promotion_version.promotion_id = promotion_root.id
+         AND promotion_version.status = 'PUBLISHED'
+         AND promotion_version.bucket IN ('ITEM', 'ORDER')
+         AND promotion_version.starts_at <= CURRENT_TIMESTAMP
+         AND (promotion_version.ends_at IS NULL OR promotion_version.ends_at > CURRENT_TIMESTAMP)
+        JOIN promotion_targets promotion_target
+          ON promotion_target.store_id = promotion_version.store_id
+         AND promotion_target.promotion_version_id = promotion_version.id
+         AND (
+           promotion_target.target_type = 'STORE'
+           OR (
+             promotion_target.target_type = 'BRAND'
+             AND promotion_target.brand_id = product.brand_id
+           )
+           OR (
+             promotion_target.target_type = 'CATEGORY'
+             AND (
+               promotion_target.category_id = product.main_category_id
+               OR EXISTS (
+                 SELECT 1
+                 FROM product_secondary_categories secondary
+                 WHERE secondary.store_id = product.store_id
+                   AND secondary.product_id = product.id
+                   AND secondary.category_id = promotion_target.category_id
+               )
+             )
+           )
+           OR (
+             promotion_target.target_type = 'PRODUCT'
+             AND promotion_target.product_id = product.id
+           )
+           OR (
+             promotion_target.target_type = 'SKU'
+             AND EXISTS (
+               SELECT 1
+               FROM skus promotion_sku
+               WHERE promotion_sku.store_id = product.store_id
+                 AND promotion_sku.product_id = product.id
+                 AND promotion_sku.id = promotion_target.sku_id
+                 AND promotion_sku.status = 'ACTIVE'
+             )
+           )
+         )
+        LEFT JOIN promotion_version_localizations vietnamese
+          ON vietnamese.store_id = promotion_version.store_id
+         AND vietnamese.promotion_version_id = promotion_version.id
+         AND vietnamese.locale = 'vi'
+        LEFT JOIN promotion_version_localizations localized
+          ON localized.store_id = promotion_version.store_id
+         AND localized.promotion_version_id = promotion_version.id
+         AND localized.locale = ${locale}::"Locale"
+        WHERE product.store_id = ${storeId}::uuid
+          AND product.id IN (${Prisma.join(productIds.map((id) => Prisma.sql`${id}::uuid`))})
+      )
+      SELECT product_id, code, label
+      FROM applicable
+      WHERE position = 1
+      ORDER BY product_id
+    `);
+    return new Map(rows.map((row) => [row.product_id, { code: row.code, label: row.label }]));
+  }
+
+  private async viewProductSummary(
+    product: LoadedProduct,
+    locale: Locale,
+    promotionSummary: PromotionSummary | null,
+  ) {
     const localized = resolveLocalization(product.product_localizations, locale);
     const prices = product.skus.map(({ salePriceVnd }) => safeVnd(salePriceVnd));
     const marketPrices = product.skus
@@ -603,7 +732,10 @@ export class CatalogService {
     const primary = product.product_media.find(
       (item) => item.purpose === 'PRIMARY' && item.media_assets.status === 'READY',
     );
+    const productAvailableQuantity = availableQuantity(product.skus);
     return {
+      available: productAvailableQuantity > 0,
+      available_quantity: productAvailableQuantity,
       brand: await this.viewBrand(product.brands, locale),
       code: product.code,
       main_category: await this.viewCategory(product.categories, locale, []),
@@ -616,6 +748,7 @@ export class CatalogService {
       primary_media: primary
         ? await this.viewMedia(primary.media_assets, locale, localized.localization.name)
         : null,
+      promotion_summary: promotionSummary,
       requested_locale: locale,
       resolved_locale: localized.resolved,
       selling_points: localized.localization.sellingPoints,
@@ -623,8 +756,12 @@ export class CatalogService {
     };
   }
 
-  private async viewProductDetail(product: LoadedProduct, locale: Locale) {
-    const summary = await this.viewProductSummary(product, locale);
+  private async viewProductDetail(
+    product: LoadedProduct,
+    locale: Locale,
+    promotionSummary: PromotionSummary | null,
+  ) {
+    const summary = await this.viewProductSummary(product, locale, promotionSummary);
     const localized = resolveLocalization(product.product_localizations, locale);
     return {
       ...summary,
@@ -653,7 +790,10 @@ export class CatalogService {
       skus: await Promise.all(
         product.skus.map(async (sku) => {
           const media = sku.sku_media.find(({ media_assets: asset }) => asset.status === 'READY');
+          const skuAvailableQuantity = availableQuantity([sku]);
           return {
+            available: skuAvailableQuantity > 0,
+            available_quantity: skuAvailableQuantity,
             code: sku.code,
             market_price_vnd: sku.marketPriceVnd === null ? null : safeVnd(sku.marketPriceVnd),
             media: media

@@ -568,6 +568,8 @@ describe('M2.6 buyer catalog API', () => {
       .set('X-Store-Code', 'beauty-local')
       .expect(200);
     expect(detail.body).toMatchObject({
+      available: false,
+      available_quantity: 0,
       code: featuredProductCode,
       description_document: { type: 'doc', value: 'Tinh chất cấp ẩm cho làn da dịu mềm.' },
       name: 'Tinh chất hoa hồng',
@@ -575,7 +577,14 @@ describe('M2.6 buyer catalog API', () => {
       resolved_locale: 'vi',
       usage_instructions: 'Thoa hai giọt sau bước làm sạch.',
     });
+    expect(detail.body).toHaveProperty('promotion_summary');
+    if (detail.body.promotion_summary !== null) {
+      expect(detail.body.promotion_summary).toEqual(
+        expect.objectContaining({ code: expect.any(String), label: expect.any(String) }),
+      );
+    }
     expect(detail.body.skus).toHaveLength(2);
+    expect(detail.body.skus[0]).toMatchObject({ available: false, available_quantity: 0 });
     expect(detail.body.skus[0]).not.toHaveProperty('cost_price_vnd');
     expect(detail.body.skus[0].option_values[0]).toMatchObject({
       attribute_code: 'shade',

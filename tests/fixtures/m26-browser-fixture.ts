@@ -557,6 +557,39 @@ async function removeFixtures(): Promise<void> {
     const pageModuleIds = stores.flatMap(({ pageModuleIds }) => [...pageModuleIds]);
     const productIds = stores.flatMap(({ productIds }) => [...productIds]);
     const skuIds = stores.flatMap(({ skuIds }) => [...skuIds]);
+    const storeIds = stores.map(({ id }) => id);
+    const browserPromotions = await transaction.promotion.findMany({
+      select: { id: true, versions: { select: { id: true } } },
+      where: { code: { startsWith: 'm35-browser-' }, storeId: { in: storeIds } },
+    });
+    const promotionIds = browserPromotions.map(({ id }) => id);
+    const promotionVersionIds = browserPromotions.flatMap(({ versions }) =>
+      versions.map(({ id }) => id),
+    );
+    const browserCoupons = await transaction.coupon.findMany({
+      select: { id: true },
+      where: { promotionVersionId: { in: promotionVersionIds }, storeId: { in: storeIds } },
+    });
+    const couponIds = browserCoupons.map(({ id }) => id);
+    await transaction.promotionOperation.deleteMany({
+      where: {
+        OR: [
+          { targetId: { in: promotionIds }, targetType: 'promotion' },
+          { targetId: { in: couponIds }, targetType: 'coupon' },
+        ],
+        storeId: { in: storeIds },
+      },
+    });
+    await transaction.memberCoupon.deleteMany({ where: { couponId: { in: couponIds } } });
+    await transaction.coupon.deleteMany({ where: { id: { in: couponIds } } });
+    await transaction.promotionTarget.deleteMany({
+      where: { promotionVersionId: { in: promotionVersionIds } },
+    });
+    await transaction.promotionVersionLocalization.deleteMany({
+      where: { promotionVersionId: { in: promotionVersionIds } },
+    });
+    await transaction.promotionVersion.deleteMany({ where: { id: { in: promotionVersionIds } } });
+    await transaction.promotion.deleteMany({ where: { id: { in: promotionIds } } });
     await transaction.pageModuleMedia.deleteMany({
       where: { pageModuleId: { in: pageModuleIds } },
     });
@@ -620,9 +653,8 @@ async function removeFixtures(): Promise<void> {
     await transaction.attributeTemplate.deleteMany({
       where: { id: { in: stores.map(({ templateId }) => templateId) } },
     });
-    await transaction.auditLog.deleteMany({
-      where: { action: 'test.inventory.initialized', actorId: ACTOR_ID },
-    });
+    // Audit logs are append-only by design. Keep the fixture's initialization
+    // history instead of attempting a forbidden DELETE during the next run.
   });
 }
 
