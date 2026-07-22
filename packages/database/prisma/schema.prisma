@@ -1131,16 +1131,19 @@ model InventoryOperation {
 }
 
 model InventoryReservation {
-  id                  String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId             String                     @map("store_id") @db.Uuid
-  reservationKey      String                     @map("reservation_key") @db.VarChar(128)
-  status              InventoryReservationStatus @default(ACTIVE)
-  expiresAt           DateTime                   @map("expires_at") @db.Timestamptz(6)
-  terminalOperationId String?                    @map("terminal_operation_id") @db.Uuid
-  sourceType          String?                    @map("source_type") @db.VarChar(32)
-  sourceId            String?                    @map("source_id") @db.Uuid
-  createdAt           DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
-  terminalAt          DateTime?                  @map("terminal_at") @db.Timestamptz(6)
+  id                      String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                 String                     @map("store_id") @db.Uuid
+  reservationKey          String                     @map("reservation_key") @db.VarChar(128)
+  status                  InventoryReservationStatus @default(ACTIVE)
+  expiresAt               DateTime                   @map("expires_at") @db.Timestamptz(6)
+  terminalOperationId     String?                    @map("terminal_operation_id") @db.Uuid
+  sourceType              String?                    @map("source_type") @db.VarChar(32)
+  sourceId                String?                    @map("source_id") @db.Uuid
+  createdAt               DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  terminalAt              DateTime?                  @map("terminal_at") @db.Timestamptz(6)
+  expirationFailureCount  Int                        @default(0) @map("expiration_failure_count")
+  lastExpirationFailedAt  DateTime?                  @map("last_expiration_failed_at") @db.Timestamptz(6)
+  lastExpirationErrorCode String?                    @map("last_expiration_error_code") @db.VarChar(64)
 
   store             Store                      @relation(fields: [storeId], references: [id], onDelete: Restrict)
   terminalOperation InventoryOperation?        @relation(fields: [storeId, terminalOperationId], references: [storeId, id], onDelete: Restrict)
@@ -1149,6 +1152,7 @@ model InventoryReservation {
   @@unique([storeId, id])
   @@unique([storeId, reservationKey])
   @@index([storeId, status, expiresAt])
+  @@index([storeId, status, lastExpirationFailedAt, expiresAt, id], map: "inventory_reservations_expiration_retry_idx")
   @@map("inventory_reservations")
 }
 

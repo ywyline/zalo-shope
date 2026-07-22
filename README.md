@@ -2,7 +2,7 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.6 已交付库存、仓库与预留原语、三语搜索/联想/筛选、会员搜索历史、商城级热门词、促销/优惠券/可信计价、会员购物车和移动端购物车体验，并建立 Chromium/WebKit 可重复浏览器 E2E。M3.7 并发/安全/完整 E2E 收口、真实 Zalo 生产适配器、宿主真机验收、生产对象存储/CDN 和越南专业合规复核仍未完成。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已按批准边界完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归，以及管理端 Chromium、Android Chromium、iPhone WebKit 共 15 项可重复浏览器 E2E。M3 最终 `verify`（21 个单元测试文件/138 项）、19 个文件/102 项集成测试、15/15 Playwright、生产依赖审计、Compose 和 fresh scratch 迁移门禁通过；M2-only 自动化升级 fixture、Zalo 宿主真机、生产对象存储/CDN、生产规模/权限和越南专业合规复核仍是明确保留项。M3 总结见 `docs/reports/m3-completion-report.md`，M4 尚未批准。
 
 ## 应用与包
 
@@ -102,7 +102,9 @@ corepack pnpm infra:down
 `test:e2e` 会从 `.env.test.example` 使用测试 API 端口；如需覆盖端口，可在 PowerShell 先设置
 `$env:E2E_API_PORT='3100'`。Windows 某些环境会将 2984–3083 列为排除端口，遇到
 `listen EACCES` 时应使用 3100 或其他未被排除的端口。该 E2E 覆盖桌面 Chromium、Android
-Chromium 与 iPhone WebKit 的 Web 预览，不替代 Zalo Mini App 宿主真机测试。
+Chromium 与 iPhone WebKit 的 Web 预览。认证后购物车用例只在 Playwright 启动的 localhost
+Mini App 且显式设置 `VITE_ZALO_TEST_BRIDGE=true` 时安装测试桥，之后仍调用 test provider、
+真实 API 与数据库；它不进入正常生产配置，也不替代 Zalo Mini App 宿主真机测试。
 
 ## 数据库迁移与本地种子
 
@@ -117,7 +119,7 @@ $env:NODE_ENV='test'
 corepack pnpm --filter @zalo-shop/database seed
 ```
 
-搜索文档属于可重建派生数据。需修复单个商城投影时，使用 runtime RLS 连接并显式记录执行人；命令会删除并在同一商城事务内重建该商城文档，同时写审计记录：
+搜索文档属于可重建派生数据。需修复单个商城投影时，使用 runtime RLS 连接并显式记录执行人；该管理员必须在目标商城处于活动状态并具备 `store.catalog.publish`。命令按稳定商品 ID 每批处理 100 个商品，但删除、全部批次和审计位于单个 `REPEATABLE READ` 商城事务；任一失败整体回滚，重试从头执行，不是断点续跑：
 
 ```powershell
 $env:SEARCH_REBUILD_STORE_CODE='beauty-local'
@@ -125,7 +127,7 @@ $env:SEARCH_REBUILD_ACTOR_ID='<authorized-admin-uuid>'
 corepack pnpm --filter @zalo-shop/database search:rebuild
 ```
 
-迁移目录提供人工审查的 `down.sql`，仅允许用于无真实身份/审计数据的 local/test 环境；有数据后采用向前修复。首个管理员使用 `admin:create` CLI 和一次性环境变量创建，不得把密码或 TOTP secret 写入文件。
+迁移目录提供人工审查的 `down.sql`，仅允许用于无真实身份/审计/M3 事实的 local/test 环境；有数据后采用向前修复。M3 已在独立 scratch 库人工演练全量/重复 deploy、双次 seed、搜索重建授权和受控 down，但仓库尚缺只含 M2 schema/数据的自动化升级 fixture；下一次迁移变更前必须补齐该可重复回归。首个管理员使用 `admin:create` CLI 和一次性环境变量创建，不得把密码或 TOTP secret 写入文件。
 
 ## M1 API 与安全边界
 

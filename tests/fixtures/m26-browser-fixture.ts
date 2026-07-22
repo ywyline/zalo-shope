@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { parseRuntimeConfig } from '@zalo-shop/config';
 import {
   adjustInventory,
@@ -441,6 +441,13 @@ async function seedStore(store: StoreFixture): Promise<void> {
         skuId: store.skuIds[0],
         warehouseId: warehouse.id,
       },
+      {
+        delta: 8,
+        expectedVersion: 1,
+        reasonCode: 'BROWSER_FIXTURE_INITIAL_LOAD',
+        skuId: store.skuIds[1],
+        warehouseId: warehouse.id,
+      },
     ],
     operationKey: `m34-browser-stock-${store.storeCode}`,
     operationType: 'IMPORT',
@@ -558,9 +565,57 @@ async function removeFixtures(): Promise<void> {
     const productIds = stores.flatMap(({ productIds }) => [...productIds]);
     const skuIds = stores.flatMap(({ skuIds }) => [...skuIds]);
     const storeIds = stores.map(({ id }) => id);
+    const browserIdentities = await transaction.memberExternalIdentity.findMany({
+      select: { memberId: true },
+      where: {
+        provider: 'ZALO',
+        providerSubjectId: { startsWith: 'm37-browser-' },
+        storeId: { in: storeIds },
+      },
+    });
+    const browserMemberIds = [...new Set(browserIdentities.map(({ memberId }) => memberId))];
+    if (browserMemberIds.length > 0) {
+      const browserCarts = await transaction.cart.findMany({
+        select: { id: true },
+        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+      const browserCartIds = browserCarts.map(({ id }) => id);
+      await transaction.memberCoupon.deleteMany({
+        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+      await transaction.memberSearchHistory.deleteMany({
+        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+      if (browserCartIds.length > 0) {
+        await transaction.cartItem.deleteMany({
+          where: { cartId: { in: browserCartIds }, storeId: { in: storeIds } },
+        });
+        await transaction.cart.deleteMany({
+          where: { id: { in: browserCartIds }, storeId: { in: storeIds } },
+        });
+      }
+      await transaction.memberPhoneContact.deleteMany({
+        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+      await transaction.consent.deleteMany({
+        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+      await transaction.memberSession.deleteMany({
+        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+      await transaction.memberExternalIdentity.deleteMany({
+        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+      await transaction.member.deleteMany({
+        where: { id: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+    }
     const browserPromotions = await transaction.promotion.findMany({
       select: { id: true, versions: { select: { id: true } } },
-      where: { code: { startsWith: 'm35-browser-' }, storeId: { in: storeIds } },
+      where: {
+        OR: [{ code: { startsWith: 'm35-browser-' } }, { code: { startsWith: 'm37-browser-' } }],
+        storeId: { in: storeIds },
+      },
     });
     const promotionIds = browserPromotions.map(({ id }) => id);
     const promotionVersionIds = browserPromotions.flatMap(({ versions }) =>
@@ -606,11 +661,24 @@ async function removeFixtures(): Promise<void> {
     await transaction.productSearchDocument.deleteMany({
       where: { productId: { in: productIds } },
     });
+    const fixtureOperationRows = await transaction.inventoryMovement.findMany({
+      select: { operationId: true },
+      where: { balance: { skuId: { in: skuIds } } },
+    });
+    const fixtureOperationIds = [
+      ...new Set(fixtureOperationRows.map(({ operationId }) => operationId)),
+    ];
     await transaction.inventoryMovement.deleteMany({
       where: { balance: { skuId: { in: skuIds } } },
     });
     await transaction.inventoryOperation.deleteMany({
-      where: { operationKey: { startsWith: 'm34-browser-stock-' } },
+      where: {
+        OR: [
+          { id: { in: fixtureOperationIds } },
+          { operationKey: { startsWith: 'm34-browser-stock-' } },
+          { operationKey: { startsWith: 'm37-browser-stock-' } },
+        ],
+      },
     });
     await transaction.inventoryBalance.deleteMany({ where: { skuId: { in: skuIds } } });
     await transaction.skuOptionValue.deleteMany({ where: { skuId: { in: skuIds } } });
@@ -656,6 +724,89 @@ async function removeFixtures(): Promise<void> {
     // Audit logs are append-only by design. Keep the fixture's initialization
     // history instead of attempting a forbidden DELETE during the next run.
   });
+}
+
+function browserStore(storeCode: string): StoreFixture {
+  const store = stores.find((candidate) => candidate.storeCode === storeCode);
+  if (!store) throw new Error(`Unknown browser fixture store: ${storeCode}`);
+  return store;
+}
+
+export async function setM37BrowserPrimarySkuPrice(
+  storeCode: string,
+  salePriceVnd: number,
+): Promise<number> {
+  if (!Number.isSafeInteger(salePriceVnd) || salePriceVnd < 0) {
+    throw new Error('Browser fixture price must be a non-negative safe integer');
+  }
+  const store = browserStore(storeCode);
+  await database.$connect();
+  try {
+    const current = await database.sku.findUniqueOrThrow({
+      select: { salePriceVnd: true },
+      where: { id: store.skuIds[0] },
+    });
+    await database.sku.update({
+      data: { salePriceVnd },
+      where: { id: store.skuIds[0] },
+    });
+    return Number(current.salePriceVnd);
+  } finally {
+    await database.$disconnect();
+  }
+}
+
+export async function setM37BrowserPrimarySkuStock(
+  storeCode: string,
+  onHand: number,
+): Promise<number> {
+  if (!Number.isSafeInteger(onHand) || onHand < 0) {
+    throw new Error('Browser fixture stock must be a non-negative safe integer');
+  }
+  const store = browserStore(storeCode);
+  await database.$connect();
+  try {
+    const warehouse = await database.warehouse.findUniqueOrThrow({
+      where: { storeId_code: { code: 'local-default', storeId: store.id } },
+    });
+    const balance = await database.inventoryBalance.findUniqueOrThrow({
+      where: {
+        storeId_warehouseId_skuId: {
+          skuId: store.skuIds[0],
+          storeId: store.id,
+          warehouseId: warehouse.id,
+        },
+      },
+    });
+    if (balance.reserved !== 0) throw new Error('Browser fixture stock is unexpectedly reserved');
+    if (balance.onHand === onHand) return balance.onHand;
+    await adjustInventory(
+      database,
+      createStoreContext({
+        accessReason: 'M3.7 browser cart state transition',
+        actor: { id: ACTOR_ID, type: 'member' },
+        correlationId: `m37-browser-${randomUUID()}`,
+        locale: 'vi',
+        storeCode: store.storeCode,
+        storeId: store.id,
+      }),
+      {
+        items: [
+          {
+            delta: onHand - balance.onHand,
+            expectedVersion: balance.version,
+            reasonCode: 'M37_BROWSER_CART_STATE',
+            skuId: store.skuIds[0],
+            warehouseId: warehouse.id,
+          },
+        ],
+        operationKey: `m37-browser-stock-${randomUUID()}`,
+      },
+    );
+    return balance.onHand;
+  } finally {
+    await database.$disconnect();
+  }
 }
 
 export async function setUpM26BrowserFixtures(): Promise<void> {

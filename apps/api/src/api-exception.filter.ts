@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import {
   Catch,
   HttpException,
@@ -7,8 +5,9 @@ import {
   type ArgumentsHost,
   type ExceptionFilter,
 } from '@nestjs/common';
+import { resolveCorrelationId } from '@zalo-shop/logger';
 
-type HttpRequest = { headers: Record<string, string | string[] | undefined> };
+type HttpRequest = { headers: Record<string, string | string[] | undefined>; id?: unknown };
 type HttpResponse = {
   header(name: string, value: string): void;
   status(code: number): { json(body: unknown): void };
@@ -66,8 +65,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const request = http.getRequest<HttpRequest>();
     const response = http.getResponse<HttpResponse>();
     const supplied = request.headers['x-correlation-id'];
-    const correlationId =
-      typeof supplied === 'string' && supplied.length <= 128 ? supplied : randomUUID();
+    const correlationId = resolveCorrelationId(request.id, supplied);
     const status =
       exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
     const code = errorCode(status);

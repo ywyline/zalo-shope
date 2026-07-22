@@ -643,9 +643,23 @@ async function terminalReservation(
           },
         });
         if (!terminal) throw new InventoryPrimitiveError('RESERVATION_TRANSITION_INVALID');
+        const result = terminal.resultSnapshot as unknown as InventoryReservationResult;
+        // A same-state retry with a new key has no inventory effect, but the
+        // successful key must still be bound to this request. Otherwise that
+        // key could later mutate a different reservation in the same store.
+        await transaction.inventoryOperation.create({
+          data: {
+            id: randomUUID(),
+            operationKey: input.operationKey,
+            operationType: input.event,
+            requestHash,
+            resultSnapshot: json(result),
+            storeId: context.storeId,
+          },
+        });
         return {
           replayed: true,
-          result: terminal.resultSnapshot as unknown as InventoryReservationResult,
+          result,
         };
       }
       if (input.event === 'EXPIRE' && reservation.expires_at.getTime() > Date.now()) {
@@ -803,19 +817,43 @@ export async function expireDueReservations(
   client: PrismaClient,
   context: StoreContext,
   limit = 100,
-): Promise<Readonly<{ expired: number; scanned: number }>> {
+): Promise<Readonly<{ expired: number; failed: number; scanned: number }>> {
   const reservationIds = await withStoreTransaction(client, context, (transaction) =>
     transaction.inventoryReservation.findMany({
-      orderBy: [{ expiresAt: 'asc' }, { id: 'asc' }],
+      orderBy: [
+        { lastExpirationFailedAt: { nulls: 'first', sort: 'asc' } },
+        { expiresAt: 'asc' },
+        { id: 'asc' },
+      ],
       select: { id: true },
       take: Math.max(1, Math.min(limit, 500)),
       where: { expiresAt: { lte: new Date() }, status: 'ACTIVE', storeId: context.storeId },
     }),
   );
   let expired = 0;
+  let failed = 0;
   for (const reservation of reservationIds) {
-    const execution = await expireReservation(client, context, reservation.id);
-    if (execution.result.status === 'EXPIRED' && !execution.replayed) expired += 1;
+    try {
+      const execution = await expireReservation(client, context, reservation.id);
+      if (execution.result.status === 'EXPIRED' && !execution.replayed) expired += 1;
+    } catch (error) {
+      failed += 1;
+      const errorCode = error instanceof InventoryPrimitiveError ? error.code : 'UNEXPECTED';
+      try {
+        await withStoreTransaction(client, context, (transaction) =>
+          transaction.inventoryReservation.updateMany({
+            data: {
+              expirationFailureCount: { increment: 1 },
+              lastExpirationErrorCode: errorCode,
+              lastExpirationFailedAt: new Date(),
+            },
+            where: { id: reservation.id, status: 'ACTIVE', storeId: context.storeId },
+          }),
+        );
+      } catch {
+        // The next worker run retries the immutable reservation even if recording fails.
+      }
+    }
   }
-  return { expired, scanned: reservationIds.length };
+  return { expired, failed, scanned: reservationIds.length };
 }

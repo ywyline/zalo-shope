@@ -131,11 +131,11 @@ export class MemberCouponService {
     couponCode: string;
     storeCode: string;
   }) {
-    await this.rateLimiter.assertAllowed(input.address, 'coupon-claim');
     const { context, memberId, store } = await this.memberContext(
       input.authorization,
       input.storeCode,
     );
+    await this.rateLimiter.assertAllowed(input.address, 'coupon-claim', store.id, memberId);
     return withStoreTransaction(this.database, context, async (transaction) => {
       const locked = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT id FROM coupons

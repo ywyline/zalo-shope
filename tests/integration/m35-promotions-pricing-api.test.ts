@@ -14,6 +14,7 @@ import { hashSensitive, signJwt } from '@zalo-shop/security';
 
 const BEAUTY_STORE_ID = '10000000-0000-4000-8000-000000000001';
 const FASHION_STORE_ID = '10000000-0000-4000-8000-000000000002';
+const BEAUTY_ROOT_CATEGORY_ID = '11000000-0000-4000-8000-000000000001';
 const BEAUTY_CATEGORY_ID = '12000000-0000-4000-8000-000000000001';
 const FASHION_CATEGORY_ID = '12000000-0000-4000-8000-000000000002';
 const BEAUTY_TEMPLATE_ID = '14000000-0000-4000-8000-000000000001';
@@ -21,6 +22,7 @@ const FASHION_TEMPLATE_ID = '14000000-0000-4000-8000-000000000002';
 const BEAUTY_WAREHOUSE_ID = '17000000-0000-4000-8000-000000000001';
 
 type AdminKind = 'manager' | 'publisher' | 'reader';
+type StoreKind = 'beauty' | 'fashion';
 type PricingBucket = 'COUPON' | 'ITEM' | 'ORDER';
 type Benefit =
   | { maximum_discount_vnd: null; method: 'PERCENTAGE_BPS'; value: number }
@@ -59,8 +61,18 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
     beautySkuId: randomUUID(),
     beautySecondSkuId: randomUUID(),
     fashionBrandId: randomUUID(),
+    fashionMemberIds: [randomUUID(), randomUUID()] as const,
     fashionProductId: randomUUID(),
-    memberIds: [randomUUID(), randomUUID()],
+    memberIds: [
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    ] as const,
     roleIds: {
       manager: randomUUID(),
       publisher: randomUUID(),
@@ -68,7 +80,11 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
     } satisfies Record<AdminKind, string>,
   };
   const adminTokens: Partial<Record<AdminKind, string>> = {};
-  const memberTokens: string[] = [];
+  const memberTokens: Record<StoreKind, string[]> = { beauty: [], fashion: [] };
+  const stores = {
+    beauty: { code: 'beauty-local', id: BEAUTY_STORE_ID },
+    fashion: { code: 'fashion-local', id: FASHION_STORE_ID },
+  } as const;
   const skuCode = `m35-sku-${suffix}`;
   const secondSkuCode = `m35-sku-second-${suffix}`;
   const couponCode = `m35-coupon-${suffix}`;
@@ -81,15 +97,17 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
     if (!token) throw new Error(`Missing ${kind} token`);
     return token;
   };
-  const adminHeaders = (kind: AdminKind) => ({
+  const adminHeaders = (kind: AdminKind, store: StoreKind = 'beauty') => ({
     Authorization: `Bearer ${adminToken(kind)}`,
-    'X-Store-Code': 'beauty-local',
+    'X-Store-Code': stores[store].code,
   });
-  const adminPath = (path: string) => `${path}?store_id=${BEAUTY_STORE_ID}`;
-  const memberHeaders = (index = 0, storeCode = 'beauty-local') => ({
-    Authorization: `Bearer ${memberTokens[index]}`,
-    'X-Store-Code': storeCode,
-  });
+  const adminPath = (path: string, store: StoreKind = 'beauty') =>
+    `${path}?store_id=${stores[store].id}`;
+  const memberHeaders = (index = 0, store: StoreKind = 'beauty') => {
+    const token = memberTokens[store][index];
+    if (!token) throw new Error(`Missing ${store} member token ${index}`);
+    return { Authorization: `Bearer ${token}`, 'X-Store-Code': stores[store].code };
+  };
   const versionInput = (input: {
     benefit: Benefit;
     bucket: PricingBucket;
@@ -120,16 +138,19 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
     bucket: PricingBucket;
     code: string;
     stackableWith: PricingBucket[];
+    store?: StoreKind;
+    targets?: Array<{ target_id: string | null; target_type: string }>;
   }): Promise<{ promotion: PromotionView; version: PromotionVersionView }> {
+    const store = input.store ?? 'beauty';
     const created = await api()
-      .post(adminPath('/v1/admin/promotions'))
-      .set(adminHeaders('manager'))
+      .post(adminPath('/v1/admin/promotions', store))
+      .set(adminHeaders('manager', store))
       .send({ code: input.code })
       .expect(201);
     const promotion = created.body as PromotionView;
     const versionResponse = await api()
-      .post(adminPath(`/v1/admin/promotions/${promotion.id}/versions`))
-      .set(adminHeaders('manager'))
+      .post(adminPath(`/v1/admin/promotions/${promotion.id}/versions`, store))
+      .set(adminHeaders('manager', store))
       .send(
         versionInput({
           benefit: input.benefit,
@@ -137,14 +158,15 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
           expectedVersion: promotion.version,
           label: input.code,
           stackableWith: input.stackableWith,
+          targets: input.targets,
         }),
       )
       .expect(201);
     const version = versionResponse.body as PromotionVersionView;
     const published = await api()
-      .post(adminPath(`/v1/admin/promotions/${promotion.id}/publish`))
+      .post(adminPath(`/v1/admin/promotions/${promotion.id}/publish`, store))
       .set({
-        ...adminHeaders('publisher'),
+        ...adminHeaders('publisher', store),
         'Idempotency-Key': `m35:publish:${input.code}:${suffix}`,
       })
       .send({
@@ -154,6 +176,37 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
       })
       .expect(200);
     return { promotion: published.body as PromotionView, version };
+  }
+
+  async function createActiveCoupon(input: {
+    code: string;
+    promotionVersionId: string;
+    store?: StoreKind;
+    totalClaimLimit: number;
+  }): Promise<{ id: string; status: string; version: number }> {
+    const store = input.store ?? 'beauty';
+    const created = await api()
+      .post(adminPath('/v1/admin/coupons', store))
+      .set(adminHeaders('manager', store))
+      .send({
+        code: input.code,
+        new_customer_only: false,
+        per_member_claim_limit: 1,
+        promotion_version_id: input.promotionVersionId,
+        total_claim_limit: input.totalClaimLimit,
+      })
+      .expect(201);
+    const coupon = created.body as { id: string; status: string; version: number };
+    await api()
+      .post(adminPath(`/v1/admin/coupons/${coupon.id}/status`, store))
+      .set({
+        ...adminHeaders('publisher', store),
+        'Idempotency-Key': `m35:coupon:activate:${input.code}:${suffix}`,
+      })
+      .send({ confirmation_code: 'ACTIVATE', expected_version: 1, status: 'ACTIVE' })
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({ status: 'ACTIVE', version: 2 }));
+    return { ...coupon, status: 'ACTIVE', version: 2 };
   }
 
   beforeAll(async () => {
@@ -219,6 +272,18 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
         config.AUTH_JWT_SECRET,
       );
     }
+
+    const fashionAdminRole = await owner.storeRole.findUniqueOrThrow({
+      where: { storeId_code: { code: 'store-admin', storeId: FASHION_STORE_ID } },
+    });
+    await owner.adminStoreRole.createMany({
+      data: (['manager', 'publisher'] as const).map((kind) => ({
+        adminUserId: fixture.adminIds[kind],
+        grantedBy: fixture.adminIds[kind],
+        roleId: fashionAdminRole.id,
+        storeId: FASHION_STORE_ID,
+      })),
+    });
 
     await owner.brand.createMany({
       data: [
@@ -329,41 +394,47 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
       },
     );
 
-    for (const [index, memberId] of fixture.memberIds.entries()) {
-      await owner.member.create({
-        data: {
-          displayName: `M3.5 member ${index + 1}`,
-          id: memberId,
-          preferredLocale: 'vi',
-          storeId: BEAUTY_STORE_ID,
-        },
-      });
-      const session = await owner.memberSession.create({
-        data: {
-          expiresAt: new Date(Date.now() + 3_600_000),
-          memberId,
-          refreshTokenHash: hashSensitive(randomUUID(), config.PII_HASH_KEY),
-          storeId: BEAUTY_STORE_ID,
-          tokenFamilyId: randomUUID(),
-        },
-      });
-      const timestamp = Math.floor(Date.now() / 1_000);
-      memberTokens.push(
-        signJwt(
-          {
-            actor_type: 'member',
-            aud: config.AUTH_JWT_AUDIENCE,
-            exp: timestamp + 900,
-            iat: timestamp,
-            iss: config.AUTH_JWT_ISSUER,
-            jti: randomUUID(),
-            session_id: session.id,
-            store_id: BEAUTY_STORE_ID,
-            sub: memberId,
+    for (const group of [
+      { ids: fixture.memberIds, store: 'beauty' as const },
+      { ids: fixture.fashionMemberIds, store: 'fashion' as const },
+    ]) {
+      for (const [index, memberId] of group.ids.entries()) {
+        const store = stores[group.store];
+        await owner.member.create({
+          data: {
+            displayName: `M3.5 ${group.store} member ${index + 1}`,
+            id: memberId,
+            preferredLocale: 'vi',
+            storeId: store.id,
           },
-          config.AUTH_JWT_SECRET,
-        ),
-      );
+        });
+        const session = await owner.memberSession.create({
+          data: {
+            expiresAt: new Date(Date.now() + 3_600_000),
+            memberId,
+            refreshTokenHash: hashSensitive(randomUUID(), config.PII_HASH_KEY),
+            storeId: store.id,
+            tokenFamilyId: randomUUID(),
+          },
+        });
+        const timestamp = Math.floor(Date.now() / 1_000);
+        memberTokens[group.store].push(
+          signJwt(
+            {
+              actor_type: 'member',
+              aud: config.AUTH_JWT_AUDIENCE,
+              exp: timestamp + 900,
+              iat: timestamp,
+              iss: config.AUTH_JWT_ISSUER,
+              jti: randomUUID(),
+              session_id: session.id,
+              store_id: store.id,
+              sub: memberId,
+            },
+            config.AUTH_JWT_SECRET,
+          ),
+        );
+      }
     }
 
     const [{ AppModule }, { ApiExceptionFilter }] = await Promise.all([
@@ -382,19 +453,29 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
       await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
       const promotions = await transaction.promotion.findMany({
         select: { id: true },
-        where: { code: { endsWith: suffix }, storeId: BEAUTY_STORE_ID },
+        where: {
+          code: { endsWith: suffix },
+          storeId: { in: [BEAUTY_STORE_ID, FASHION_STORE_ID] },
+        },
       });
       const promotionIds = promotions.map(({ id }) => id);
       const versions = await transaction.promotionVersion.findMany({
         select: { id: true },
-        where: { promotionId: { in: promotionIds }, storeId: BEAUTY_STORE_ID },
+        where: {
+          promotionId: { in: promotionIds },
+          storeId: { in: [BEAUTY_STORE_ID, FASHION_STORE_ID] },
+        },
       });
       const versionIds = versions.map(({ id }) => id);
+      const allMemberIds = [...fixture.memberIds, ...fixture.fashionMemberIds];
       await transaction.memberCoupon.deleteMany({
-        where: { memberId: { in: fixture.memberIds } },
+        where: { memberId: { in: allMemberIds } },
       });
       await transaction.coupon.deleteMany({
-        where: { code: { endsWith: suffix }, storeId: BEAUTY_STORE_ID },
+        where: {
+          code: { endsWith: suffix },
+          storeId: { in: [BEAUTY_STORE_ID, FASHION_STORE_ID] },
+        },
       });
       await transaction.promotionOperation.deleteMany({
         where: { createdByAdminId: { in: Object.values(fixture.adminIds) } },
@@ -431,9 +512,9 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
         where: { id: { in: [fixture.beautyBrandId, fixture.fashionBrandId] } },
       });
       await transaction.memberSession.deleteMany({
-        where: { memberId: { in: fixture.memberIds } },
+        where: { memberId: { in: allMemberIds } },
       });
-      await transaction.member.deleteMany({ where: { id: { in: fixture.memberIds } } });
+      await transaction.member.deleteMany({ where: { id: { in: allMemberIds } } });
       await transaction.adminStoreRole.deleteMany({
         where: { adminUserId: { in: Object.values(fixture.adminIds) } },
       });
@@ -651,6 +732,67 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
     ).toBe(1);
   });
 
+  it('replays concurrent identical publishes with one state change and audit fact', async () => {
+    const created = await api()
+      .post(adminPath('/v1/admin/promotions'))
+      .set(adminHeaders('manager'))
+      .send({ code: `m35-concurrent-replay-${suffix}` })
+      .expect(201);
+    const promotion = created.body as PromotionView;
+    const draft = await api()
+      .post(adminPath(`/v1/admin/promotions/${promotion.id}/versions`))
+      .set(adminHeaders('manager'))
+      .send(
+        versionInput({
+          benefit: { method: 'FIXED_VND', value: 2_500 },
+          bucket: 'ITEM',
+          expectedVersion: promotion.version,
+          label: 'concurrent-replay',
+        }),
+      )
+      .expect(201);
+    const version = draft.body as PromotionVersionView;
+    const body = {
+      confirmation_code: 'PUBLISH',
+      expected_promotion_version: 2,
+      version_id: version.id,
+    };
+    const operationKey = `m35:concurrent-replay:${suffix}`;
+
+    const responses = await Promise.all(
+      Array.from({ length: 2 }, () =>
+        api()
+          .post(adminPath(`/v1/admin/promotions/${promotion.id}/publish`))
+          .set({ ...adminHeaders('publisher'), 'Idempotency-Key': operationKey })
+          .send(body),
+      ),
+    );
+
+    expect(responses.map(({ status }) => status)).toEqual([200, 200]);
+    expect(responses[0].body).toEqual(responses[1].body);
+    expect(responses.map(({ headers }) => headers['idempotency-replayed']).sort()).toEqual([
+      'false',
+      'true',
+    ]);
+    expect(responses[0].body).toMatchObject({ status: 'ACTIVE', version: 3 });
+    expect(
+      await owner.promotionOperation.count({
+        where: { operationKey, storeId: BEAUTY_STORE_ID, targetId: promotion.id },
+      }),
+    ).toBe(1);
+    expect(
+      await owner.auditLog.count({
+        where: { action: 'promotion.published', targetId: promotion.id },
+      }),
+    ).toBe(1);
+    expect(
+      await owner.promotion.findUniqueOrThrow({
+        select: { activeVersionId: true, status: true, version: true },
+        where: { id: promotion.id },
+      }),
+    ).toEqual({ activeVersionId: version.id, status: 'ACTIVE', version: 3 });
+  });
+
   it('rejects a promotion target owned by another store without creating a version', async () => {
     const created = await api()
       .post(adminPath('/v1/admin/promotions'))
@@ -672,6 +814,172 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
       )
       .expect(404);
     expect(await owner.promotionVersion.count({ where: { promotionId: promotion.id } })).toBe(0);
+  });
+
+  it('does not recursively apply a parent CATEGORY target to a descendant category', async () => {
+    const code = `m35-parent-category-${suffix}`;
+    await createPublishedPromotion({
+      benefit: { method: 'FIXED_VND', value: 9_000 },
+      bucket: 'ITEM',
+      code,
+      stackableWith: [],
+      targets: [{ target_id: BEAUTY_ROOT_CATEGORY_ID, target_type: 'CATEGORY' }],
+    });
+
+    const quote = await api()
+      .post('/v1/pricing/quotes')
+      .set(adminHeaders('reader'))
+      .send({ coupon_code: null, items: [{ quantity: 1, sku_code: skuCode }], locale: 'vi' })
+      .expect(200);
+
+    expect(quote.body.applied_rules).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ code })]),
+    );
+    expect(quote.body.rejected_rules).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code, reason: 'TARGET_MISMATCH' })]),
+    );
+    expect(quote.body.lines[0].rejected_rules).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code, reason: 'TARGET_MISMATCH' })]),
+    );
+  });
+
+  it('limits concurrent multi-member claims to the remaining coupon quota', async () => {
+    const rule = await createPublishedPromotion({
+      benefit: { method: 'FIXED_VND', value: 5_000 },
+      bucket: 'COUPON',
+      code: `m35-quota-rule-${suffix}`,
+      stackableWith: [],
+    });
+    const code = `m35-quota-coupon-${suffix}`;
+    const coupon = await createActiveCoupon({
+      code,
+      promotionVersionId: rule.version.id,
+      totalClaimLimit: 3,
+    });
+
+    await api().put(`/v1/members/me/coupons/by-code/${code}`).set(memberHeaders(0)).expect(200);
+    const contenders = await Promise.all(
+      [1, 2, 3, 4, 5, 6].map((index) =>
+        api().put(`/v1/members/me/coupons/by-code/${code}`).set(memberHeaders(index)),
+      ),
+    );
+    const successful = contenders.filter(({ status }) => status === 200);
+    const rejected = contenders.filter(({ status }) => status === 409);
+
+    expect(successful).toHaveLength(2);
+    expect(rejected).toHaveLength(4);
+    for (const response of rejected) {
+      expect(response.body).toMatchObject({
+        code: 'CONFLICT',
+        details: { reason_code: 'COUPON_CLAIM_LIMIT' },
+      });
+    }
+    const factCount = await owner.memberCoupon.count({ where: { couponId: coupon.id } });
+    const persisted = await owner.coupon.findUniqueOrThrow({
+      select: { claimedCount: true, totalClaimLimit: true },
+      where: { id: coupon.id },
+    });
+    expect(factCount).toBe(3);
+    expect(persisted).toEqual({ claimedCount: factCount, totalClaimLimit: 3 });
+  });
+
+  it('isolates same-code coupon quotas and member rate buckets by store', async () => {
+    const ruleCode = `m35-isolated-rule-${suffix}`;
+    const couponIsolationCode = `m35-isolated-coupon-${suffix}`;
+    const [beautyRule, fashionRule] = await Promise.all([
+      createPublishedPromotion({
+        benefit: { method: 'FIXED_VND', value: 3_000 },
+        bucket: 'COUPON',
+        code: ruleCode,
+        stackableWith: [],
+      }),
+      createPublishedPromotion({
+        benefit: { method: 'FIXED_VND', value: 3_000 },
+        bucket: 'COUPON',
+        code: ruleCode,
+        stackableWith: [],
+        store: 'fashion',
+      }),
+    ]);
+    const [beautyCoupon, fashionCoupon] = await Promise.all([
+      createActiveCoupon({
+        code: couponIsolationCode,
+        promotionVersionId: beautyRule.version.id,
+        totalClaimLimit: 1,
+      }),
+      createActiveCoupon({
+        code: couponIsolationCode,
+        promotionVersionId: fashionRule.version.id,
+        store: 'fashion',
+        totalClaimLimit: 1,
+      }),
+    ]);
+
+    await api()
+      .put(`/v1/members/me/coupons/by-code/${couponIsolationCode}`)
+      .set(memberHeaders(0, 'beauty'))
+      .expect(200);
+    await api()
+      .put(`/v1/members/me/coupons/by-code/${couponIsolationCode}`)
+      .set(memberHeaders(1, 'beauty'))
+      .expect(409);
+    await api()
+      .put(`/v1/members/me/coupons/by-code/${couponIsolationCode}`)
+      .set(memberHeaders(0, 'fashion'))
+      .expect(200);
+    await api()
+      .put(`/v1/members/me/coupons/by-code/${couponIsolationCode}`)
+      .set(memberHeaders(1, 'fashion'))
+      .expect(409);
+
+    const coupons = await owner.coupon.findMany({
+      select: { claimedCount: true, id: true, storeId: true },
+      where: { id: { in: [beautyCoupon.id, fashionCoupon.id] } },
+    });
+    expect(coupons).toEqual(
+      expect.arrayContaining([
+        { claimedCount: 1, id: beautyCoupon.id, storeId: BEAUTY_STORE_ID },
+        { claimedCount: 1, id: fashionCoupon.id, storeId: FASHION_STORE_ID },
+      ]),
+    );
+    expect(
+      await owner.memberCoupon.groupBy({
+        by: ['storeId'],
+        _count: { _all: true },
+        where: { couponId: { in: [beautyCoupon.id, fashionCoupon.id] } },
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        { _count: { _all: 1 }, storeId: BEAUTY_STORE_ID },
+        { _count: { _all: 1 }, storeId: FASHION_STORE_ID },
+      ]),
+    );
+
+    const { SearchRateLimiter } = await import('../../apps/api/src/search/search-rate-limiter');
+    const limiter = new SearchRateLimiter({
+      ...config,
+      SEARCH_RATE_LIMIT_MAX_REQUESTS: 10,
+      SEARCH_RATE_LIMIT_WINDOW_SECONDS: 10,
+    });
+    const address = `m35-rate-${randomUUID()}`;
+    const memberA = randomUUID();
+    const memberB = randomUUID();
+    try {
+      for (let requestNumber = 0; requestNumber < 10; requestNumber += 1) {
+        await limiter.assertAllowed(address, 'coupon-claim', BEAUTY_STORE_ID, memberA);
+      }
+      await expect(
+        limiter.assertAllowed(address, 'coupon-claim', BEAUTY_STORE_ID, memberA),
+      ).rejects.toMatchObject({ status: 429 });
+      await expect(
+        limiter.assertAllowed(address, 'coupon-claim', FASHION_STORE_ID, memberA),
+      ).resolves.toBeUndefined();
+      await expect(
+        limiter.assertAllowed(address, 'coupon-claim', BEAUTY_STORE_ID, memberB),
+      ).resolves.toBeUndefined();
+    } finally {
+      limiter.onApplicationShutdown();
+    }
   });
 
   it('claims a limited coupon concurrently and prices trusted facts without side effects', async () => {
@@ -761,9 +1069,11 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
       .set(memberHeaders(0))
       .expect(200)
       .expect(({ body }) =>
-        expect(body.items).toEqual([
-          expect.objectContaining({ code: couponCode, status: 'DISABLED' }),
-        ]),
+        expect(body.items).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ code: couponCode, status: 'DISABLED' }),
+          ]),
+        ),
       );
     await api()
       .post('/v1/pricing/quotes')
@@ -794,7 +1104,7 @@ describe('M3.5 promotions, coupons and trusted pricing API', () => {
       .expect(401);
     await api()
       .post('/v1/pricing/quotes')
-      .set(memberHeaders(0, 'fashion-local'))
+      .set({ ...memberHeaders(0, 'beauty'), 'X-Store-Code': 'fashion-local' })
       .send({ coupon_code: couponCode, items: [{ quantity: 1, sku_code: skuCode }], locale: 'vi' })
       .expect(401);
 

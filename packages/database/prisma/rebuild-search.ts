@@ -42,27 +42,50 @@ async function main(): Promise<void> {
     storeCode: store.code,
     storeId: store.id,
   });
-  const result = await withStoreTransaction(database, context, async (transaction) => {
-    const beforeCount = await transaction.productSearchDocument.count({
-      where: { storeId: store.id },
-    });
-    const rebuilt = await rebuildStoreSearchProjection(transaction, store.id);
-    await transaction.auditLog.create({
-      data: {
-        action: 'search.projection.rebuilt',
-        actorId: actorId!,
-        actorType: 'ADMIN',
-        afterData: rebuilt,
-        beforeData: { document_count: beforeCount },
-        correlationId,
-        reason: 'Explicit per-store recovery command',
-        storeId: store.id,
-        targetId: store.id,
-        targetType: 'search_projection',
-      },
-    });
-    return rebuilt;
-  });
+  const result = await withStoreTransaction(
+    database,
+    context,
+    async (transaction) => {
+      const authorization = await transaction.$queryRaw<Array<{ authorized: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM admin_users AS admin
+        JOIN admin_store_roles AS assignment
+          ON assignment.admin_user_id = admin.id
+         AND assignment.store_id = ${store.id}::uuid
+        JOIN store_role_permissions AS permission
+          ON permission.store_id = assignment.store_id
+         AND permission.role_id = assignment.role_id
+        WHERE admin.id = ${actorId!}::uuid
+          AND admin.status = 'ACTIVE'
+          AND permission.permission_code = 'store.catalog.publish'
+      ) AS authorized
+    `;
+      if (!authorization[0]?.authorized) {
+        throw new Error('Active store administrator with catalog publish access is required');
+      }
+      const beforeCount = await transaction.productSearchDocument.count({
+        where: { storeId: store.id },
+      });
+      const rebuilt = await rebuildStoreSearchProjection(transaction, store.id);
+      await transaction.auditLog.create({
+        data: {
+          action: 'search.projection.rebuilt',
+          actorId: actorId!,
+          actorType: 'ADMIN',
+          afterData: rebuilt,
+          beforeData: { document_count: beforeCount },
+          correlationId,
+          reason: 'Explicit per-store recovery command',
+          storeId: store.id,
+          targetId: store.id,
+          targetType: 'search_projection',
+        },
+      });
+      return rebuilt;
+    },
+    { isolationLevel: 'RepeatableRead' },
+  );
   process.stdout.write(
     `${JSON.stringify({ correlation_id: correlationId, store: store.code, ...result })}\n`,
   );

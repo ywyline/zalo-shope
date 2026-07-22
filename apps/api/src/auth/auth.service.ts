@@ -313,11 +313,16 @@ export class AuthService {
     challengeToken: string;
     token: string;
   }): Promise<SessionResponse> {
-    const challenge = verifyJwt(input.challengeToken, {
-      audience: this.config.AUTH_JWT_AUDIENCE,
-      issuer: this.config.AUTH_JWT_ISSUER,
-      secret: this.config.AUTH_JWT_SECRET,
-    });
+    let challenge: ReturnType<typeof verifyJwt>;
+    try {
+      challenge = verifyJwt(input.challengeToken, {
+        audience: this.config.AUTH_JWT_AUDIENCE,
+        issuer: this.config.AUTH_JWT_ISSUER,
+        secret: this.config.AUTH_JWT_SECRET,
+      });
+    } catch {
+      throw new UnauthorizedException('Authentication failed');
+    }
     if (challenge.purpose !== 'admin_mfa') throw new UnauthorizedException('Authentication failed');
     const admin = await this.database.adminUser.findUnique({ where: { id: challenge.sub } });
     if (!admin?.mfaEnabled || !admin.mfaSecretCiphertext || admin.status !== 'ACTIVE') {
@@ -351,11 +356,16 @@ export class AuthService {
   }
 
   public verifyAccessToken(token: string): AccessClaims {
-    const claims = verifyJwt(token, {
-      audience: this.config.AUTH_JWT_AUDIENCE,
-      issuer: this.config.AUTH_JWT_ISSUER,
-      secret: this.config.AUTH_JWT_SECRET,
-    });
+    let claims: ReturnType<typeof verifyJwt>;
+    try {
+      claims = verifyJwt(token, {
+        audience: this.config.AUTH_JWT_AUDIENCE,
+        issuer: this.config.AUTH_JWT_ISSUER,
+        secret: this.config.AUTH_JWT_SECRET,
+      });
+    } catch {
+      throw new UnauthorizedException('Access token is invalid');
+    }
     if (
       (claims.actor_type !== 'member' && claims.actor_type !== 'admin') ||
       typeof claims.session_id !== 'string'

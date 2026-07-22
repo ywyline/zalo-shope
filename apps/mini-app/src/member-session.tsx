@@ -12,6 +12,17 @@ import { API_BASE, STORE_CODE } from './catalog-api';
 
 type SessionStatus = 'error' | 'loading' | 'ready';
 
+const runtimeEnvironment = import.meta.env as unknown as Record<string, string | undefined>;
+const testBridgeEnabled = runtimeEnvironment.VITE_ZALO_TEST_BRIDGE === 'true';
+
+type ZaloShopE2eBridge = { getAccessToken(): Promise<string> | string };
+
+declare global {
+  interface Window {
+    __ZALO_SHOP_E2E_BRIDGE__?: ZaloShopE2eBridge;
+  }
+}
+
 type MemberSession = {
   accessToken?: string;
   connect(): Promise<boolean>;
@@ -24,6 +35,13 @@ const SessionContext = createContext<MemberSession | undefined>(undefined);
 
 function isZaloRuntime(): boolean {
   const hostname = window.location.hostname.toLowerCase();
+  if (
+    testBridgeEnabled &&
+    (hostname === 'localhost' || hostname === '127.0.0.1') &&
+    window.__ZALO_SHOP_E2E_BRIDGE__
+  ) {
+    return true;
+  }
   return (
     /zalo/i.test(window.navigator.userAgent) ||
     'zmpGlobal' in window ||
@@ -32,6 +50,17 @@ function isZaloRuntime(): boolean {
     hostname === 'zdn.vn' ||
     hostname.endsWith('.zdn.vn')
   );
+}
+
+async function getZaloAccessToken(): Promise<string> {
+  const hostname = window.location.hostname.toLowerCase();
+  if (testBridgeEnabled && (hostname === 'localhost' || hostname === '127.0.0.1')) {
+    const bridge = window.__ZALO_SHOP_E2E_BRIDGE__;
+    if (!bridge) throw new Error('The test Zalo bridge is unavailable');
+    return String(await bridge.getAccessToken());
+  }
+  const { getAccessToken } = await import('zmp-sdk');
+  return String(await getAccessToken());
 }
 
 export function MemberSessionProvider({ children }: { children: React.ReactNode }): JSX.Element {
@@ -50,8 +79,7 @@ export function MemberSessionProvider({ children }: { children: React.ReactNode 
     setStatus('loading');
     try {
       if (!isZaloRuntime()) throw new Error('Zalo runtime is unavailable');
-      const { getAccessToken } = await import('zmp-sdk');
-      const token = String(await getAccessToken());
+      const token = await getZaloAccessToken();
       if (!token) throw new Error('Zalo access token is unavailable');
       const response = await fetch(`${API_BASE}/v1/auth/zalo/exchange`, {
         headers: { 'X-Store-Code': STORE_CODE, 'X-Zalo-Access-Token': token },

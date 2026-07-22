@@ -92,6 +92,10 @@ export function CartProvider({
       if (!session.accessToken || session.status !== 'ready') {
         throw new CartRequestError(401, 'AUTHENTICATION_REQUIRED');
       }
+      // A mutation supersedes any initial/refresh GET that is still in flight.
+      // Without advancing the generation, a slower read can restore stale
+      // selection or quantity state after the write has committed.
+      requestGeneration.current += 1;
       try {
         const next = await setCartItem(session.accessToken, locale, skuCode, input);
         commitCart(next, locale);
@@ -119,6 +123,7 @@ export function CartProvider({
       if (!session.accessToken || session.status !== 'ready') {
         throw new CartRequestError(401, 'AUTHENTICATION_REQUIRED');
       }
+      requestGeneration.current += 1;
       try {
         const next = await updateCartItem(session.accessToken, locale, itemId, input);
         commitCart(next, locale);
@@ -149,6 +154,7 @@ export function CartProvider({
       if (!session.accessToken || session.status !== 'ready') {
         throw new CartRequestError(401, 'AUTHENTICATION_REQUIRED');
       }
+      requestGeneration.current += 1;
       try {
         await deleteCartItem(session.accessToken, locale, itemId, expectedVersion);
         if (!(await refresh())) throw new CartRequestError(0, 'REFRESH_FAILED');

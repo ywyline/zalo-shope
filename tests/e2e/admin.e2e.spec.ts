@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Response } from '@playwright/test';
 import writeXlsxFile, { type SheetData } from 'write-excel-file/node';
 
 import { generateTotp } from '@zalo-shop/security';
@@ -13,15 +13,17 @@ const FASHION_STORE_ID = '10000000-0000-4000-8000-000000000002';
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 type E2eCredentials = { email: string; password: string; totpSecret: string };
+type E2eCredentialKind = 'full' | 'readonly';
 
-function credentials(): E2eCredentials {
-  const serialized = process.env.ZALO_SHOP_E2E_ADMIN;
-  if (!serialized) throw new Error('ZALO_SHOP_E2E_ADMIN was not prepared by global setup');
+function credentials(kind: E2eCredentialKind = 'full'): E2eCredentials {
+  const variable = kind === 'readonly' ? 'ZALO_SHOP_E2E_READONLY_ADMIN' : 'ZALO_SHOP_E2E_ADMIN';
+  const serialized = process.env[variable];
+  if (!serialized) throw new Error(`${variable} was not prepared by global setup`);
   return JSON.parse(serialized) as E2eCredentials;
 }
 
-async function signIn(page: Page): Promise<void> {
-  const account = credentials();
+async function signIn(page: Page, kind: E2eCredentialKind = 'full'): Promise<void> {
+  const account = credentials(kind);
   await page.goto(ADMIN_URL);
   await page.getByLabel('Language').selectOption('en');
   await page.getByLabel('Admin email').fill(account.email);
@@ -31,6 +33,79 @@ async function signIn(page: Page): Promise<void> {
   await page.getByLabel('6-digit code').fill(generateTotp(account.totpSecret));
   await page.getByRole('button', { name: 'Verify MFA' }).click();
   await expect(page.getByRole('heading', { name: 'Operations center' })).toBeVisible();
+}
+
+function inventoryRow(page: Page, skuCode: string) {
+  return page.locator('.inventory-table tbody tr').filter({ hasText: skuCode });
+}
+
+async function inventoryOnHand(page: Page, skuCode: string): Promise<number> {
+  const value = (await inventoryRow(page, skuCode).locator('td').nth(1).textContent())?.trim();
+  if (!value || !/^\d+$/.test(value)) {
+    throw new Error(`Could not read on-hand inventory for ${skuCode}`);
+  }
+  return Number(value);
+}
+
+async function prepareInventoryAdjustment(
+  page: Page,
+  skuCode: string,
+  delta: number,
+  note: string,
+) {
+  const row = inventoryRow(page, skuCode);
+  await expect(row).toHaveCount(1);
+  await row.getByRole('button', { name: 'Adjust stock' }).click();
+  const form = page.locator('form.inventory-dialog');
+  await expect(form).toContainText(skuCode);
+  await form.getByLabel('Quantity delta').fill(String(delta));
+  await form.getByLabel('Reason').selectOption('CYCLE_COUNT');
+  await form.getByLabel('Note without sensitive data').fill(note);
+  await form.getByLabel('ADJUST', { exact: true }).fill('ADJUST');
+  return form;
+}
+
+async function submitInventoryAdjustment(
+  page: Page,
+  skuCode: string,
+  delta: number,
+  note: string,
+): Promise<Response> {
+  const form = await prepareInventoryAdjustment(page, skuCode, delta, note);
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes('/v1/admin/inventory/adjustments'),
+  );
+  await form.getByRole('button', { name: 'Adjust stock' }).click();
+  return responsePromise;
+}
+
+async function createPromotionDraft(page: Page, promotionCode: string): Promise<void> {
+  await page.getByRole('button', { name: 'Promotions & pricing' }).click();
+  await expect(page.getByRole('heading', { name: 'Promotions & pricing' })).toBeVisible();
+  await page.getByRole('button', { name: 'New promotion' }).click();
+  const form = page.locator('form.promotion-dialog');
+  await form.getByLabel('Code').fill(promotionCode);
+  await form.getByLabel('Pricing bucket').selectOption('ITEM');
+  await form.getByLabel('Benefit method').selectOption('FIXED_VND');
+  await form.getByLabel('Benefit value').fill('1000');
+  await form
+    .getByLabel('Starts at')
+    .fill(new Date(Date.now() - 86_400_000).toISOString().slice(0, 16));
+  await form.getByLabel('Vietnamese name').fill(`Khuyen mai RBAC ${promotionCode.slice(-8)}`);
+  await form.getByLabel('English name').fill(`RBAC promotion ${promotionCode.slice(-8)}`);
+
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      /\/v1\/admin\/promotions\/[^/]+\/versions/.test(response.url()),
+  );
+  await form.getByRole('button', { name: 'Save draft' }).click();
+  expect((await responsePromise).ok()).toBe(true);
+  await expect(
+    page.locator('.promotion-table tbody tr').filter({ hasText: promotionCode }),
+  ).toContainText('Draft');
 }
 
 async function importWorkbook(): Promise<Buffer> {
@@ -124,7 +199,7 @@ test('admin catalog stays isolated, localized and supports the XLSX dry-run flow
   expect(browserErrors).toEqual([]);
 });
 
-test('inventory workbench stays isolated and validates an atomic initial-load file', async ({
+test('inventory workbench stays isolated, supports reversible adjustments and validates an atomic initial-load file', async ({
   page,
 }) => {
   const browserErrors: string[] = [];
@@ -148,6 +223,37 @@ test('inventory workbench stays isolated and validates an atomic initial-load fi
   await expect(page.getByText('beauty-local-primary-default', { exact: true })).toHaveCount(0);
 
   await storeSelect.selectOption(BEAUTY_STORE_ID);
+
+  const primarySku = 'beauty-local-primary-default';
+  const startingOnHand = await inventoryOnHand(page, primarySku);
+  let restoreAdjustment = false;
+  try {
+    const adjustment = await submitInventoryAdjustment(
+      page,
+      primarySku,
+      1,
+      'M3.7 browser reversible adjustment',
+    );
+    restoreAdjustment = adjustment.status() === 200;
+    expect(adjustment.status()).toBe(200);
+    await expect(inventoryRow(page, primarySku).locator('td').nth(1)).toHaveText(
+      String(startingOnHand + 1),
+    );
+  } finally {
+    if (restoreAdjustment) {
+      const restore = await submitInventoryAdjustment(
+        page,
+        primarySku,
+        -1,
+        'M3.7 browser reversible adjustment restore',
+      );
+      expect(restore.status()).toBe(200);
+      await expect(inventoryRow(page, primarySku).locator('td').nth(1)).toHaveText(
+        String(startingOnHand),
+      );
+    }
+  }
+
   await page.getByRole('button', { name: 'Initial stock import' }).click();
   await page.getByLabel('CSV / XLSX file').setInputFiles({
     buffer: Buffer.from(
@@ -172,6 +278,200 @@ test('inventory workbench stays isolated and validates an atomic initial-load fi
   }));
   expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
   expect(browserErrors).toEqual([]);
+});
+
+test('independent admin sessions reject a stale inventory adjustment and restore the winning delta', async ({
+  browser,
+}) => {
+  test.slow();
+  const contexts = await Promise.all([browser.newContext(), browser.newContext()]);
+  const pages = await Promise.all(contexts.map((context) => context.newPage()));
+  const pageA = pages[0]!;
+  const pageB = pages[1]!;
+  const primarySku = 'beauty-local-primary-default';
+  let startingOnHand: number | undefined;
+  let restorePage: Page | undefined;
+  let restoreDelta = 0;
+
+  try {
+    await Promise.all([signIn(pageA), signIn(pageB)]);
+    await Promise.all(
+      [pageA, pageB].map(async (page) => {
+        await page.getByRole('button', { name: 'Warehouses & inventory' }).click();
+        await expect(page.getByRole('heading', { name: 'Warehouses & inventory' })).toBeVisible();
+        await expect(inventoryRow(page, primarySku)).toHaveCount(1);
+      }),
+    );
+
+    startingOnHand = await inventoryOnHand(pageA, primarySku);
+    expect(await inventoryOnHand(pageB, primarySku)).toBe(startingOnHand);
+
+    const forms = await Promise.all(
+      [pageA, pageB].map((page, index) =>
+        prepareInventoryAdjustment(page, primarySku, 1, `M3.7 stale version session ${index + 1}`),
+      ),
+    );
+    const responsePromises = [pageA, pageB].map((page) =>
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === 'POST' &&
+          response.url().includes('/v1/admin/inventory/adjustments'),
+      ),
+    );
+    await Promise.all(
+      forms.map((form) => form.getByRole('button', { name: 'Adjust stock' }).click()),
+    );
+    const responses = await Promise.all(responsePromises);
+    const statuses = responses.map((response) => response.status());
+    restoreDelta = statuses.filter((status) => status === 200).length;
+    if (restoreDelta > 0) restorePage = [pageA, pageB][statuses.indexOf(200)];
+
+    expect([...statuses].sort((left, right) => left - right)).toEqual([200, 409]);
+    const conflictIndex = statuses.indexOf(409);
+    if (conflictIndex >= 0) {
+      const conflictMessage = [pageA, pageB][conflictIndex]!.locator(
+        '.inventory-workbench .workbench-message.error',
+      );
+      await expect(conflictMessage).toContainText('Inventory data could not be loaded or saved.');
+      await expect(conflictMessage.getByRole('button', { name: 'Retry' })).toBeVisible();
+    }
+    if (restorePage && startingOnHand !== undefined) {
+      await expect(inventoryRow(restorePage, primarySku).locator('td').nth(1)).toHaveText(
+        String(startingOnHand + restoreDelta),
+      );
+    }
+  } finally {
+    if (restorePage && startingOnHand !== undefined && restoreDelta > 0) {
+      const restore = await submitInventoryAdjustment(
+        restorePage,
+        primarySku,
+        -restoreDelta,
+        'M3.7 browser stale version restore',
+      );
+      expect(restore.status()).toBe(200);
+      await expect(inventoryRow(restorePage, primarySku).locator('td').nth(1)).toHaveText(
+        String(startingOnHand),
+      );
+    }
+    await Promise.all(contexts.map((context) => context.close()));
+  }
+});
+
+test('read-only admin receives recoverable 403 feedback for inventory and promotion writes', async ({
+  browser,
+}) => {
+  test.slow();
+  const fullContext = await browser.newContext();
+  const readonlyContext = await browser.newContext();
+  const fullPage = await fullContext.newPage();
+  const readonlyPage = await readonlyContext.newPage();
+  const promotionCode = `m37-browser-readonly-${randomUUID().slice(0, 8)}`;
+  const primarySku = 'beauty-local-primary-default';
+
+  try {
+    await signIn(fullPage, 'full');
+    await createPromotionDraft(fullPage, promotionCode);
+
+    await signIn(readonlyPage, 'readonly');
+    await readonlyPage.getByRole('button', { name: 'Warehouses & inventory' }).click();
+    await expect(
+      readonlyPage.getByRole('heading', { name: 'Warehouses & inventory' }),
+    ).toBeVisible();
+    const startingOnHand = await inventoryOnHand(readonlyPage, primarySku);
+    const deniedInventory = await submitInventoryAdjustment(
+      readonlyPage,
+      primarySku,
+      1,
+      'M3.7 read-only inventory denial',
+    );
+    expect(deniedInventory.status()).toBe(403);
+    const inventoryError = readonlyPage.locator('.inventory-workbench .workbench-message.error');
+    await expect(inventoryError).toContainText('Inventory data could not be loaded or saved.');
+    await expect(inventoryError.getByRole('button', { name: 'Retry' })).toBeVisible();
+    await readonlyPage
+      .locator('form.inventory-dialog')
+      .getByRole('button', { name: 'Cancel' })
+      .click();
+    const inventoryReload = readonlyPage.waitForResponse(
+      (response) =>
+        response.request().method() === 'GET' &&
+        response.url().includes('/v1/admin/inventory/balances'),
+    );
+    await inventoryError.getByRole('button', { name: 'Retry' }).click();
+    expect((await inventoryReload).status()).toBe(200);
+    await expect(inventoryRow(readonlyPage, primarySku).locator('td').nth(1)).toHaveText(
+      String(startingOnHand),
+    );
+
+    await readonlyPage.getByRole('button', { name: 'Promotions & pricing' }).click();
+    await expect(readonlyPage.getByRole('heading', { name: 'Promotions & pricing' })).toBeVisible();
+    const beautyRow = readonlyPage
+      .locator('.promotion-table tbody tr')
+      .filter({ hasText: promotionCode });
+    await expect(beautyRow).toContainText('Draft');
+
+    const fashionPromotions = readonlyPage.waitForResponse(
+      (response) =>
+        response.request().method() === 'GET' &&
+        response.url().includes('/v1/admin/promotions?') &&
+        response.url().includes(FASHION_STORE_ID),
+    );
+    await readonlyPage.getByLabel('Select store').selectOption(FASHION_STORE_ID);
+    expect((await fashionPromotions).status()).toBe(200);
+    await expect(readonlyPage.locator('.promotion-workbench')).toBeVisible();
+    await expect(
+      readonlyPage.locator('.promotion-table tbody tr').filter({ hasText: promotionCode }),
+    ).toHaveCount(0);
+
+    const beautyPromotions = readonlyPage.waitForResponse(
+      (response) =>
+        response.request().method() === 'GET' &&
+        response.url().includes('/v1/admin/promotions?') &&
+        response.url().includes(BEAUTY_STORE_ID),
+    );
+    await readonlyPage.getByLabel('Select store').selectOption(BEAUTY_STORE_ID);
+    expect((await beautyPromotions).status()).toBe(200);
+    await expect(readonlyPage.locator('.promotion-workbench')).toBeVisible();
+    await expect(
+      readonlyPage.locator('.promotion-table tbody tr').filter({ hasText: promotionCode }),
+    ).toContainText('Draft');
+
+    await readonlyPage
+      .locator('.promotion-table tbody tr')
+      .filter({ hasText: promotionCode })
+      .getByRole('button', { name: 'Publish' })
+      .click();
+    const confirmation = readonlyPage.getByRole('dialog');
+    await expect(
+      confirmation.getByRole('heading', { name: 'Confirm high-risk action' }),
+    ).toBeVisible();
+    await confirmation.getByLabel('PUBLISH').fill('PUBLISH');
+    const deniedPublish = readonlyPage.waitForResponse(
+      (response) => response.request().method() === 'POST' && response.url().includes('/publish'),
+    );
+    await confirmation.getByRole('button', { name: 'PUBLISH' }).click();
+    expect((await deniedPublish).status()).toBe(403);
+    const promotionError = readonlyPage.locator('.promotion-workbench .workbench-message.error');
+    await expect(promotionError).toContainText('Promotion data could not be loaded or saved.');
+    await expect(readonlyPage.getByRole('dialog')).toBeVisible();
+    await readonlyPage.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+    const promotionReload = readonlyPage.waitForResponse(
+      (response) =>
+        response.request().method() === 'GET' &&
+        response.url().includes('/v1/admin/promotions?') &&
+        response.url().includes(BEAUTY_STORE_ID),
+    );
+    await readonlyPage
+      .locator('.promotion-workbench')
+      .getByRole('button', { name: 'Reload' })
+      .click();
+    expect((await promotionReload).status()).toBe(200);
+    await expect(
+      readonlyPage.locator('.promotion-table tbody tr').filter({ hasText: promotionCode }),
+    ).toContainText('Draft');
+  } finally {
+    await Promise.all([fullContext.close(), readonlyContext.close()]);
+  }
 });
 
 test('promotion workbench creates and publishes a localized STORE rule with a live admin quote', async ({

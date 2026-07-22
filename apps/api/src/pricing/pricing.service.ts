@@ -281,7 +281,6 @@ export class PricingService {
     request: PricingQuoteRequest;
     storeCode: string;
   }) {
-    await this.rateLimiter.assertAllowed(input.address, 'pricing');
     const store = await this.resolveStore(input.storeCode);
     let member: MemberIdentity | undefined;
     let adminContext: Awaited<ReturnType<AdminService['authorize']>> | undefined;
@@ -305,6 +304,12 @@ export class PricingService {
         member = { id: claims.subjectId, storeId: claims.storeId };
       }
     }
+    await this.rateLimiter.assertAllowed(
+      input.address,
+      'pricing',
+      store.id,
+      member?.id ?? adminContext?.actor.id,
+    );
     const adminPreview = adminContext !== undefined;
     if (input.request.coupon_code !== null && !member && !adminPreview) {
       throw new UnauthorizedException('Coupon pricing requires member authentication');

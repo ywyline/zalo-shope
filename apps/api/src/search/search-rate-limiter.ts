@@ -20,12 +20,13 @@ export class SearchRateLimiter implements OnApplicationShutdown {
   public async assertAllowed(
     address: string,
     scope: 'coupon-claim' | 'pricing' | 'search' = 'search',
+    storeId = 'global',
+    subjectId?: string,
   ): Promise<void> {
-    const digest = createHmac('sha256', this.config.PII_HASH_KEY)
-      .update(address || 'unknown')
-      .digest('hex');
+    const identity = subjectId ? `subject:${subjectId}` : `address:${address || 'unknown'}`;
+    const digest = createHmac('sha256', this.config.PII_HASH_KEY).update(identity).digest('hex');
     const window = Math.floor(Date.now() / (this.config.SEARCH_RATE_LIMIT_WINDOW_SECONDS * 1_000));
-    const key = `${this.config.NODE_ENV}:${scope}-rate:${digest}:${window}`;
+    const key = `${this.config.NODE_ENV}:${storeId}:${scope}-rate:${digest}:${window}`;
     const count = await this.redis.eval(
       "local value = redis.call('INCR', KEYS[1]); if value == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end; return value",
       1,

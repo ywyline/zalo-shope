@@ -67,10 +67,17 @@ export class InventoryExpirationService implements OnModuleDestroy, OnModuleInit
             this.config.INVENTORY_EXPIRATION_BATCH_SIZE,
           );
           if (result.scanned > 0) {
-            this.logger.info(
-              { expired: result.expired, scanned: result.scanned, storeId: store.id },
-              'Expired due inventory reservations',
-            );
+            const context = {
+              expired: result.expired,
+              failed: result.failed,
+              scanned: result.scanned,
+              storeId: store.id,
+            };
+            if (result.failed > 0) {
+              this.logger.warn(context, 'Inventory reservation expiry batch completed with errors');
+            } else {
+              this.logger.info(context, 'Expired due inventory reservations');
+            }
           }
         } catch (error) {
           this.logger.error(

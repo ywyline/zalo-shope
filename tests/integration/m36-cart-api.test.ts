@@ -17,6 +17,16 @@ const BEAUTY_STORE_ID = '10000000-0000-4000-8000-000000000001';
 const BEAUTY_CATEGORY_ID = '12000000-0000-4000-8000-000000000001';
 const BEAUTY_TEMPLATE_ID = '14000000-0000-4000-8000-000000000001';
 const BEAUTY_WAREHOUSE_ID = '17000000-0000-4000-8000-000000000001';
+const FASHION_STORE_ID = '10000000-0000-4000-8000-000000000002';
+const FASHION_CATEGORY_ID = '12000000-0000-4000-8000-000000000002';
+const FASHION_TEMPLATE_ID = '14000000-0000-4000-8000-000000000002';
+const FASHION_WAREHOUSE_ID = '17000000-0000-4000-8000-000000000002';
+
+function assertSanitizedError(response: { body: unknown }, secrets: readonly string[]) {
+  const serialized = JSON.stringify(response.body);
+  for (const secret of secrets) expect(serialized).not.toContain(secret);
+  expect(serialized).not.toMatch(/\b(?:select|insert|update|delete|prisma|sqlstate|postgres)\b/i);
+}
 
 describe('M3.6 member cart API', () => {
   loadEnvironment({ path: '.env.test.example', quiet: true, override: true });
@@ -27,18 +37,29 @@ describe('M3.6 member cart API', () => {
   const fixture = {
     balanceIds: [randomUUID(), randomUUID()],
     brandId: randomUUID(),
+    fashionBalanceId: randomUUID(),
+    fashionBrandId: randomUUID(),
+    fashionMemberId: randomUUID(),
+    fashionProductId: randomUUID(),
+    fashionSkuId: randomUUID(),
     memberIds: [randomUUID(), randomUUID()],
     productId: randomUUID(),
     skuIds: [randomUUID(), randomUUID()],
   };
   const skuCodes = [`m36-cart-${suffix}`, `m36-cart-alt-${suffix}`];
+  const fashionSkuCode = `m36-fashion-cart-${suffix}`;
   const memberTokens: string[] = [];
+  let fashionToken: string;
   let app: INestApplication;
 
   const api = () => request(app.getHttpServer() as Server);
   const headers = (member = 0, storeCode = 'beauty-local') => ({
     Authorization: `Bearer ${memberTokens[member]}`,
     'X-Store-Code': storeCode,
+  });
+  const fashionHeaders = () => ({
+    Authorization: `Bearer ${fashionToken}`,
+    'X-Store-Code': 'fashion-local',
   });
 
   beforeAll(async () => {
@@ -120,6 +141,89 @@ describe('M3.6 member cart API', () => {
         operationType: 'IMPORT',
       },
     );
+    await owner.brand.create({
+      data: {
+        code: `m36-fashion-brand-${suffix}`,
+        id: fixture.fashionBrandId,
+        storeId: FASHION_STORE_ID,
+      },
+    });
+    await owner.product.create({
+      data: {
+        attributeTemplateVersionId: FASHION_TEMPLATE_ID,
+        brandId: fixture.fashionBrandId,
+        code: `m36-fashion-product-${suffix}`,
+        id: fixture.fashionProductId,
+        mainCategoryId: FASHION_CATEGORY_ID,
+        publishedAt: new Date(),
+        status: 'PUBLISHED',
+        storeId: FASHION_STORE_ID,
+      },
+    });
+    await owner.productLocalization.createMany({
+      data: [
+        {
+          locale: 'vi',
+          name: `San pham thoi trang ${suffix}`,
+          productId: fixture.fashionProductId,
+          storeId: FASHION_STORE_ID,
+        },
+        {
+          locale: 'en',
+          name: `Fashion cart product ${suffix}`,
+          productId: fixture.fashionProductId,
+          storeId: FASHION_STORE_ID,
+        },
+        {
+          locale: 'zh',
+          name: `服装购物车商品 ${suffix}`,
+          productId: fixture.fashionProductId,
+          storeId: FASHION_STORE_ID,
+        },
+      ],
+    });
+    await owner.sku.create({
+      data: {
+        code: fashionSkuCode,
+        id: fixture.fashionSkuId,
+        optionCombinationHash: '9'.repeat(64),
+        optionCombinationKey: 'm36-fashion=0',
+        productId: fixture.fashionProductId,
+        salePriceVnd: 210_000,
+        storeId: FASHION_STORE_ID,
+      },
+    });
+    await owner.inventoryBalance.create({
+      data: {
+        id: fixture.fashionBalanceId,
+        skuId: fixture.fashionSkuId,
+        storeId: FASHION_STORE_ID,
+        warehouseId: FASHION_WAREHOUSE_ID,
+      },
+    });
+    await adjustInventory(
+      runtime,
+      createStoreContext({
+        actor: { id: fixture.fashionMemberId, type: 'member' },
+        correlationId: randomUUID(),
+        locale: 'vi',
+        storeCode: 'fashion-local',
+        storeId: FASHION_STORE_ID,
+      }),
+      {
+        items: [
+          {
+            delta: 5,
+            expectedVersion: 1,
+            reasonCode: 'M36_TEST_INITIAL_STOCK',
+            skuId: fixture.fashionSkuId,
+            warehouseId: FASHION_WAREHOUSE_ID,
+          },
+        ],
+        operationKey: `m36-fashion-cart-stock-${suffix}`,
+        operationType: 'IMPORT',
+      },
+    );
     for (const memberId of fixture.memberIds) {
       await owner.member.create({ data: { id: memberId, storeId: BEAUTY_STORE_ID } });
       const session = await owner.memberSession.create({
@@ -149,6 +253,33 @@ describe('M3.6 member cart API', () => {
         ),
       );
     }
+    await owner.member.create({
+      data: { id: fixture.fashionMemberId, storeId: FASHION_STORE_ID },
+    });
+    const fashionSession = await owner.memberSession.create({
+      data: {
+        expiresAt: new Date(Date.now() + 3_600_000),
+        memberId: fixture.fashionMemberId,
+        refreshTokenHash: hashSensitive(randomUUID(), config.PII_HASH_KEY),
+        storeId: FASHION_STORE_ID,
+        tokenFamilyId: randomUUID(),
+      },
+    });
+    const fashionNow = Math.floor(Date.now() / 1_000);
+    fashionToken = signJwt(
+      {
+        actor_type: 'member',
+        aud: config.AUTH_JWT_AUDIENCE,
+        exp: fashionNow + 900,
+        iat: fashionNow,
+        iss: config.AUTH_JWT_ISSUER,
+        jti: randomUUID(),
+        session_id: fashionSession.id,
+        store_id: FASHION_STORE_ID,
+        sub: fixture.fashionMemberId,
+      },
+      config.AUTH_JWT_SECRET,
+    );
     const [{ AppModule }, { ApiExceptionFilter }] = await Promise.all([
       import('../../apps/api/src/app.module'),
       import('../../apps/api/src/api-exception.filter'),
@@ -170,35 +301,61 @@ describe('M3.6 member cart API', () => {
         select: { id: true },
         where: { memberId: { in: fixture.memberIds }, storeId: BEAUTY_STORE_ID },
       });
-      const fixtureCartIds = fixtureCarts.map(({ id }) => id);
+      const fashionCarts = await transaction.cart.findMany({
+        select: { id: true },
+        where: { memberId: fixture.fashionMemberId, storeId: FASHION_STORE_ID },
+      });
+      const fixtureCartIds = [...fixtureCarts, ...fashionCarts].map(({ id }) => id);
       if (fixtureCartIds.length > 0) {
         await transaction.cartItem.deleteMany({
-          where: { cartId: { in: fixtureCartIds }, storeId: BEAUTY_STORE_ID },
+          where: {
+            cartId: { in: fixtureCartIds },
+            storeId: { in: [BEAUTY_STORE_ID, FASHION_STORE_ID] },
+          },
         });
         await transaction.cart.deleteMany({
-          where: { id: { in: fixtureCartIds }, storeId: BEAUTY_STORE_ID },
+          where: {
+            id: { in: fixtureCartIds },
+            storeId: { in: [BEAUTY_STORE_ID, FASHION_STORE_ID] },
+          },
         });
       }
       await transaction.inventoryMovement.deleteMany({
-        where: { balanceId: { in: fixture.balanceIds } },
+        where: { balanceId: { in: [...fixture.balanceIds, fixture.fashionBalanceId] } },
       });
       await transaction.inventoryOperation.deleteMany({
         where: {
           operationKey: {
-            in: [`m36-cart-stock-${suffix}`, `m36-cart-stock-out-${suffix}`],
+            in: [
+              `m36-cart-stock-${suffix}`,
+              `m36-cart-stock-out-${suffix}`,
+              `m36-fashion-cart-stock-${suffix}`,
+            ],
           },
-          storeId: BEAUTY_STORE_ID,
+          storeId: { in: [BEAUTY_STORE_ID, FASHION_STORE_ID] },
         },
       });
-      await transaction.inventoryBalance.deleteMany({ where: { id: { in: fixture.balanceIds } } });
-      await transaction.sku.deleteMany({ where: { id: { in: fixture.skuIds } } });
-      await transaction.productLocalization.deleteMany({ where: { productId: fixture.productId } });
-      await transaction.product.deleteMany({ where: { id: fixture.productId } });
-      await transaction.brand.deleteMany({ where: { id: fixture.brandId } });
-      await transaction.memberSession.deleteMany({
-        where: { memberId: { in: fixture.memberIds } },
+      await transaction.inventoryBalance.deleteMany({
+        where: { id: { in: [...fixture.balanceIds, fixture.fashionBalanceId] } },
       });
-      await transaction.member.deleteMany({ where: { id: { in: fixture.memberIds } } });
+      await transaction.sku.deleteMany({
+        where: { id: { in: [...fixture.skuIds, fixture.fashionSkuId] } },
+      });
+      await transaction.productLocalization.deleteMany({
+        where: { productId: { in: [fixture.productId, fixture.fashionProductId] } },
+      });
+      await transaction.product.deleteMany({
+        where: { id: { in: [fixture.productId, fixture.fashionProductId] } },
+      });
+      await transaction.brand.deleteMany({
+        where: { id: { in: [fixture.brandId, fixture.fashionBrandId] } },
+      });
+      await transaction.memberSession.deleteMany({
+        where: { memberId: { in: [...fixture.memberIds, fixture.fashionMemberId] } },
+      });
+      await transaction.member.deleteMany({
+        where: { id: { in: [...fixture.memberIds, fixture.fashionMemberId] } },
+      });
     });
     await Promise.all([runtime.$disconnect(), owner.$disconnect()]);
   });
@@ -242,14 +399,38 @@ describe('M3.6 member cart API', () => {
     const other = await api().get('/v1/cart').set(headers(1)).expect(200);
     expect(other.body.items).toHaveLength(1);
     expect([1, 2]).toContain(other.body.items[0].quantity);
+    const otherItem = other.body.items[0];
+    const concurrentPatch = await Promise.all([
+      api()
+        .patch(`/v1/cart/items/${otherItem.id}`)
+        .set(headers(1))
+        .send({ expected_version: otherItem.version, quantity: 3 }),
+      api()
+        .patch(`/v1/cart/items/${otherItem.id}`)
+        .set(headers(1))
+        .send({ expected_version: otherItem.version, quantity: 4 }),
+    ]);
+    expect(concurrentPatch.map(({ status }) => status).sort()).toEqual([200, 409]);
+    const patchConflict = concurrentPatch.find(({ status }) => status === 409);
+    expect(patchConflict?.body).toMatchObject({
+      code: 'CONFLICT',
+      details: { reason_code: 'VERSION_CONFLICT' },
+    });
+    const afterConcurrentPatch = await api().get('/v1/cart').set(headers(1)).expect(200);
+    expect(afterConcurrentPatch.body.items[0]).toMatchObject({
+      quantity: expect.any(Number),
+      version: otherItem.version + 1,
+    });
+    expect([3, 4]).toContain(afterConcurrentPatch.body.items[0].quantity);
     await api()
       .patch(`/v1/cart/items/${item.id}`)
       .set(headers(1))
       .send({ expected_version: item.version, quantity: 3 })
       .expect(404);
-    const otherItem = other.body.items[0];
     await api()
-      .delete(`/v1/cart/items/${otherItem.id}?expected_version=${otherItem.version}`)
+      .delete(
+        `/v1/cart/items/${otherItem.id}?expected_version=${afterConcurrentPatch.body.items[0].version}`,
+      )
       .set(headers(1))
       .expect(204);
     await api()
@@ -259,6 +440,54 @@ describe('M3.6 member cart API', () => {
       .expect(({ body }) => {
         expect(body.items).toEqual([]);
       });
+  });
+
+  it('excludes unselected lines from the server quote', async () => {
+    const selected = await api()
+      .put(`/v1/cart/items/by-sku/${skuCodes[0]}`)
+      .set(headers(1))
+      .send({ quantity: 1 })
+      .expect(200);
+    const unselected = await api()
+      .put(`/v1/cart/items/by-sku/${skuCodes[1]}`)
+      .set(headers(1))
+      .send({ quantity: 2, selected: false })
+      .expect(200);
+    const cart = await api().get('/v1/cart').set(headers(1)).expect(200);
+    expect(cart.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sku_code: skuCodes[0], selected: true }),
+        expect.objectContaining({ sku_code: skuCodes[1], selected: false }),
+      ]),
+    );
+    expect(cart.body.quote).toMatchObject({
+      base_subtotal_vnd: 100_000,
+    });
+    expect(cart.body.quote.lines).toHaveLength(1);
+    expect(cart.body.quote.lines[0]).toMatchObject({
+      base_subtotal_vnd: 100_000,
+      quantity: 1,
+      sku_code: skuCodes[0],
+    });
+    expect(cart.body.quote.merchandise_payable_vnd).toBeLessThanOrEqual(100_000);
+    expect(cart.body.quote.lines.map((line: { sku_code: string }) => line.sku_code)).toEqual([
+      skuCodes[0],
+    ]);
+
+    const selectedItem = selected.body.items.find(
+      (item: { sku_code: string }) => item.sku_code === skuCodes[0],
+    );
+    const unselectedItem = unselected.body.items.find(
+      (item: { sku_code: string }) => item.sku_code === skuCodes[1],
+    );
+    await api()
+      .delete(`/v1/cart/items/${selectedItem.id}?expected_version=${selectedItem.version}`)
+      .set(headers(1))
+      .expect(204);
+    await api()
+      .delete(`/v1/cart/items/${unselectedItem.id}?expected_version=${unselectedItem.version}`)
+      .set(headers(1))
+      .expect(204);
   });
 
   it('enforces optimistic versions and reports stock, publication and price changes', async () => {
@@ -327,12 +556,87 @@ describe('M3.6 member cart API', () => {
     );
   });
 
-  it('rejects a token used with another store header', async () => {
-    await api().get('/v1/cart').set(headers(0, 'fashion-local')).expect(401);
-    await api()
-      .put(`/v1/cart/items/by-sku/${skuCodes[0]}`)
-      .set(headers(0, 'fashion-local'))
+  it('rejects reused and cross-store tokens and hides cart resource existence', async () => {
+    const beautyToken = memberTokens[0]!;
+    const fashionItemResponse = await api()
+      .put(`/v1/cart/items/by-sku/${fashionSkuCode}`)
+      .set(fashionHeaders())
       .send({ quantity: 1 })
+      .expect(200);
+    const fashionItem = fashionItemResponse.body.items.find(
+      (item: { sku_code: string }) => item.sku_code === fashionSkuCode,
+    );
+    expect(fashionItem).toBeDefined();
+
+    const reused = await Promise.all([
+      api().get('/v1/cart').set(headers(0)),
+      api().get('/v1/cart').set(headers(0)),
+    ]);
+    expect(reused.map(({ status }) => status)).toEqual([200, 200]);
+    for (const response of reused) {
+      assertSanitizedError(response, [beautyToken, '+84901234567']);
+    }
+
+    const mismatchedStore = await api()
+      .get('/v1/cart')
+      .set(headers(0, 'fashion-local'))
       .expect(401);
+    assertSanitizedError(mismatchedStore, [beautyToken, fashionSkuCode, fashionItem.id]);
+
+    const repeatedMismatchedStore = await api()
+      .get('/v1/cart')
+      .set(headers(0, 'fashion-local'))
+      .expect(401);
+    assertSanitizedError(repeatedMismatchedStore, [beautyToken, fashionSkuCode, fashionItem.id]);
+
+    const reverseMismatchedStore = await api()
+      .get('/v1/cart')
+      .set(fashionHeaders())
+      .set('X-Store-Code', 'beauty-local')
+      .expect(401);
+    assertSanitizedError(reverseMismatchedStore, [fashionToken, beautyToken]);
+
+    const duplicateBearer = await api()
+      .get('/v1/cart')
+      .set({
+        Authorization: `Bearer ${beautyToken} ${beautyToken}`,
+        'X-Store-Code': 'beauty-local',
+      })
+      .expect(401);
+    assertSanitizedError(duplicateBearer, [beautyToken, '+84901234567']);
+
+    const crossStoreSku = await api()
+      .put(`/v1/cart/items/by-sku/${fashionSkuCode}`)
+      .set(headers())
+      .send({ quantity: 1 })
+      .expect(404);
+    assertSanitizedError(crossStoreSku, [beautyToken, fashionSkuCode, '+84901234567']);
+
+    const crossStoreItem = await api()
+      .patch(`/v1/cart/items/${fashionItem.id}`)
+      .set(headers())
+      .send({ expected_version: fashionItem.version, quantity: 2 })
+      .expect(404);
+    assertSanitizedError(crossStoreItem, [beautyToken, fashionSkuCode, fashionItem.id]);
+
+    const [beautyAfterCrossStore, fashionAfterCrossStore] = await Promise.all([
+      api().get('/v1/cart').set(headers()).expect(200),
+      api().get('/v1/cart').set(fashionHeaders()).expect(200),
+    ]);
+    expect(
+      beautyAfterCrossStore.body.items.some(
+        (item: { sku_code: string }) => item.sku_code === fashionSkuCode,
+      ),
+    ).toBe(false);
+    expect(
+      fashionAfterCrossStore.body.items.find((item: { id: string }) => item.id === fashionItem.id),
+    ).toMatchObject({ quantity: fashionItem.quantity, version: fashionItem.version });
+
+    const sensitiveInput = await api()
+      .put(`/v1/cart/items/by-sku/${skuCodes[0]}`)
+      .set(headers())
+      .send({ phone: '+84901234567', quantity: 1 })
+      .expect(400);
+    assertSanitizedError(sensitiveInput, [beautyToken, '+84901234567']);
   });
 });

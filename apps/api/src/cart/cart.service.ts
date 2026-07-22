@@ -175,6 +175,14 @@ function isKnownPrismaError(error: unknown, code: string): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === code;
 }
 
+function isSerializationConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (error.code === 'P2034') return true;
+  // Raw FOR UPDATE statements are surfaced by Prisma as P2010 while retaining
+  // PostgreSQL's serialization SQLSTATE in the metadata.
+  return error.code === 'P2010' && (error.meta as { code?: unknown } | undefined)?.code === '40001';
+}
+
 function isProductPublished(item: LoadedCartItem): boolean {
   const product = item.sku.products;
   return (
@@ -746,8 +754,8 @@ export class CartService {
       try {
         return await operation();
       } catch (error) {
-        if (attempt >= 2 && !isKnownPrismaError(error, 'P2034')) throw this.mapPrismaError(error);
-        if (isKnownPrismaError(error, 'P2034')) {
+        if (attempt >= 2 && !isSerializationConflict(error)) throw this.mapPrismaError(error);
+        if (isSerializationConflict(error)) {
           if (attempt >= 2) throw this.mapPrismaError(error);
           continue;
         }
@@ -766,7 +774,7 @@ export class CartService {
 
   private mapPrismaError(error: unknown): Error {
     if (isKnownPrismaError(error, 'P2002')) return new ConflictException('CART_LINE_CONFLICT');
-    if (isKnownPrismaError(error, 'P2034')) return new ConflictException('VERSION_CONFLICT');
+    if (isSerializationConflict(error)) return new ConflictException('VERSION_CONFLICT');
     if (error instanceof Error) return error;
     return new Error('Cart transaction failed');
   }

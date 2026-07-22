@@ -2,6 +2,8 @@ import { normalizeSearchDocumentText, SUPPORTED_LOCALES, type Locale } from '@za
 
 import type { StoreTransaction } from './index';
 
+const SEARCH_REBUILD_BATCH_SIZE = 100;
+
 function localizedLabel(
   source: { labelEn: string | null; labelVi: string; labelZh: string | null },
   locale: Locale,
@@ -246,16 +248,29 @@ export async function rebuildStoreSearchProjection(
   transaction: StoreTransaction,
   storeId: string,
 ): Promise<{ documentCount: number; productCount: number }> {
-  const products = await transaction.product.findMany({
-    orderBy: { id: 'asc' },
-    select: { id: true },
-    where: { storeId },
-  });
   await transaction.productSearchDocument.deleteMany({ where: { storeId } });
-  const documentCount = await syncProductsSearchProjection(
-    transaction,
-    storeId,
-    products.map(({ id }) => id),
-  );
-  return { documentCount, productCount: products.length };
+  let cursor: string | undefined;
+  let documentCount = 0;
+  let productCount = 0;
+  for (;;) {
+    const products = await transaction.product.findMany({
+      orderBy: { id: 'asc' },
+      select: { id: true },
+      take: SEARCH_REBUILD_BATCH_SIZE,
+      where: {
+        storeId,
+        ...(cursor ? { id: { gt: cursor } } : {}),
+      },
+    });
+    if (products.length === 0) break;
+    documentCount += await syncProductsSearchProjection(
+      transaction,
+      storeId,
+      products.map(({ id }) => id),
+    );
+    productCount += products.length;
+    cursor = products[products.length - 1]!.id;
+    if (products.length < SEARCH_REBUILD_BATCH_SIZE) break;
+  }
+  return { documentCount, productCount };
 }

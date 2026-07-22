@@ -164,9 +164,9 @@ export class SearchService {
     query: ProductSearchQuery;
     storeCode: string;
   }) {
-    await this.rateLimiter.assertAllowed(input.address);
-    const member = await this.optionalMember(input.authorization, input.storeCode);
     const store = await this.resolveStore(input.storeCode);
+    const member = await this.optionalMember(input.authorization, input.storeCode);
+    await this.rateLimiter.assertAllowed(input.address, 'search', store.id);
     const normalized = input.query.q ? normalizeSearchText(input.query.q) : null;
     const sort: SearchSort = input.query.sort ?? (normalized ? 'relevance' : 'newest');
     const queryFingerprint = fingerprint(store.id, input.query, sort, normalized?.folded ?? null);
@@ -470,8 +470,8 @@ export class SearchService {
     query: SearchSuggestionQuery;
     storeCode: string;
   }) {
-    await this.rateLimiter.assertAllowed(input.address);
     const store = await this.resolveStore(input.storeCode);
+    await this.rateLimiter.assertAllowed(input.address, 'search', store.id);
     const normalized = normalizeSearchText(input.query.q);
     const context = createStoreContext({
       actor: { id: randomUUID(), type: 'member' },
@@ -547,8 +547,8 @@ export class SearchService {
   }
 
   public async facets(input: { address: string; query: SearchFacetQuery; storeCode: string }) {
-    await this.rateLimiter.assertAllowed(input.address);
     const store = await this.resolveStore(input.storeCode);
+    await this.rateLimiter.assertAllowed(input.address, 'search', store.id);
     const context = createStoreContext({
       actor: { id: randomUUID(), type: 'member' },
       correlationId: randomUUID(),

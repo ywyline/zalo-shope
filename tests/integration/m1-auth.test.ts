@@ -293,6 +293,9 @@ describe('M1 authentication integration', () => {
       subjectId: admin.id,
     });
     await expect(
+      service.verifyAdminMfa({ challengeToken: 'x'.repeat(32), token: generateTotp(TOTP_SECRET) }),
+    ).rejects.toMatchObject({ status: 401 });
+    await expect(
       service.authenticateAdminPassword({
         email: adminEmail,
         password: 'incorrect password value',

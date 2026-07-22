@@ -590,9 +590,31 @@ describe('M3.4 multilingual search, facets and member history', () => {
     const address = `m34-rate-${randomUUID()}`;
     try {
       for (let requestNumber = 0; requestNumber < 10; requestNumber += 1) {
-        await limiter.assertAllowed(address);
+        await limiter.assertAllowed(address, 'search', BEAUTY_STORE_ID);
       }
-      await expect(limiter.assertAllowed(address)).rejects.toMatchObject({ status: 429 });
+      await expect(limiter.assertAllowed(address, 'search', BEAUTY_STORE_ID)).rejects.toMatchObject(
+        { status: 429 },
+      );
+      // The same source may use the other independently isolated storefront.
+      await expect(
+        limiter.assertAllowed(address, 'search', FASHION_STORE_ID),
+      ).resolves.toBeUndefined();
+
+      const memberA = `m34-member-a-${randomUUID()}`;
+      const memberB = `m34-member-b-${randomUUID()}`;
+      for (let requestNumber = 0; requestNumber < 10; requestNumber += 1) {
+        await limiter.assertAllowed(address, 'coupon-claim', BEAUTY_STORE_ID, memberA);
+      }
+      await expect(
+        limiter.assertAllowed(address, 'coupon-claim', BEAUTY_STORE_ID, memberA),
+      ).rejects.toMatchObject({ status: 429 });
+      await expect(
+        limiter.assertAllowed(address, 'coupon-claim', BEAUTY_STORE_ID, memberB),
+      ).resolves.toBeUndefined();
+      // A member's coupon bucket must not consume its pricing bucket.
+      await expect(
+        limiter.assertAllowed(address, 'pricing', BEAUTY_STORE_ID, memberA),
+      ).resolves.toBeUndefined();
     } finally {
       limiter.onApplicationShutdown();
     }

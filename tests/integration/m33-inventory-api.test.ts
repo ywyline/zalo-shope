@@ -32,6 +32,7 @@ describe('M3.3 warehouse, inventory and reservation services', () => {
   const config = parseRuntimeConfig();
   const owner = new PrismaClient({ datasourceUrl: config.DATABASE_URL });
   const runtime = createRuntimePrismaClient(config.DATABASE_RUNTIME_URL);
+  const idempotencyAliasKeys: string[] = [];
   const fixture = {
     adminId: randomUUID(),
     balanceId: randomUUID(),
@@ -218,7 +219,11 @@ describe('M3.3 warehouse, inventory and reservation services', () => {
       });
       await transaction.inventoryOperation.deleteMany({
         where: {
-          OR: [{ adminId: fixture.adminId }, { id: { in: operationIds } }],
+          OR: [
+            { adminId: fixture.adminId },
+            { id: { in: operationIds } },
+            { operationKey: { in: idempotencyAliasKeys } },
+          ],
           storeId: BEAUTY_STORE_ID,
         },
       });
@@ -440,7 +445,7 @@ describe('M3.3 warehouse, inventory and reservation services', () => {
 
   it('prevents concurrent oversell and makes terminal reservation operations idempotent', async () => {
     const attempts = await Promise.allSettled(
-      [randomUUID(), randomUUID()].map((key) =>
+      Array.from({ length: 8 }, () => randomUUID()).map((key) =>
         reserveInventory(runtime, context(), {
           expiresAt: new Date(Date.now() + 60_000),
           items: [{ quantity: 4, skuId: fixture.skuId, warehouseId: BEAUTY_WAREHOUSE_ID }],
@@ -453,10 +458,10 @@ describe('M3.3 warehouse, inventory and reservation services', () => {
     const fulfilled = attempts.filter((item) => item.status === 'fulfilled');
     const rejected = attempts.filter((item) => item.status === 'rejected');
     expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    expect((rejected[0] as PromiseRejectedResult).reason).toEqual(
-      expect.objectContaining({ code: 'AVAILABLE_INSUFFICIENT' }),
-    );
+    expect(rejected).toHaveLength(7);
+    for (const attempt of rejected) {
+      expect(attempt.reason).toEqual(expect.objectContaining({ code: 'AVAILABLE_INSUFFICIENT' }));
+    }
     const successful = (
       fulfilled[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof reserveInventory>>>
     ).value;
@@ -479,6 +484,46 @@ describe('M3.3 warehouse, inventory and reservation services', () => {
     );
     expect(released).toMatchObject({ replayed: false, result: { status: 'RELEASED' } });
     expect(replayed).toMatchObject({ replayed: true, result: { status: 'RELEASED' } });
+
+    const aliasKey = `release-alias:${randomUUID()}`;
+    idempotencyAliasKeys.push(aliasKey);
+    const alias = await releaseReservation(
+      runtime,
+      context(),
+      successful.result.reservation_id,
+      aliasKey,
+    );
+    expect(alias).toMatchObject({
+      replayed: true,
+      result: { operation_id: released.result.operation_id, status: 'RELEASED' },
+    });
+    expect(
+      await owner.inventoryOperation.findUnique({
+        where: { storeId_operationKey: { operationKey: aliasKey, storeId: BEAUTY_STORE_ID } },
+      }),
+    ).toMatchObject({ operationType: 'RELEASE' });
+
+    const second = await reserveInventory(runtime, context(), {
+      expiresAt: new Date(Date.now() + 60_000),
+      items: [{ quantity: 1, skuId: fixture.skuId, warehouseId: BEAUTY_WAREHOUSE_ID }],
+      operationKey: `reserve:${randomUUID()}`,
+      sourceId: fixture.productId,
+      sourceType: 'M3_TEST',
+    });
+    await expect(
+      releaseReservation(runtime, context(), second.result.reservation_id, aliasKey),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<InventoryPrimitiveError>>({
+        code: 'IDEMPOTENCY_KEY_REUSED',
+      }),
+    );
+    await releaseReservation(
+      runtime,
+      context(),
+      second.result.reservation_id,
+      `release:${randomUUID()}`,
+    );
+
     await expect(
       consumeReservation(
         runtime,
@@ -494,22 +539,97 @@ describe('M3.3 warehouse, inventory and reservation services', () => {
   });
 
   it('expires due reservations from database facts without duplicating release movements', async () => {
+    const invalidReservationId = randomUUID();
+    const invalidReservationOperationId = randomUUID();
+    const invalidReservationKey = `invalid-expiry:${invalidReservationId}`;
+    await owner.inventoryOperation.create({
+      data: {
+        id: invalidReservationOperationId,
+        operationKey: invalidReservationKey,
+        operationType: 'RESERVE',
+        requestHash: 'f'.repeat(64),
+        resultSnapshot: {
+          items: [{ quantity: 99, sku_id: fixture.skuId, warehouse_id: BEAUTY_WAREHOUSE_ID }],
+          operation_id: invalidReservationOperationId,
+          reservation_id: invalidReservationId,
+          status: 'ACTIVE',
+          terminal_at: null,
+        },
+        sourceId: fixture.productId,
+        sourceType: 'M3_TEST',
+        storeId: BEAUTY_STORE_ID,
+      },
+    });
+    await owner.inventoryReservation.create({
+      data: {
+        createdAt: new Date(Date.now() - 86_500_000),
+        expiresAt: new Date(Date.now() - 86_400_000),
+        id: invalidReservationId,
+        items: {
+          create: {
+            quantity: 99,
+            skuId: fixture.skuId,
+            warehouseId: BEAUTY_WAREHOUSE_ID,
+          },
+        },
+        reservationKey: invalidReservationKey,
+        sourceId: fixture.productId,
+        sourceType: 'M3_TEST',
+        storeId: BEAUTY_STORE_ID,
+      },
+    });
     const reserved = await reserveInventory(runtime, context(), {
-      expiresAt: new Date(Date.now() + 80),
+      expiresAt: new Date(Date.now() + 250),
       items: [{ quantity: 2, skuId: fixture.skuId, warehouseId: BEAUTY_WAREHOUSE_ID }],
       operationKey: `reserve:${randomUUID()}`,
       sourceId: fixture.productId,
       sourceType: 'M3_TEST',
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const worker = new InventoryExpirationService(runtime, config);
+    await expect
+      .poll(
+        async () => {
+          const [row] = await owner.$queryRaw<Array<{ due: boolean }>>`
+            SELECT expires_at <= clock_timestamp() AS due
+            FROM inventory_reservations
+            WHERE id = ${reserved.result.reservation_id}::uuid
+          `;
+          return row?.due ?? false;
+        },
+        { interval: 25, timeout: 3_000 },
+      )
+      .toBe(true);
+    const worker = new InventoryExpirationService(runtime, {
+      ...config,
+      INVENTORY_EXPIRATION_BATCH_SIZE: 1,
+    });
+    await expect
+      .poll(
+        async () => {
+          await worker.runOnce();
+          return (
+            await owner.inventoryReservation.findUniqueOrThrow({
+              where: { id: reserved.result.reservation_id },
+            })
+          ).status;
+        },
+        { interval: 25, timeout: 5_000 },
+      )
+      .toBe('EXPIRED');
     await worker.runOnce();
-    await worker.runOnce();
+    await expect(
+      owner.inventoryReservation.findUniqueOrThrow({ where: { id: invalidReservationId } }),
+    ).resolves.toMatchObject({
+      expirationFailureCount: expect.any(Number),
+      lastExpirationErrorCode: expect.any(String),
+      status: 'ACTIVE',
+    });
     expect(
-      await owner.inventoryReservation.findUniqueOrThrow({
-        where: { id: reserved.result.reservation_id },
-      }),
-    ).toMatchObject({ status: 'EXPIRED' });
+      (
+        await owner.inventoryReservation.findUniqueOrThrow({
+          where: { id: invalidReservationId },
+        })
+      ).expirationFailureCount,
+    ).toBeGreaterThan(0);
     expect(
       await owner.inventoryMovement.count({
         where: {
