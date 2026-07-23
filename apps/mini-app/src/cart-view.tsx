@@ -55,14 +55,15 @@ function CartErrorPanel({ locale, onRetry }: { locale: Locale; onRetry: () => vo
 function SignInPanel({ locale }: { locale: Locale }): JSX.Element {
   const session = useMemberSession();
   const [connecting, setConnecting] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [attemptFailed, setAttemptFailed] = useState(false);
+  const failed = attemptFailed || session.failureCode !== undefined;
   const connect = async (): Promise<void> => {
     setConnecting(true);
-    setFailed(false);
+    setAttemptFailed(false);
     try {
-      if (!(await session.connect())) setFailed(true);
+      if (!(await session.connect())) setAttemptFailed(true);
     } catch {
-      setFailed(true);
+      setAttemptFailed(true);
     } finally {
       setConnecting(false);
     }
