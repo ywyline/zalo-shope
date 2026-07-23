@@ -250,15 +250,17 @@ function isUniqueConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
 }
 
-export async function adjustInventory(
-  client: PrismaClient,
+export type AdjustInventoryInput = Readonly<{
+  audit?: Readonly<{ action: string; targetType: string }>;
+  items: readonly InventoryAdjustmentItem[];
+  operationKey: string;
+  operationType?: 'ADJUST' | 'IMPORT' | 'RESTORE';
+}>;
+
+export async function adjustInventoryInTransaction(
+  transaction: StoreTransaction,
   context: StoreContext,
-  input: Readonly<{
-    audit?: Readonly<{ action: string; targetType: string }>;
-    items: readonly InventoryAdjustmentItem[];
-    operationKey: string;
-    operationType?: 'ADJUST' | 'IMPORT' | 'RESTORE';
-  }>,
+  input: AdjustInventoryInput,
 ): Promise<InventoryExecution<InventoryAdjustmentResult>> {
   assertOperationKey(input.operationKey);
   const items = [...input.items].sort(
@@ -271,146 +273,160 @@ export async function adjustInventory(
   }
   const operationType = input.operationType ?? 'ADJUST';
   const requestHash = inventoryRequestHash({ items, operationType });
+  const replayed = await existingOperation<InventoryAdjustmentResult>(
+    transaction,
+    context.storeId,
+    input.operationKey,
+    requestHash,
+  );
+  if (replayed) return { replayed: true, result: replayed };
 
-  try {
-    return await withStoreTransaction(client, context, async (transaction) => {
-      const replayed = await existingOperation<InventoryAdjustmentResult>(
-        transaction,
-        context.storeId,
-        input.operationKey,
-        requestHash,
-      );
-      if (replayed) return { replayed: true, result: replayed };
+  for (const item of items) {
+    await transaction.$executeRaw`
+      INSERT INTO inventory_balances (store_id, warehouse_id, sku_id, updated_at)
+      SELECT ${context.storeId}::uuid, w.id, s.id, now()
+      FROM warehouses w
+      JOIN skus s ON s.store_id = w.store_id
+      WHERE w.store_id = ${context.storeId}::uuid
+        AND w.id = ${item.warehouseId}::uuid
+        AND s.id = ${item.skuId}::uuid
+      ON CONFLICT (store_id, warehouse_id, sku_id) DO NOTHING
+    `;
+  }
 
-      for (const item of items) {
-        await transaction.$executeRaw`
-          INSERT INTO inventory_balances (store_id, warehouse_id, sku_id, updated_at)
-          SELECT ${context.storeId}::uuid, w.id, s.id, now()
-          FROM warehouses w
-          JOIN skus s ON s.store_id = w.store_id
-          WHERE w.store_id = ${context.storeId}::uuid
-            AND w.id = ${item.warehouseId}::uuid
-            AND s.id = ${item.skuId}::uuid
-          ON CONFLICT (store_id, warehouse_id, sku_id) DO NOTHING
-        `;
-      }
+  const targets = items.map(({ skuId, warehouseId }) => ({ skuId, warehouseId }));
+  const balances = await lockBalances(transaction, context.storeId, targets);
+  if (balances.length !== items.length) {
+    throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
+  }
+  const replayedAfterLock = await existingOperation<InventoryAdjustmentResult>(
+    transaction,
+    context.storeId,
+    input.operationKey,
+    requestHash,
+  );
+  if (replayedAfterLock) return { replayed: true, result: replayedAfterLock };
 
-      const targets = items.map(({ skuId, warehouseId }) => ({ skuId, warehouseId }));
-      const balances = await lockBalances(transaction, context.storeId, targets);
-      if (balances.length !== items.length) {
-        throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
-      }
-      const replayedAfterLock = await existingOperation<InventoryAdjustmentResult>(
-        transaction,
-        context.storeId,
-        input.operationKey,
-        requestHash,
-      );
-      if (replayedAfterLock) return { replayed: true, result: replayedAfterLock };
-
-      const operationId = randomUUID();
-      const createdAt = new Date();
-      const projected = items.map((item) => {
-        const current = balances.find((balance) => targetKey(balance) === targetKey(item));
-        if (!current) throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
-        try {
-          const mutation = applyInventoryCommand(
-            {
-              available: current.available,
-              onHand: current.on_hand,
-              reserved: current.reserved,
-              version: current.version,
-            },
-            { delta: item.delta, expectedVersion: item.expectedVersion, type: 'ADJUST' },
-          );
-          const movement: InventoryMovementSnapshot = {
-            balance_id: current.id,
-            created_at: createdAt.toISOString(),
-            id: randomUUID(),
-            movement_type: mutation.movement.type,
-            note: item.note ?? null,
-            on_hand_after: mutation.balance.onHand,
-            on_hand_before: current.on_hand,
-            on_hand_delta: mutation.movement.onHandDelta,
-            operation_id: operationId,
-            reason_code: item.reasonCode,
-            reserved_after: mutation.balance.reserved,
-            reserved_before: current.reserved,
-            reserved_delta: mutation.movement.reservedDelta,
-          };
-          return { current, item, movement, next: mutation.balance };
-        } catch (error) {
-          mapRuleError(error);
-        }
-      });
-      const result: InventoryAdjustmentResult = {
-        balances: projected.map(({ current, next }) => balanceSnapshot(current, next, createdAt)),
-        movements: projected.map(({ movement }) => movement),
-        operation_id: operationId,
-      };
-
-      await transaction.inventoryOperation.create({
-        data: {
-          adminId: context.actor.type === 'admin' ? context.actor.id : null,
-          id: operationId,
-          operationKey: input.operationKey,
-          operationType,
-          requestHash,
-          resultSnapshot: json(result),
-          storeId: context.storeId,
+  const operationId = randomUUID();
+  const createdAt = new Date();
+  const projected = items.map((item) => {
+    const current = balances.find((balance) => targetKey(balance) === targetKey(item));
+    if (!current) throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
+    try {
+      const mutation = applyInventoryCommand(
+        {
+          available: current.available,
+          onHand: current.on_hand,
+          reserved: current.reserved,
+          version: current.version,
         },
-      });
-      for (const { current, item, movement, next } of projected) {
-        const updated = await transaction.inventoryBalance.updateMany({
-          data: {
-            onHand: next.onHand,
-            reserved: next.reserved,
-            updatedAt: createdAt,
-            version: next.version,
-          },
-          where: { id: current.id, storeId: context.storeId, version: item.expectedVersion },
-        });
-        if (updated.count !== 1) throw new InventoryPrimitiveError('VERSION_CONFLICT');
-        await transaction.inventoryMovement.create({
-          data: {
-            balanceId: current.id,
-            createdAt,
-            id: movement.id,
-            movementType: movement.movement_type,
-            note: movement.note,
-            onHandAfter: movement.on_hand_after,
-            onHandBefore: movement.on_hand_before,
-            onHandDelta: movement.on_hand_delta,
-            operationId,
-            reasonCode: movement.reason_code,
-            reservedAfter: movement.reserved_after,
-            reservedBefore: movement.reserved_before,
-            reservedDelta: movement.reserved_delta,
-            storeId: context.storeId,
-          },
-        });
-      }
-      if (input.audit && context.actor.type === 'admin') {
-        await transaction.auditLog.create({
-          data: {
-            action: input.audit.action,
-            actorId: context.actor.id,
-            actorType: 'ADMIN',
-            afterData: json({
-              ...result,
-              movements: result.movements.map((movement) => ({ ...movement, note: null })),
-            }),
-            beforeData: json(projected.map(({ current }) => balanceSnapshot(current))),
-            correlationId: context.correlationId,
-            reason: context.accessReason,
-            storeId: context.storeId,
-            targetId: operationId,
-            targetType: input.audit.targetType,
-          },
-        });
-      }
-      return { replayed: false, result };
+        { delta: item.delta, expectedVersion: item.expectedVersion, type: 'ADJUST' },
+      );
+      const movement: InventoryMovementSnapshot = {
+        balance_id: current.id,
+        created_at: createdAt.toISOString(),
+        id: randomUUID(),
+        movement_type: mutation.movement.type,
+        note: item.note ?? null,
+        on_hand_after: mutation.balance.onHand,
+        on_hand_before: current.on_hand,
+        on_hand_delta: mutation.movement.onHandDelta,
+        operation_id: operationId,
+        reason_code: item.reasonCode,
+        reserved_after: mutation.balance.reserved,
+        reserved_before: current.reserved,
+        reserved_delta: mutation.movement.reservedDelta,
+      };
+      return { current, item, movement, next: mutation.balance };
+    } catch (error) {
+      mapRuleError(error);
+    }
+  });
+  const result: InventoryAdjustmentResult = {
+    balances: projected.map(({ current, next }) => balanceSnapshot(current, next, createdAt)),
+    movements: projected.map(({ movement }) => movement),
+    operation_id: operationId,
+  };
+
+  await transaction.inventoryOperation.create({
+    data: {
+      adminId: context.actor.type === 'admin' ? context.actor.id : null,
+      id: operationId,
+      operationKey: input.operationKey,
+      operationType,
+      requestHash,
+      resultSnapshot: json(result),
+      storeId: context.storeId,
+    },
+  });
+  for (const { current, item, movement, next } of projected) {
+    const updated = await transaction.inventoryBalance.updateMany({
+      data: {
+        onHand: next.onHand,
+        reserved: next.reserved,
+        updatedAt: createdAt,
+        version: next.version,
+      },
+      where: { id: current.id, storeId: context.storeId, version: item.expectedVersion },
     });
+    if (updated.count !== 1) throw new InventoryPrimitiveError('VERSION_CONFLICT');
+    await transaction.inventoryMovement.create({
+      data: {
+        balanceId: current.id,
+        createdAt,
+        id: movement.id,
+        movementType: movement.movement_type,
+        note: movement.note,
+        onHandAfter: movement.on_hand_after,
+        onHandBefore: movement.on_hand_before,
+        onHandDelta: movement.on_hand_delta,
+        operationId,
+        reasonCode: movement.reason_code,
+        reservedAfter: movement.reserved_after,
+        reservedBefore: movement.reserved_before,
+        reservedDelta: movement.reserved_delta,
+        storeId: context.storeId,
+      },
+    });
+  }
+  if (input.audit && context.actor.type === 'admin') {
+    await transaction.auditLog.create({
+      data: {
+        action: input.audit.action,
+        actorId: context.actor.id,
+        actorType: 'ADMIN',
+        afterData: json({
+          ...result,
+          movements: result.movements.map((movement) => ({ ...movement, note: null })),
+        }),
+        beforeData: json(projected.map(({ current }) => balanceSnapshot(current))),
+        correlationId: context.correlationId,
+        reason: context.accessReason,
+        storeId: context.storeId,
+        targetId: operationId,
+        targetType: input.audit.targetType,
+      },
+    });
+  }
+  return { replayed: false, result };
+}
+
+export async function adjustInventory(
+  client: PrismaClient,
+  context: StoreContext,
+  input: AdjustInventoryInput,
+): Promise<InventoryExecution<InventoryAdjustmentResult>> {
+  const items = [...input.items].sort(
+    (left, right) =>
+      left.warehouseId.localeCompare(right.warehouseId, 'en') ||
+      left.skuId.localeCompare(right.skuId, 'en'),
+  );
+  const operationType = input.operationType ?? 'ADJUST';
+  const requestHash = inventoryRequestHash({ items, operationType });
+  try {
+    return await withStoreTransaction(client, context, (transaction) =>
+      adjustInventoryInTransaction(transaction, context, input),
+    );
   } catch (error) {
     if (isUniqueConflict(error)) {
       return {
@@ -422,17 +438,21 @@ export async function adjustInventory(
   }
 }
 
-export async function reserveInventory(
-  client: PrismaClient,
-  context: StoreContext,
-  input: Readonly<{
-    expiresAt: Date;
-    items: readonly InventoryReservationItemInput[];
-    operationKey: string;
-    sourceId?: string;
-    sourceType?: string;
-  }>,
-): Promise<InventoryExecution<InventoryReservationResult>> {
+export type ReserveInventoryInput = Readonly<{
+  expiresAt: Date;
+  items: readonly InventoryReservationItemInput[];
+  operationKey: string;
+  sourceId?: string;
+  sourceType?: string;
+}>;
+
+type PreparedReservation = Readonly<{
+  normalizedItems: readonly InventoryReservationItemInput[];
+  requestHash: string;
+  targets: readonly Readonly<{ skuId: string; warehouseId: string }>[];
+}>;
+
+function prepareReservation(input: ReserveInventoryInput): PreparedReservation {
   assertOperationKey(input.operationKey);
   if (input.expiresAt.getTime() <= Date.now()) {
     throw new InventoryPrimitiveError('EXPIRATION_NOT_DUE');
@@ -460,139 +480,338 @@ export async function reserveInventory(
     sourceType: input.sourceType ?? null,
     type: 'RESERVE',
   });
+  return { normalizedItems, requestHash, targets };
+}
+
+async function reservePreparedInventory(
+  transaction: StoreTransaction,
+  context: StoreContext,
+  input: ReserveInventoryInput,
+  prepared: PreparedReservation,
+): Promise<InventoryExecution<InventoryReservationResult>> {
+  const { normalizedItems, requestHash, targets } = prepared;
+  const replayed = await existingOperation<InventoryReservationResult>(
+    transaction,
+    context.storeId,
+    input.operationKey,
+    requestHash,
+  );
+  if (replayed) return { replayed: true, result: replayed };
+  const balances = await lockBalances(transaction, context.storeId, targets);
+  if (balances.length !== targets.length) {
+    throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
+  }
+  const replayedAfterLock = await existingOperation<InventoryReservationResult>(
+    transaction,
+    context.storeId,
+    input.operationKey,
+    requestHash,
+  );
+  if (replayedAfterLock) return { replayed: true, result: replayedAfterLock };
+
+  const operationId = randomUUID();
+  const reservationId = randomUUID();
+  const createdAt = new Date();
+  const projected = normalizedItems.map((item) => {
+    const current = balances.find((balance) => targetKey(balance) === targetKey(item));
+    if (!current) throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
+    try {
+      const mutation = applyInventoryCommand(
+        {
+          available: current.available,
+          onHand: current.on_hand,
+          reserved: current.reserved,
+          version: current.version,
+        },
+        { expectedVersion: current.version, quantity: item.quantity, type: 'RESERVE' },
+      );
+      return {
+        current,
+        item,
+        movementId: randomUUID(),
+        next: mutation.balance,
+        reservationItemId: randomUUID(),
+      };
+    } catch (error) {
+      mapRuleError(error);
+    }
+  });
+  const result: InventoryReservationResult = {
+    expires_at: input.expiresAt.toISOString(),
+    items: normalizedItems.map((item) => ({
+      quantity: item.quantity,
+      sku_id: item.skuId,
+      warehouse_id: item.warehouseId,
+    })),
+    operation_id: operationId,
+    reservation_id: reservationId,
+    status: 'ACTIVE',
+    terminal_at: null,
+  };
+  await transaction.inventoryOperation.create({
+    data: {
+      id: operationId,
+      operationKey: input.operationKey,
+      operationType: 'RESERVE',
+      requestHash,
+      resultSnapshot: json(result),
+      sourceId: input.sourceId,
+      sourceType: input.sourceType,
+      storeId: context.storeId,
+    },
+  });
+  await transaction.inventoryReservation.create({
+    data: {
+      expiresAt: input.expiresAt,
+      id: reservationId,
+      reservationKey: input.operationKey,
+      sourceId: input.sourceId,
+      sourceType: input.sourceType,
+      storeId: context.storeId,
+    },
+  });
+  for (const item of projected) {
+    await transaction.inventoryReservationItem.create({
+      data: {
+        id: item.reservationItemId,
+        quantity: item.item.quantity,
+        reservationId,
+        skuId: item.item.skuId,
+        storeId: context.storeId,
+        warehouseId: item.item.warehouseId,
+      },
+    });
+    await transaction.inventoryBalance.update({
+      data: {
+        onHand: item.next.onHand,
+        reserved: item.next.reserved,
+        updatedAt: createdAt,
+        version: item.next.version,
+      },
+      where: { storeId_id: { id: item.current.id, storeId: context.storeId } },
+    });
+    await transaction.inventoryMovement.create({
+      data: {
+        balanceId: item.current.id,
+        createdAt,
+        id: item.movementId,
+        movementType: 'RESERVE',
+        onHandAfter: item.next.onHand,
+        onHandBefore: item.current.on_hand,
+        onHandDelta: 0,
+        operationId,
+        reasonCode: 'RESERVATION_CREATED',
+        reservationItemId: item.reservationItemId,
+        reservedAfter: item.next.reserved,
+        reservedBefore: item.current.reserved,
+        reservedDelta: item.item.quantity,
+        storeId: context.storeId,
+      },
+    });
+  }
+  return { replayed: false, result };
+}
+
+export function reserveInventoryInTransaction(
+  transaction: StoreTransaction,
+  context: StoreContext,
+  input: ReserveInventoryInput,
+): Promise<InventoryExecution<InventoryReservationResult>> {
+  return reservePreparedInventory(transaction, context, input, prepareReservation(input));
+}
+
+export async function reserveInventory(
+  client: PrismaClient,
+  context: StoreContext,
+  input: ReserveInventoryInput,
+): Promise<InventoryExecution<InventoryReservationResult>> {
+  const prepared = prepareReservation(input);
 
   try {
-    return await withStoreTransaction(client, context, async (transaction) => {
-      const replayed = await existingOperation<InventoryReservationResult>(
-        transaction,
-        context.storeId,
-        input.operationKey,
-        requestHash,
-      );
-      if (replayed) return { replayed: true, result: replayed };
-      const balances = await lockBalances(transaction, context.storeId, targets);
-      if (balances.length !== targets.length) {
-        throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
-      }
-      const replayedAfterLock = await existingOperation<InventoryReservationResult>(
-        transaction,
-        context.storeId,
-        input.operationKey,
-        requestHash,
-      );
-      if (replayedAfterLock) return { replayed: true, result: replayedAfterLock };
-
-      const operationId = randomUUID();
-      const reservationId = randomUUID();
-      const createdAt = new Date();
-      const projected = normalizedItems.map((item) => {
-        const current = balances.find((balance) => targetKey(balance) === targetKey(item));
-        if (!current) throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
-        try {
-          const mutation = applyInventoryCommand(
-            {
-              available: current.available,
-              onHand: current.on_hand,
-              reserved: current.reserved,
-              version: current.version,
-            },
-            { expectedVersion: current.version, quantity: item.quantity, type: 'RESERVE' },
-          );
-          return {
-            current,
-            item,
-            movementId: randomUUID(),
-            next: mutation.balance,
-            reservationItemId: randomUUID(),
-          };
-        } catch (error) {
-          mapRuleError(error);
-        }
-      });
-      const result: InventoryReservationResult = {
-        expires_at: input.expiresAt.toISOString(),
-        items: normalizedItems.map((item) => ({
-          quantity: item.quantity,
-          sku_id: item.skuId,
-          warehouse_id: item.warehouseId,
-        })),
-        operation_id: operationId,
-        reservation_id: reservationId,
-        status: 'ACTIVE',
-        terminal_at: null,
-      };
-      await transaction.inventoryOperation.create({
-        data: {
-          id: operationId,
-          operationKey: input.operationKey,
-          operationType: 'RESERVE',
-          requestHash,
-          resultSnapshot: json(result),
-          sourceId: input.sourceId,
-          sourceType: input.sourceType,
-          storeId: context.storeId,
-        },
-      });
-      await transaction.inventoryReservation.create({
-        data: {
-          expiresAt: input.expiresAt,
-          id: reservationId,
-          reservationKey: input.operationKey,
-          sourceId: input.sourceId,
-          sourceType: input.sourceType,
-          storeId: context.storeId,
-        },
-      });
-      for (const item of projected) {
-        await transaction.inventoryReservationItem.create({
-          data: {
-            id: item.reservationItemId,
-            quantity: item.item.quantity,
-            reservationId,
-            skuId: item.item.skuId,
-            storeId: context.storeId,
-            warehouseId: item.item.warehouseId,
-          },
-        });
-        await transaction.inventoryBalance.update({
-          data: {
-            onHand: item.next.onHand,
-            reserved: item.next.reserved,
-            updatedAt: createdAt,
-            version: item.next.version,
-          },
-          where: { storeId_id: { id: item.current.id, storeId: context.storeId } },
-        });
-        await transaction.inventoryMovement.create({
-          data: {
-            balanceId: item.current.id,
-            createdAt,
-            id: item.movementId,
-            movementType: 'RESERVE',
-            onHandAfter: item.next.onHand,
-            onHandBefore: item.current.on_hand,
-            onHandDelta: 0,
-            operationId,
-            reasonCode: 'RESERVATION_CREATED',
-            reservationItemId: item.reservationItemId,
-            reservedAfter: item.next.reserved,
-            reservedBefore: item.current.reserved,
-            reservedDelta: item.item.quantity,
-            storeId: context.storeId,
-          },
-        });
-      }
-      return { replayed: false, result };
-    });
+    return await withStoreTransaction(client, context, (transaction) =>
+      reservePreparedInventory(transaction, context, input, prepared),
+    );
   } catch (error) {
     if (isUniqueConflict(error)) {
       return {
         replayed: true,
-        result: await replayAfterConflict(client, context, input.operationKey, requestHash),
+        result: await replayAfterConflict(
+          client,
+          context,
+          input.operationKey,
+          prepared.requestHash,
+        ),
       };
     }
     throw error;
   }
+}
+
+async function terminalReservationInTransaction(
+  transaction: StoreTransaction,
+  context: StoreContext,
+  input: Readonly<{
+    event: 'CONSUME' | 'EXPIRE' | 'RELEASE';
+    operationKey: string;
+    reservationId: string;
+  }>,
+): Promise<InventoryExecution<InventoryReservationResult>> {
+  assertOperationKey(input.operationKey);
+  const requestHash = inventoryRequestHash(input);
+  const targetStatus = transitionInventoryReservation('ACTIVE', input.event);
+  const replayed = await existingOperation<InventoryReservationResult>(
+    transaction,
+    context.storeId,
+    input.operationKey,
+    requestHash,
+  );
+  if (replayed) return { replayed: true, result: replayed };
+  const reservations = await transaction.$queryRaw<
+    Array<{
+      expires_at: Date;
+      status: 'ACTIVE' | 'CONSUMED' | 'EXPIRED' | 'RELEASED';
+      terminal_operation_id: string | null;
+    }>
+  >`
+    SELECT status, expires_at, terminal_operation_id
+    FROM inventory_reservations
+    WHERE store_id = ${context.storeId}::uuid AND id = ${input.reservationId}::uuid
+    FOR UPDATE
+  `;
+  const reservation = reservations[0];
+  if (!reservation) throw new InventoryPrimitiveError('RESERVATION_NOT_FOUND');
+  if (reservation.status !== 'ACTIVE') {
+    if (reservation.status !== targetStatus) {
+      throw new InventoryPrimitiveError('RESERVATION_TRANSITION_INVALID');
+    }
+    if (!reservation.terminal_operation_id) {
+      throw new InventoryPrimitiveError('RESERVATION_TRANSITION_INVALID');
+    }
+    const terminal = await transaction.inventoryOperation.findUnique({
+      where: {
+        storeId_id: { id: reservation.terminal_operation_id, storeId: context.storeId },
+      },
+    });
+    if (!terminal) throw new InventoryPrimitiveError('RESERVATION_TRANSITION_INVALID');
+    const result = terminal.resultSnapshot as unknown as InventoryReservationResult;
+    // A same-state retry with a new key has no inventory effect, but the
+    // successful key must still be bound to this request. Otherwise that
+    // key could later mutate a different reservation in the same store.
+    await transaction.inventoryOperation.create({
+      data: {
+        id: randomUUID(),
+        operationKey: input.operationKey,
+        operationType: input.event,
+        requestHash,
+        resultSnapshot: json(result),
+        storeId: context.storeId,
+      },
+    });
+    return {
+      replayed: true,
+      result,
+    };
+  }
+  if (input.event === 'EXPIRE' && reservation.expires_at.getTime() > Date.now()) {
+    throw new InventoryPrimitiveError('EXPIRATION_NOT_DUE');
+  }
+  const reservationItems = await transaction.inventoryReservationItem.findMany({
+    orderBy: [{ warehouseId: 'asc' }, { skuId: 'asc' }],
+    where: { reservationId: input.reservationId, storeId: context.storeId },
+  });
+  const targets = reservationItems.map(({ skuId, warehouseId }) => ({ skuId, warehouseId }));
+  const balances = await lockBalances(transaction, context.storeId, targets);
+  if (balances.length !== targets.length) {
+    throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
+  }
+  const replayedAfterLock = await existingOperation<InventoryReservationResult>(
+    transaction,
+    context.storeId,
+    input.operationKey,
+    requestHash,
+  );
+  if (replayedAfterLock) return { replayed: true, result: replayedAfterLock };
+
+  const operationId = randomUUID();
+  const terminalAt = new Date();
+  const projected = reservationItems.map((item) => {
+    const current = balances.find((balance) => targetKey(balance) === targetKey(item));
+    if (!current) throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
+    try {
+      const mutation = applyInventoryCommand(
+        {
+          available: current.available,
+          onHand: current.on_hand,
+          reserved: current.reserved,
+          version: current.version,
+        },
+        {
+          expectedVersion: current.version,
+          quantity: item.quantity,
+          type: input.event === 'CONSUME' ? 'CONSUME' : 'RELEASE',
+        },
+      );
+      return { current, item, movementId: randomUUID(), next: mutation.balance };
+    } catch (error) {
+      mapRuleError(error);
+    }
+  });
+  const result: InventoryReservationResult = {
+    expires_at: reservation.expires_at.toISOString(),
+    items: reservationItems.map((item) => ({
+      quantity: item.quantity,
+      sku_id: item.skuId,
+      warehouse_id: item.warehouseId,
+    })),
+    operation_id: operationId,
+    reservation_id: input.reservationId,
+    status: targetStatus,
+    terminal_at: terminalAt.toISOString(),
+  };
+  await transaction.inventoryOperation.create({
+    data: {
+      id: operationId,
+      operationKey: input.operationKey,
+      operationType: input.event,
+      requestHash,
+      resultSnapshot: json(result),
+      storeId: context.storeId,
+    },
+  });
+  for (const item of projected) {
+    await transaction.inventoryBalance.update({
+      data: {
+        onHand: item.next.onHand,
+        reserved: item.next.reserved,
+        updatedAt: terminalAt,
+        version: item.next.version,
+      },
+      where: { storeId_id: { id: item.current.id, storeId: context.storeId } },
+    });
+    await transaction.inventoryMovement.create({
+      data: {
+        balanceId: item.current.id,
+        createdAt: terminalAt,
+        id: item.movementId,
+        movementType: input.event === 'CONSUME' ? 'CONSUME' : 'RELEASE',
+        onHandAfter: item.next.onHand,
+        onHandBefore: item.current.on_hand,
+        onHandDelta: item.next.onHand - item.current.on_hand,
+        operationId,
+        reasonCode: `RESERVATION_${targetStatus}`,
+        reservationItemId: item.item.id,
+        reservedAfter: item.next.reserved,
+        reservedBefore: item.current.reserved,
+        reservedDelta: item.next.reserved - item.current.reserved,
+        storeId: context.storeId,
+      },
+    });
+  }
+  await transaction.inventoryReservation.update({
+    data: { status: targetStatus, terminalAt, terminalOperationId: operationId },
+    where: { storeId_id: { id: input.reservationId, storeId: context.storeId } },
+  });
+  return { replayed: false, result };
 }
 
 async function terminalReservation(
@@ -604,165 +823,11 @@ async function terminalReservation(
     reservationId: string;
   }>,
 ): Promise<InventoryExecution<InventoryReservationResult>> {
-  assertOperationKey(input.operationKey);
   const requestHash = inventoryRequestHash(input);
-  const targetStatus = transitionInventoryReservation('ACTIVE', input.event);
   try {
-    return await withStoreTransaction(client, context, async (transaction) => {
-      const replayed = await existingOperation<InventoryReservationResult>(
-        transaction,
-        context.storeId,
-        input.operationKey,
-        requestHash,
-      );
-      if (replayed) return { replayed: true, result: replayed };
-      const reservations = await transaction.$queryRaw<
-        Array<{
-          expires_at: Date;
-          status: 'ACTIVE' | 'CONSUMED' | 'EXPIRED' | 'RELEASED';
-          terminal_operation_id: string | null;
-        }>
-      >`
-        SELECT status, expires_at, terminal_operation_id
-        FROM inventory_reservations
-        WHERE store_id = ${context.storeId}::uuid AND id = ${input.reservationId}::uuid
-        FOR UPDATE
-      `;
-      const reservation = reservations[0];
-      if (!reservation) throw new InventoryPrimitiveError('RESERVATION_NOT_FOUND');
-      if (reservation.status !== 'ACTIVE') {
-        if (reservation.status !== targetStatus) {
-          throw new InventoryPrimitiveError('RESERVATION_TRANSITION_INVALID');
-        }
-        if (!reservation.terminal_operation_id) {
-          throw new InventoryPrimitiveError('RESERVATION_TRANSITION_INVALID');
-        }
-        const terminal = await transaction.inventoryOperation.findUnique({
-          where: {
-            storeId_id: { id: reservation.terminal_operation_id, storeId: context.storeId },
-          },
-        });
-        if (!terminal) throw new InventoryPrimitiveError('RESERVATION_TRANSITION_INVALID');
-        const result = terminal.resultSnapshot as unknown as InventoryReservationResult;
-        // A same-state retry with a new key has no inventory effect, but the
-        // successful key must still be bound to this request. Otherwise that
-        // key could later mutate a different reservation in the same store.
-        await transaction.inventoryOperation.create({
-          data: {
-            id: randomUUID(),
-            operationKey: input.operationKey,
-            operationType: input.event,
-            requestHash,
-            resultSnapshot: json(result),
-            storeId: context.storeId,
-          },
-        });
-        return {
-          replayed: true,
-          result,
-        };
-      }
-      if (input.event === 'EXPIRE' && reservation.expires_at.getTime() > Date.now()) {
-        throw new InventoryPrimitiveError('EXPIRATION_NOT_DUE');
-      }
-      const reservationItems = await transaction.inventoryReservationItem.findMany({
-        orderBy: [{ warehouseId: 'asc' }, { skuId: 'asc' }],
-        where: { reservationId: input.reservationId, storeId: context.storeId },
-      });
-      const targets = reservationItems.map(({ skuId, warehouseId }) => ({ skuId, warehouseId }));
-      const balances = await lockBalances(transaction, context.storeId, targets);
-      if (balances.length !== targets.length) {
-        throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
-      }
-      const replayedAfterLock = await existingOperation<InventoryReservationResult>(
-        transaction,
-        context.storeId,
-        input.operationKey,
-        requestHash,
-      );
-      if (replayedAfterLock) return { replayed: true, result: replayedAfterLock };
-
-      const operationId = randomUUID();
-      const terminalAt = new Date();
-      const projected = reservationItems.map((item) => {
-        const current = balances.find((balance) => targetKey(balance) === targetKey(item));
-        if (!current) throw new InventoryPrimitiveError('INVENTORY_TARGET_NOT_FOUND');
-        try {
-          const mutation = applyInventoryCommand(
-            {
-              available: current.available,
-              onHand: current.on_hand,
-              reserved: current.reserved,
-              version: current.version,
-            },
-            {
-              expectedVersion: current.version,
-              quantity: item.quantity,
-              type: input.event === 'CONSUME' ? 'CONSUME' : 'RELEASE',
-            },
-          );
-          return { current, item, movementId: randomUUID(), next: mutation.balance };
-        } catch (error) {
-          mapRuleError(error);
-        }
-      });
-      const result: InventoryReservationResult = {
-        expires_at: reservation.expires_at.toISOString(),
-        items: reservationItems.map((item) => ({
-          quantity: item.quantity,
-          sku_id: item.skuId,
-          warehouse_id: item.warehouseId,
-        })),
-        operation_id: operationId,
-        reservation_id: input.reservationId,
-        status: targetStatus,
-        terminal_at: terminalAt.toISOString(),
-      };
-      await transaction.inventoryOperation.create({
-        data: {
-          id: operationId,
-          operationKey: input.operationKey,
-          operationType: input.event,
-          requestHash,
-          resultSnapshot: json(result),
-          storeId: context.storeId,
-        },
-      });
-      for (const item of projected) {
-        await transaction.inventoryBalance.update({
-          data: {
-            onHand: item.next.onHand,
-            reserved: item.next.reserved,
-            updatedAt: terminalAt,
-            version: item.next.version,
-          },
-          where: { storeId_id: { id: item.current.id, storeId: context.storeId } },
-        });
-        await transaction.inventoryMovement.create({
-          data: {
-            balanceId: item.current.id,
-            createdAt: terminalAt,
-            id: item.movementId,
-            movementType: input.event === 'CONSUME' ? 'CONSUME' : 'RELEASE',
-            onHandAfter: item.next.onHand,
-            onHandBefore: item.current.on_hand,
-            onHandDelta: item.next.onHand - item.current.on_hand,
-            operationId,
-            reasonCode: `RESERVATION_${targetStatus}`,
-            reservationItemId: item.item.id,
-            reservedAfter: item.next.reserved,
-            reservedBefore: item.current.reserved,
-            reservedDelta: item.next.reserved - item.current.reserved,
-            storeId: context.storeId,
-          },
-        });
-      }
-      await transaction.inventoryReservation.update({
-        data: { status: targetStatus, terminalAt, terminalOperationId: operationId },
-        where: { storeId_id: { id: input.reservationId, storeId: context.storeId } },
-      });
-      return { replayed: false, result };
-    });
+    return await withStoreTransaction(client, context, (transaction) =>
+      terminalReservationInTransaction(transaction, context, input),
+    );
   } catch (error) {
     if (isUniqueConflict(error)) {
       return {
@@ -772,6 +837,32 @@ async function terminalReservation(
     }
     throw error;
   }
+}
+
+export function releaseReservationInTransaction(
+  transaction: StoreTransaction,
+  context: StoreContext,
+  reservationId: string,
+  operationKey: string,
+): Promise<InventoryExecution<InventoryReservationResult>> {
+  return terminalReservationInTransaction(transaction, context, {
+    event: 'RELEASE',
+    operationKey,
+    reservationId,
+  });
+}
+
+export function consumeReservationInTransaction(
+  transaction: StoreTransaction,
+  context: StoreContext,
+  reservationId: string,
+  operationKey: string,
+): Promise<InventoryExecution<InventoryReservationResult>> {
+  return terminalReservationInTransaction(transaction, context, {
+    event: 'CONSUME',
+    operationKey,
+    reservationId,
+  });
 }
 
 export function releaseReservation(

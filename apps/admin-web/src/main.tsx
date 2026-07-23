@@ -5,12 +5,23 @@ import '@zalo-shop/design-tokens/theme.css';
 import './styles.css';
 import { CatalogWorkbench } from './catalog-workbench';
 import { ContentEditor } from './content-editor';
+import { DeliveryWorkbench } from './delivery-workbench';
 import { InventoryWorkbench } from './inventory-workbench';
+import { OrderWorkbench } from './order-workbench';
 import { PromotionWorkbench } from './promotion-workbench';
 
 type Locale = 'en' | 'vi' | 'zh';
 type Phase = 'dashboard' | 'mfa' | 'password';
-type Tab = 'audit' | 'catalog' | 'content' | 'inventory' | 'overview' | 'promotions' | 'roles';
+type Tab =
+  | 'audit'
+  | 'catalog'
+  | 'content'
+  | 'delivery'
+  | 'inventory'
+  | 'orders'
+  | 'overview'
+  | 'promotions'
+  | 'roles';
 type Store = { code: string; default_locale: Locale; id: string };
 type Role = { code: string; id: string; name: string; permissions?: Array<unknown> };
 type Audit = { action: string; actorId: string; createdAt: string; id: string; reason?: string };
@@ -23,6 +34,7 @@ const labels = {
     catalog: 'Sản phẩm & tuân thủ',
     create: 'Tạo vai trò',
     content: 'Trang & nội dung',
+    delivery: 'Giao hàng & COD',
     email: 'Email quản trị',
     empty: 'Chưa có dữ liệu trong phạm vi này.',
     errorAuth: 'Thông tin đăng nhập hoặc mã xác thực không hợp lệ.',
@@ -34,6 +46,7 @@ const labels = {
     mfa: 'Mã xác thực 6 số',
     next: 'Tiếp tục',
     overview: 'Tổng quan',
+    orders: 'Đơn hàng & COD',
     password: 'Mật khẩu',
     promotions: 'Khuyến mãi & giá',
     reason: 'Lý do truy cập chéo cửa hàng',
@@ -52,6 +65,7 @@ const labels = {
     catalog: '商品与合规',
     create: '创建角色',
     content: '页面与装修',
+    delivery: '配送与 COD',
     email: '管理员邮箱',
     empty: '当前范围暂无数据。',
     errorAuth: '登录信息或验证码无效。',
@@ -63,6 +77,7 @@ const labels = {
     mfa: '6 位验证码',
     next: '继续',
     overview: '概览',
+    orders: '订单与 COD',
     password: '密码',
     promotions: '促销与价格',
     reason: '跨商城访问原因',
@@ -81,6 +96,7 @@ const labels = {
     catalog: 'Catalog & compliance',
     create: 'Create role',
     content: 'Pages & content',
+    delivery: 'Delivery & COD',
     email: 'Admin email',
     empty: 'No data exists in this scope yet.',
     errorAuth: 'The credentials or verification code are invalid.',
@@ -92,6 +108,7 @@ const labels = {
     mfa: '6-digit code',
     next: 'Continue',
     overview: 'Overview',
+    orders: 'Orders & COD',
     password: 'Password',
     promotions: 'Promotions & pricing',
     reason: 'Cross-store access reason',
@@ -373,6 +390,12 @@ function AdminApp(): JSX.Element {
           >
             % <span>{t.promotions}</span>
           </button>
+          <button className={tab === 'orders' ? 'active' : ''} onClick={() => setTab('orders')}>
+            ≣ <span>{t.orders}</span>
+          </button>
+          <button className={tab === 'delivery' ? 'active' : ''} onClick={() => setTab('delivery')}>
+            ⇢ <span>{t.delivery}</span>
+          </button>
           <button
             className={tab === 'roles' ? 'active' : ''}
             onClick={() => {
@@ -431,7 +454,9 @@ function AdminApp(): JSX.Element {
                   tab !== 'content' &&
                   tab !== 'catalog' &&
                   tab !== 'inventory' &&
-                  tab !== 'promotions'
+                  tab !== 'promotions' &&
+                  tab !== 'orders' &&
+                  tab !== 'delivery'
                 ) {
                   void loadScope(next);
                 }
@@ -526,6 +551,24 @@ function AdminApp(): JSX.Element {
         )}
         {tab === 'promotions' && store && (
           <PromotionWorkbench
+            headers={() => authenticatedHeaders(store)}
+            key={store.id}
+            locale={locale}
+            request={api}
+            store={store}
+          />
+        )}
+        {tab === 'orders' && store && (
+          <OrderWorkbench
+            headers={() => authenticatedHeaders(store)}
+            key={store.id}
+            locale={locale}
+            request={api}
+            store={store}
+          />
+        )}
+        {tab === 'delivery' && store && (
+          <DeliveryWorkbench
             headers={() => authenticatedHeaders(store)}
             key={store.id}
             locale={locale}

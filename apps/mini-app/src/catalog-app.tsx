@@ -29,6 +29,9 @@ import { CartView, cartQuantity } from './cart-view';
 import { IdentityPanel } from './identity-panel';
 import { useMemberSession } from './member-session';
 import { SearchView } from './search-view';
+import { AddressView } from './address-view';
+import { CheckoutView } from './checkout-view';
+import { OrderDetailView, OrderResultView, OrdersView } from './orders-view';
 
 type Loadable<T> = { data: T; status: 'ready' } | { status: 'error' } | { status: 'loading' };
 
@@ -798,20 +801,6 @@ function ProductDetailView({ locale }: { locale: Locale }): JSX.Element {
   );
 }
 
-function UnavailableView({ locale, title }: { locale: Locale; title: MessageKey }): JSX.Element {
-  return (
-    <div className="page-view unavailable-view">
-      <span aria-hidden="true">◇</span>
-      <p className="section-kicker">M3</p>
-      <h1>{text(locale, title)}</h1>
-      <p>{text(locale, 'catalog.m3Notice')}</p>
-      <Link className="button-primary" to="/products">
-        {text(locale, 'catalog.explore')}
-      </Link>
-    </div>
-  );
-}
-
 function ScrollToTop(): null {
   const location = useLocation();
   useEffect(() => {
@@ -882,10 +871,11 @@ function CatalogExperience({
           <Route element={<ProductDetailView locale={locale} />} path="/products/:productCode" />
           <Route element={<SearchView locale={locale} />} path="/search" />
           <Route element={<CartView locale={locale} />} path="/cart" />
-          <Route
-            element={<UnavailableView locale={locale} title="catalog.orders" />}
-            path="/orders"
-          />
+          <Route element={<CheckoutView locale={locale} />} path="/checkout" />
+          <Route element={<AddressView locale={locale} />} path="/addresses" />
+          <Route element={<OrdersView locale={locale} />} path="/orders" />
+          <Route element={<OrderDetailView locale={locale} />} path="/orders/:orderId" />
+          <Route element={<OrderResultView locale={locale} />} path="/order-result/:orderId" />
           <Route
             element={
               <div className="page-view">

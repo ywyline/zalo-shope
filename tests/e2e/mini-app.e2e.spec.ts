@@ -303,6 +303,100 @@ test('authenticated buyer cart is isolated, localized and revalidates mutable fa
   expect(browserErrors).toEqual([]);
 });
 
+test('authenticated buyer creates an address, places one idempotent COD order and cancels it', async ({
+  page,
+}, testInfo) => {
+  const browserErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+  await installZaloBridge(page, testInfo.project.name);
+  const store = storefronts[0];
+
+  await page.goto(`${store.url}#/addresses`);
+  await expect(page.getByRole('heading', { name: 'Địa chỉ nhận hàng' })).toBeVisible();
+  await page.getByRole('button', { name: /Thêm địa chỉ/ }).click();
+  await page.getByLabel('Người nhận').fill('Nguyen E2E');
+  await page.getByLabel('Số điện thoại').fill('+84901234567');
+  const areaSelectors = page.locator('.address-form select');
+  await areaSelectors.nth(0).selectOption('hcm');
+  await areaSelectors.nth(1).selectOption('quan-1');
+  await areaSelectors.nth(2).selectOption('ben-nghe');
+  await page.getByLabel('Địa chỉ chi tiết').fill('12 Le Loi');
+  await page.getByLabel('Nhãn địa chỉ').fill('Nhà');
+  await page.getByLabel('Địa chỉ mặc định').check();
+  const addressResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' && response.url().includes('/v1/member/addresses'),
+  );
+  await page.getByRole('button', { name: 'Lưu địa chỉ' }).click();
+  expect((await addressResponse).status()).toBe(201);
+  await expect(page.getByText('Nguyen E2E', { exact: true })).toBeVisible();
+
+  await page.goto(`${store.url}#/products/${store.productCode}`);
+  const addResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'PUT' &&
+      response.url().includes(`/v1/cart/items/by-sku/${store.primarySku}`),
+  );
+  await page.getByRole('button', { name: 'Thêm vào giỏ', exact: true }).click();
+  expect((await addResponse).ok()).toBe(true);
+  await page.goto(`${store.url}#/cart`);
+  const quoteResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' && response.url().includes('/v1/checkout/quote'),
+  );
+  await page.getByRole('link', { name: 'Tiếp tục thanh toán' }).click();
+  const quoteResponse = await quoteResponsePromise;
+  expect(quoteResponse.ok()).toBe(true);
+  const quote = (await quoteResponse.json()) as { order_payable_vnd: number };
+  expect(quote.order_payable_vnd).toBeGreaterThan(0);
+  await expect(page.getByRole('heading', { name: 'Xác nhận đơn hàng' })).toBeVisible();
+  await expect(page.getByText('Thanh toán khi nhận hàng', { exact: true })).toBeVisible();
+  await expect(page.locator('.checkout-total')).toContainText(
+    new Intl.NumberFormat('vi-VN').format(quote.order_payable_vnd),
+  );
+
+  const orderResponses: Array<{ id: string; status: number }> = [];
+  page.on('response', async (response) => {
+    if (response.request().method() === 'POST' && response.url().includes('/v1/checkout/orders')) {
+      const body = (await response.json()) as { id?: string };
+      if (body.id) orderResponses.push({ id: body.id, status: response.status() });
+    }
+  });
+  const placeOrder = page.getByRole('button', { name: 'Đặt hàng COD' });
+  await placeOrder.evaluate((element) => {
+    (element as HTMLButtonElement).click();
+    (element as HTMLButtonElement).click();
+  });
+  await expect(page.getByRole('heading', { name: 'Đặt hàng thành công' })).toBeVisible();
+  await expect.poll(() => orderResponses.length).toBeGreaterThan(0);
+  expect(new Set(orderResponses.map(({ id }) => id)).size).toBe(1);
+  expect(orderResponses.every(({ status }) => status === 201)).toBe(true);
+
+  await page.getByRole('link', { name: 'Xem đơn hàng' }).click();
+  await expect(page.locator('.order-status')).toHaveText('Chờ xác nhận');
+  await page.getByLabel('Lý do hủy').fill('Kiểm tra hủy đơn E2E');
+  const cancelResponse = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.url().includes('/cancel'),
+  );
+  await page.getByRole('button', { name: 'Hủy đơn hàng' }).click();
+  expect((await cancelResponse).status()).toBe(201);
+  await expect(page.locator('.order-status')).toHaveText('Đã hủy');
+
+  await page.goto(`${store.url}#/orders`);
+  await expect(page.getByRole('heading', { name: 'Đơn hàng của tôi' })).toBeVisible();
+  await expect(page.locator('.order-card')).toHaveCount(1);
+  await expect(page.locator('.order-card')).toContainText('Đã hủy');
+  await page.getByRole('button', { name: 'ZH', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '我的订单' })).toBeVisible();
+  await page.getByRole('button', { name: 'EN', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'My orders' })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  expect(browserErrors).toEqual([]);
+});
+
 test('buyer cart keeps an explicit recoverable Zalo sign-in state on web preview', async ({
   page,
 }) => {

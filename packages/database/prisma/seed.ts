@@ -1,4 +1,5 @@
 import {
+  AdministrativeAreaLevel,
   DeploymentEnvironment,
   Locale,
   PermissionScope,
@@ -36,6 +37,10 @@ const permissionSeeds = [
   ['store.promotions.read', PermissionScope.STORE, 'Read current store promotions'],
   ['store.promotions.manage', PermissionScope.STORE, 'Manage promotion drafts'],
   ['store.promotions.publish', PermissionScope.STORE, 'Publish current store promotions'],
+  ['store.orders.read', PermissionScope.STORE, 'Read current store orders'],
+  ['store.orders.manage', PermissionScope.STORE, 'Manage current store orders and COD'],
+  ['store.delivery.read', PermissionScope.STORE, 'Read current store delivery policy'],
+  ['store.delivery.manage', PermissionScope.STORE, 'Manage current store delivery policy'],
 ] as const;
 
 async function seed(): Promise<void> {
@@ -160,6 +165,7 @@ async function seedCommerceFoundation(
   input: { id: string; industry: StoreIndustry },
 ): Promise<void> {
   const isBeauty = input.industry === StoreIndustry.BEAUTY;
+  await seedAdministrativeAreas(client, input.id);
   const warehouseId = isBeauty ? BEAUTY_WAREHOUSE_ID : FASHION_WAREHOUSE_ID;
   const warehouse = await client.warehouse.upsert({
     create: {
@@ -213,6 +219,89 @@ async function seedCommerceFoundation(
           warehouseId: warehouse.id,
         },
       },
+    });
+  }
+
+  await client.storeDeliveryPolicy.upsert({
+    create: {
+      codEnabled: true,
+      codMaxAmountVnd: 5_000_000n,
+      flatShippingFeeVnd: 30_000n,
+      freeShippingThresholdVnd: 500_000n,
+      remoteProvinceCodes: ['island-test'],
+      remoteSurchargeVnd: 20_000n,
+      storeId: input.id,
+    },
+    update: {
+      codEnabled: true,
+      codMaxAmountVnd: 5_000_000n,
+      enabled: true,
+      flatShippingFeeVnd: 30_000n,
+      freeShippingThresholdVnd: 500_000n,
+      remoteProvinceCodes: ['island-test'],
+      remoteSurchargeVnd: 20_000n,
+    },
+    where: { storeId: input.id },
+  });
+}
+
+async function seedAdministrativeAreas(client: PrismaClient, storeId: string): Promise<void> {
+  const sourceVersion = 'local-test-2026-07-23';
+  const areas = [
+    {
+      code: 'hn',
+      level: AdministrativeAreaLevel.PROVINCE,
+      name: 'Hà Nội',
+      parentCode: null,
+    },
+    {
+      code: 'hcm',
+      level: AdministrativeAreaLevel.PROVINCE,
+      name: 'Thành phố Hồ Chí Minh',
+      parentCode: null,
+    },
+    {
+      code: 'island-test',
+      level: AdministrativeAreaLevel.PROVINCE,
+      name: 'Tỉnh đảo thử nghiệm',
+      parentCode: null,
+    },
+    {
+      code: 'ba-dinh',
+      level: AdministrativeAreaLevel.DISTRICT,
+      name: 'Quận Ba Đình',
+      parentCode: 'hn',
+    },
+    {
+      code: 'quan-1',
+      level: AdministrativeAreaLevel.DISTRICT,
+      name: 'Quận 1',
+      parentCode: 'hcm',
+    },
+    {
+      code: 'phuc-xa',
+      level: AdministrativeAreaLevel.WARD,
+      name: 'Phường Phúc Xá',
+      parentCode: 'ba-dinh',
+    },
+    {
+      code: 'ben-nghe',
+      level: AdministrativeAreaLevel.WARD,
+      name: 'Phường Bến Nghé',
+      parentCode: 'quan-1',
+    },
+  ];
+  for (const area of areas) {
+    await client.administrativeArea.upsert({
+      create: { ...area, sourceVersion, storeId },
+      update: {
+        enabled: true,
+        level: area.level,
+        name: area.name,
+        parentCode: area.parentCode,
+        sourceVersion,
+      },
+      where: { storeId_code: { code: area.code, storeId } },
     });
   }
 }

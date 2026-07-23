@@ -24,28 +24,42 @@ function errorCode(status: number): string {
 }
 
 const stableConflictReasonCodes = new Set([
+  'ADDRESS_REGION_INVALID',
   'AVAILABLE_INSUFFICIENT',
   'CART_LINE_CONFLICT',
+  'CHECKOUT_CONCURRENT_CONFLICT',
   'COUPON_CLAIM_LIMIT',
   'COUPON_INVALID',
   'COUPON_MEMBER_REQUIRED',
   'COUPON_STATE_CONFLICT',
+  'COD_ONLY_IN_M4',
+  'COD_UNAVAILABLE',
+  'DELIVERY_POLICY_UNAVAILABLE',
   'IDEMPOTENCY_KEY_REUSED',
   'IMPORT_INVALID',
   'MEMBER_INELIGIBLE',
+  'ORDER_IDEMPOTENCY_CONFLICT',
+  'ORDER_RESERVATION_MISSING',
+  'ORDER_STATE_CONFLICT',
   'PRODUCT_UNAVAILABLE',
   'PROMOTION_RULE_INVALID',
   'PROMOTION_STATE_CONFLICT',
   'PROMOTION_VERSION_STATE_CONFLICT',
   'QUANTITY_OVERFLOW',
+  'QUOTE_STALE',
   'RESERVATION_TRANSITION_INVALID',
   'RESERVED_INSUFFICIENT',
   'SKU_UNAVAILABLE',
+  'STOCK_INSUFFICIENT',
   'VERSION_CONFLICT',
 ]);
+const stableInputReasonCodes = new Set(['ADDRESS_REGION_INVALID', 'DELIVERY_REGION_INVALID']);
 
 function reasonCode(exception: unknown, status: number): string | undefined {
-  if (status !== 409 || !(exception instanceof HttpException)) return undefined;
+  if (!(exception instanceof HttpException)) return undefined;
+  const allowed =
+    status === 400 ? stableInputReasonCodes : status === 409 ? stableConflictReasonCodes : null;
+  if (allowed === null) return undefined;
   const response = exception.getResponse();
   const message =
     typeof response === 'string'
@@ -53,9 +67,7 @@ function reasonCode(exception: unknown, status: number): string | undefined {
       : typeof response === 'object' && response !== null && 'message' in response
         ? (response as { message?: unknown }).message
         : undefined;
-  return typeof message === 'string' && stableConflictReasonCodes.has(message)
-    ? message
-    : undefined;
+  return typeof message === 'string' && allowed.has(message) ? message : undefined;
 }
 
 @Catch()

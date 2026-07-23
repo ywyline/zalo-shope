@@ -1,4 +1,4 @@
-import { ConflictException, type ArgumentsHost } from '@nestjs/common';
+import { BadRequestException, ConflictException, type ArgumentsHost } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApiExceptionFilter } from './api-exception.filter';
@@ -17,6 +17,19 @@ function harness(correlationId = 'm35-filter-test', requestId?: string) {
 }
 
 describe('API conflict reason envelopes', () => {
+  it('returns allowlisted input reason codes for recoverable M4 validation', () => {
+    const test = harness();
+    new ApiExceptionFilter().catch(new BadRequestException('ADDRESS_REGION_INVALID'), test.host);
+
+    expect(test.status).toHaveBeenCalledWith(400);
+    expect(test.json).toHaveBeenCalledWith({
+      code: 'INPUT_INVALID',
+      correlation_id: 'm35-filter-test',
+      details: { reason_code: 'ADDRESS_REGION_INVALID' },
+      message_key: 'error.input_invalid',
+    });
+  });
+
   it('returns allowlisted stable reason codes without exposing exception internals', () => {
     const test = harness();
     new ApiExceptionFilter().catch(new ConflictException('VERSION_CONFLICT'), test.host);

@@ -7,8 +7,9 @@ import { createStoreContext } from '@zalo-shop/domain';
 import { createLogger } from '@zalo-shop/logger';
 
 import { RUNTIME_CONFIG } from '../health.controller';
+import { OrderReconciliationService } from '../orders/order-reconciliation.service';
+import { WORKER_DATABASE_CLIENT } from '../worker.tokens';
 
-export const WORKER_DATABASE_CLIENT = Symbol('WORKER_DATABASE_CLIENT');
 const INVENTORY_WORKER_ACTOR_ID = '00000000-0000-4000-8000-000000000003';
 
 type StoreRegistryEntry = {
@@ -26,6 +27,8 @@ export class InventoryExpirationService implements OnModuleDestroy, OnModuleInit
   public constructor(
     @Inject(WORKER_DATABASE_CLIENT) private readonly database: PrismaClient,
     @Inject(RUNTIME_CONFIG) private readonly config: RuntimeConfig,
+    @Inject(OrderReconciliationService)
+    private readonly orderReconciliation: OrderReconciliationService,
   ) {
     this.logger = createLogger('inventory-expiration-worker', config.LOG_LEVEL);
   }
@@ -66,6 +69,7 @@ export class InventoryExpirationService implements OnModuleDestroy, OnModuleInit
             context,
             this.config.INVENTORY_EXPIRATION_BATCH_SIZE,
           );
+          const orders = await this.orderReconciliation.runStore(context);
           if (result.scanned > 0) {
             const context = {
               expired: result.expired,
@@ -78,6 +82,12 @@ export class InventoryExpirationService implements OnModuleDestroy, OnModuleInit
             } else {
               this.logger.info(context, 'Expired due inventory reservations');
             }
+          }
+          if (orders.scanned > 0) {
+            this.logger.info(
+              { ...orders, storeId: store.id },
+              'Reconciled orders from terminal inventory reservations',
+            );
           }
         } catch (error) {
           this.logger.error(
