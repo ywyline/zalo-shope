@@ -56,6 +56,16 @@ import { PricingController } from './pricing/pricing.controller';
 import { PricingService } from './pricing/pricing.service';
 import { CartController } from './cart/cart.controller';
 import { CartService } from './cart/cart.service';
+import { AddressController } from './address/address.controller';
+import { AdministrativeAreaController } from './address/administrative-area.controller';
+import { AddressService } from './address/address.service';
+import { CheckoutController } from './checkout/checkout.controller';
+import { CheckoutService } from './checkout/checkout.service';
+import { OrdersController } from './orders/orders.controller';
+import { OrdersService } from './orders/orders.service';
+import { OrdersAdminController } from './orders-admin/orders-admin.controller';
+import { DeliveryAdminController } from './delivery-admin/delivery-admin.controller';
+import { DeliveryAdminService } from './delivery-admin/delivery-admin.service';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -110,6 +120,12 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     MemberCouponController,
     PricingController,
     CartController,
+    AddressController,
+    AdministrativeAreaController,
+    CheckoutController,
+    OrdersController,
+    OrdersAdminController,
+    DeliveryAdminController,
   ],
   providers: [
     AdminService,
@@ -125,6 +141,10 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     MemberCouponService,
     PricingService,
     CartService,
+    AddressService,
+    CheckoutService,
+    OrdersService,
+    DeliveryAdminService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
       provide: DATABASE_CLIENT,

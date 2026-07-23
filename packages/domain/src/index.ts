@@ -112,3 +112,5 @@ export * from './cart';
 export * from './inventory';
 export * from './pricing';
 export * from './search';
+export * from './order';
+export * from './address';

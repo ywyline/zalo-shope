@@ -452,8 +452,11 @@ async function seedStore(store: StoreFixture): Promise<void> {
     operationKey: `m34-browser-stock-${store.storeCode}`,
     operationType: 'IMPORT',
   });
-  await withStoreTransaction(database, inventoryContext, (transaction) =>
-    rebuildStoreSearchProjection(transaction, store.id),
+  await withStoreTransaction(
+    database,
+    inventoryContext,
+    (transaction) => rebuildStoreSearchProjection(transaction, store.id),
+    { timeout: 15_000 },
   );
 
   await database.page.create({
@@ -575,14 +578,65 @@ async function removeFixtures(): Promise<void> {
     });
     const browserMemberIds = [...new Set(browserIdentities.map(({ memberId }) => memberId))];
     if (browserMemberIds.length > 0) {
+      const browserOrders = await transaction.order.findMany({
+        select: { id: true, reservationId: true },
+        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+      const browserOrderIds = browserOrders.map(({ id }) => id);
+      const reservationIds = browserOrders.flatMap(({ reservationId }) =>
+        reservationId ? [reservationId] : [],
+      );
+      const reservationItems = await transaction.inventoryReservationItem.findMany({
+        select: { id: true },
+        where: { reservationId: { in: reservationIds }, storeId: { in: storeIds } },
+      });
+      const reservationItemIds = reservationItems.map(({ id }) => id);
+      const orderMovements = await transaction.inventoryMovement.findMany({
+        select: { operationId: true },
+        where: { reservationItemId: { in: reservationItemIds }, storeId: { in: storeIds } },
+      });
+      const orderOperationIds = [...new Set(orderMovements.map(({ operationId }) => operationId))];
+      await transaction.idempotencyRecord.deleteMany({
+        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+      await transaction.memberCoupon.deleteMany({
+        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+      await transaction.orderTransition.deleteMany({
+        where: { orderId: { in: browserOrderIds }, storeId: { in: storeIds } },
+      });
+      await transaction.orderSnapshot.deleteMany({
+        where: { orderId: { in: browserOrderIds }, storeId: { in: storeIds } },
+      });
+      await transaction.orderItem.deleteMany({
+        where: { orderId: { in: browserOrderIds }, storeId: { in: storeIds } },
+      });
+      await transaction.order.deleteMany({
+        where: { id: { in: browserOrderIds }, storeId: { in: storeIds } },
+      });
+      await transaction.address.deleteMany({
+        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
+      });
+      await transaction.inventoryMovement.deleteMany({
+        where: { reservationItemId: { in: reservationItemIds }, storeId: { in: storeIds } },
+      });
+      await transaction.inventoryReservationItem.deleteMany({
+        where: { id: { in: reservationItemIds }, storeId: { in: storeIds } },
+      });
+      await transaction.inventoryReservation.deleteMany({
+        where: { id: { in: reservationIds }, storeId: { in: storeIds } },
+      });
+      await transaction.inventoryOperation.deleteMany({
+        where: {
+          storeId: { in: storeIds },
+          OR: [{ id: { in: orderOperationIds } }, { sourceId: { in: browserOrderIds } }],
+        },
+      });
       const browserCarts = await transaction.cart.findMany({
         select: { id: true },
         where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
       });
       const browserCartIds = browserCarts.map(({ id }) => id);
-      await transaction.memberCoupon.deleteMany({
-        where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
-      });
       await transaction.memberSearchHistory.deleteMany({
         where: { memberId: { in: browserMemberIds }, storeId: { in: storeIds } },
       });

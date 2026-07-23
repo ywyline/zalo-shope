@@ -1,0 +1,982 @@
+openapi: 3.1.0
+info:
+  title: Zalo Shop M4 Address, Checkout, Order and COD API
+  version: 0.4.0
+  description: >-
+    M4 已实施增量契约；与 openapi.m1.yaml、openapi.m2.yaml 和 openapi.m3.yaml
+    共同组成当前 API。商城只从受信 X-Store-Code、认证主体和管理员授权解析；
+    买家请求不接受 store_id、价格、折扣、库存或订单状态。M4 仅启用 COD，ONLINE
+    下单稳定拒绝，不代表真实支付或物流已接入。
+servers:
+  - url: http://localhost:3000
+tags:
+  - { name: Member addresses }
+  - { name: Checkout }
+  - { name: Member orders }
+  - { name: Admin orders }
+  - { name: Admin delivery }
+paths:
+  /v1/member/addresses:
+    get:
+      tags: [Member addresses]
+      summary: 读取当前会员在当前商城的地址
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - name: include_disabled
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 默认地址优先，其后按更新时间倒序
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Address' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Member addresses]
+      summary: 创建当前会员地址
+      description: 手机号接受越南或中国大陆移动号并规范为 E.164；敏感字段在数据库加密。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddressInput' }
+      responses:
+        '201':
+          description: 已创建；手机号仅返回掩码
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Address' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/member/addresses/{addressId}:
+    patch:
+      tags: [Member addresses]
+      summary: 以乐观锁更新当前会员地址
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/AddressId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddressUpdate' }
+      responses:
+        '200':
+          description: 已更新并递增版本
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Address' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Member addresses]
+      summary: 停用当前会员地址
+      description: 软删除；订单中的不可变地址快照不受影响。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/AddressId'
+      responses:
+        '204': { description: 已停用 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/member/administrative-areas:
+    get:
+      tags: [Member addresses]
+      summary: 读取当前商城已启用的三级行政区
+      description: >-
+        省级不接受 parent_code；区/县和坊/社必须提供父级 code。响应名称和层级来自
+        服务端商城主数据，客户端不能用自报名称或错误层级形成地址与运费事实。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - name: level
+          in: query
+          required: true
+          schema: { type: string, enum: [PROVINCE, DISTRICT, WARD] }
+        - name: parent_code
+          in: query
+          schema: { $ref: '#/components/schemas/Code' }
+      responses:
+        '200':
+          description: 当前商城、层级和父级范围内的可用行政区
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeAreaPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/checkout/quote:
+    post:
+      tags: [Checkout]
+      summary: 从服务端可信事实计算最终结算报价
+      description: >-
+        重新加载商品、SKU、默认履约仓库存、促销/会员券、地址和商城配送策略。
+        请求体严格拒绝客户端价格、折扣、运费、应付金额、store_id 和状态字段。
+        ONLINE 可报价用于明确展示未启用渠道，但 M4 不允许创建 ONLINE 订单。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckoutQuoteRequest' }
+      responses:
+        '201':
+          description: 可解释、可重验的整数 VND 报价
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutQuote' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/checkout/orders:
+    post:
+      tags: [Checkout]
+      summary: 以接受的报价幂等创建 COD 订单
+      description: >-
+        同一数据库事务内重验报价、锁定库存、创建 ACTIVE 预留、订单/行/快照/转换、
+        核销真实会员券、转换匹配购物车并保存幂等响应。相同键不同请求返回冲突。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckoutOrderRequest' }
+      responses:
+        '201':
+          description: 首次创建或相同请求的幂等回放
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/orders:
+    get:
+      tags: [Member orders]
+      summary: 分页读取当前会员在当前商城的订单
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/OrderStatus'
+      responses:
+        '200':
+          description: 当前会员订单页
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/orders/{orderId}:
+    get:
+      tags: [Member orders]
+      summary: 读取当前会员订单详情和不可变快照摘要
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 地址来自下单快照，手机号已掩码
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/orders/{orderId}/cancel:
+    post:
+      tags: [Member orders]
+      summary: 取消当前会员待确认 COD 订单
+      description: 订单、预留释放和状态转换在同一事务；重复取消返回当前终态。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderAction' }
+      responses:
+        '201':
+          description: 已取消或幂等返回已取消订单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/delivery-policy:
+    get:
+      tags: [Admin delivery]
+      summary: 读取目标商城配送与 COD 策略
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreId'
+        - $ref: '#/components/parameters/AccessReason'
+      responses:
+        '200':
+          description: 当前商城策略
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeliveryPolicy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Admin delivery]
+      summary: 以乐观锁更新目标商城配送与 COD 策略
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreId'
+        - $ref: '#/components/parameters/AccessReason'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeliveryPolicyUpdate' }
+      responses:
+        '200':
+          description: 已更新并写审计
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeliveryPolicy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/orders:
+    get:
+      tags: [Admin orders]
+      summary: 按目标商城分页读取订单
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreId'
+        - $ref: '#/components/parameters/AccessReason'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/OrderStatus'
+      responses:
+        '200':
+          description: 目标商城订单页
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/orders/{orderId}:
+    get:
+      tags: [Admin orders]
+      summary: 读取目标商城订单详情
+      description: 查看订单地址快照会写入敏感数据读取审计。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreId'
+        - $ref: '#/components/parameters/AccessReason'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 订单详情、备注、标签、快照摘要和时间线
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminOrderDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/orders/{orderId}/confirm-cod:
+    post:
+      tags: [Admin orders]
+      summary: 确认 COD 有效并消费库存预留
+      description: 原子记录 CONFIRMED 与 PENDING_FULFILLMENT 转换；重复确认不重复扣库存。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreId'
+        - $ref: '#/components/parameters/AccessReason'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminOrderAction' }
+      responses:
+        '201':
+          description: 已进入待履约或幂等返回当前结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/orders/{orderId}/cancel:
+    post:
+      tags: [Admin orders]
+      summary: 在发货前取消订单
+      description: 待确认订单释放预留；已确认待履约订单追加 RESTORE 反向库存动作。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreId'
+        - $ref: '#/components/parameters/AccessReason'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminOrderAction' }
+      responses:
+        '201':
+          description: 已取消或幂等返回当前结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/orders/{orderId}/close:
+    post:
+      tags: [Admin orders]
+      summary: 关闭待确认或待支付订单
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreId'
+        - $ref: '#/components/parameters/AccessReason'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminOrderAction' }
+      responses:
+        '201':
+          description: 已关闭或幂等返回当前结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/orders/{orderId}/notes:
+    patch:
+      tags: [Admin orders]
+      summary: 更新订单内部备注和标签
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreId'
+        - $ref: '#/components/parameters/AccessReason'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminOrderNote' }
+      responses:
+        '200':
+          description: 已更新并写审计
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    StoreCode:
+      type: apiKey
+      in: header
+      name: X-Store-Code
+    MemberBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: member access token
+    AdminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: admin access token
+  parameters:
+    StoreCode:
+      name: X-Store-Code
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 64 }
+    StoreId:
+      name: store_id
+      in: query
+      required: true
+      schema: { type: string, format: uuid }
+      description: 目标商城；必须与令牌授权和 X-Store-Code 一致
+    AccessReason:
+      name: X-Access-Reason
+      in: header
+      required: false
+      schema: { type: string, maxLength: 500 }
+    AddressId:
+      name: addressId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128, pattern: '^[!-~]+$' }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    OrderStatus:
+      name: status
+      in: query
+      schema: { $ref: '#/components/schemas/OrderStatus' }
+  responses:
+    BadRequest:
+      description: 输入、商城 Header 或严格 DTO 校验失败
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Unauthorized:
+      description: 认证缺失、无效或会员令牌商城不匹配
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Forbidden:
+      description: 管理员没有目标商城或权限授权
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    NotFound:
+      description: 当前商城/主体范围内资源不存在
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Conflict:
+      description: 版本、报价、幂等、库存、COD 或状态机冲突
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+  schemas:
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, correlation_id, message_key]
+      properties:
+        code:
+          type: string
+          enum:
+            [
+              INPUT_INVALID,
+              AUTHENTICATION_FAILED,
+              AUTHORIZATION_DENIED,
+              RESOURCE_NOT_FOUND,
+              CONFLICT,
+            ]
+        correlation_id: { type: string }
+        message_key: { type: string }
+        details:
+          type: object
+          additionalProperties: false
+          properties:
+            reason_code:
+              type: string
+              enum:
+                - ADDRESS_REGION_INVALID
+                - CHECKOUT_CONCURRENT_CONFLICT
+                - COD_ONLY_IN_M4
+                - COD_UNAVAILABLE
+                - DELIVERY_POLICY_UNAVAILABLE
+                - DELIVERY_REGION_INVALID
+                - MEMBER_INELIGIBLE
+                - ORDER_IDEMPOTENCY_CONFLICT
+                - ORDER_RESERVATION_MISSING
+                - ORDER_STATE_CONFLICT
+                - QUOTE_STALE
+                - STOCK_INSUFFICIENT
+                - VERSION_CONFLICT
+    Code:
+      type: string
+      minLength: 2
+      maxLength: 64
+      pattern: '^[a-z][a-z0-9-]*$'
+    Locale:
+      type: string
+      enum: [vi, zh, en]
+      default: vi
+    VndAmount:
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+    AdministrativeAreaPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, level, name, parent_code, source_version]
+            properties:
+              code: { $ref: '#/components/schemas/Code' }
+              level: { type: string, enum: [PROVINCE, DISTRICT, WARD] }
+              name: { type: string, minLength: 1, maxLength: 160 }
+              parent_code:
+                oneOf: [{ $ref: '#/components/schemas/Code' }, { type: 'null' }]
+              source_version: { type: string, minLength: 1, maxLength: 128 }
+    AddressInput:
+      type: object
+      additionalProperties: false
+      required: [recipient_name, phone, province_code, district_code, ward_code, detail]
+      properties:
+        recipient_name: { type: string, minLength: 1, maxLength: 160 }
+        phone: { type: string, minLength: 9, maxLength: 24 }
+        province_code: { $ref: '#/components/schemas/Code' }
+        province_name:
+          type: string
+          minLength: 1
+          maxLength: 160
+          deprecated: true
+          description: 兼容字段；服务端忽略并使用行政区主数据名称
+        district_code: { $ref: '#/components/schemas/Code' }
+        district_name:
+          type: string
+          minLength: 1
+          maxLength: 160
+          deprecated: true
+          description: 兼容字段；服务端忽略并使用行政区主数据名称
+        ward_code: { $ref: '#/components/schemas/Code' }
+        ward_name:
+          type: string
+          minLength: 1
+          maxLength: 160
+          deprecated: true
+          description: 兼容字段；服务端忽略并使用行政区主数据名称
+        detail: { type: string, minLength: 3, maxLength: 500 }
+        label: { type: string, maxLength: 64 }
+        is_default: { type: boolean, default: false }
+    AddressUpdate:
+      type: object
+      additionalProperties: false
+      description: 地址字段均可选，但至少一项必须改变
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        recipient_name: { type: string, minLength: 1, maxLength: 160 }
+        phone: { type: string, minLength: 9, maxLength: 24 }
+        province_code: { $ref: '#/components/schemas/Code' }
+        province_name: { type: string, minLength: 1, maxLength: 160 }
+        district_code: { $ref: '#/components/schemas/Code' }
+        district_name: { type: string, minLength: 1, maxLength: 160 }
+        ward_code: { $ref: '#/components/schemas/Code' }
+        ward_name: { type: string, minLength: 1, maxLength: 160 }
+        detail: { type: string, minLength: 3, maxLength: 500 }
+        label: { type: string, maxLength: 64 }
+        is_default: { type: boolean }
+    Address:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          recipient_name,
+          masked_phone,
+          province_code,
+          province_name,
+          district_code,
+          district_name,
+          ward_code,
+          ward_name,
+          detail,
+          is_default,
+          status,
+          version,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        recipient_name: { type: string }
+        masked_phone: { type: string, description: E.164 的受限掩码显示 }
+        province_code: { $ref: '#/components/schemas/Code' }
+        province_name: { type: string }
+        district_code: { $ref: '#/components/schemas/Code' }
+        district_name: { type: string }
+        ward_code: { $ref: '#/components/schemas/Code' }
+        ward_name: { type: string }
+        detail: { type: string }
+        label: { oneOf: [{ type: string }, { type: 'null' }] }
+        is_default: { type: boolean }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CheckoutItem:
+      type: object
+      additionalProperties: false
+      required: [sku_code, quantity]
+      properties:
+        sku_code: { $ref: '#/components/schemas/Code' }
+        quantity: { type: integer, minimum: 1, maximum: 99 }
+    CheckoutQuoteRequest:
+      type: object
+      additionalProperties: false
+      required: [address_id, items]
+      properties:
+        address_id: { type: string, format: uuid }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/CheckoutItem' }
+        coupon_code:
+          oneOf: [{ $ref: '#/components/schemas/Code' }, { type: 'null' }]
+          default: null
+        locale: { $ref: '#/components/schemas/Locale' }
+        payment_method: { type: string, enum: [COD, ONLINE], default: COD }
+    CheckoutOrderRequest:
+      allOf:
+        - $ref: '#/components/schemas/CheckoutQuoteRequest'
+        - type: object
+          required: [quote_hash]
+          properties:
+            quote_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+      unevaluatedProperties: false
+    AppliedRule:
+      type: object
+      additionalProperties: true
+      required: [bucket, code, version_id, basis_vnd, discount_vnd]
+      properties:
+        bucket: { type: string, enum: [ITEM, ORDER, COUPON] }
+        code: { $ref: '#/components/schemas/Code' }
+        version_id: { type: string, format: uuid }
+        basis_vnd: { $ref: '#/components/schemas/VndAmount' }
+        discount_vnd: { $ref: '#/components/schemas/VndAmount' }
+    PricingLine:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          sku_code,
+          quantity,
+          base_unit_price_vnd,
+          base_subtotal_vnd,
+          discount_vnd,
+          payable_vnd,
+          issues,
+        ]
+      properties:
+        sku_code: { $ref: '#/components/schemas/Code' }
+        quantity: { type: integer, minimum: 1, maximum: 99 }
+        base_unit_price_vnd: { $ref: '#/components/schemas/VndAmount' }
+        base_subtotal_vnd: { $ref: '#/components/schemas/VndAmount' }
+        discount_vnd: { $ref: '#/components/schemas/VndAmount' }
+        payable_vnd: { $ref: '#/components/schemas/VndAmount' }
+        applied_rules: { type: array, items: { $ref: '#/components/schemas/AppliedRule' } }
+        rejected_rules: { type: array, items: { type: object, additionalProperties: true } }
+        issues: { type: array, items: { type: string } }
+    CheckoutQuote:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          currency,
+          quoted_at,
+          quote_hash,
+          lines,
+          base_subtotal_vnd,
+          discount_vnd,
+          merchandise_payable_vnd,
+          order_payable_vnd,
+          shipping_fee_vnd,
+          remote_surcharge_vnd,
+          shipping_discount_vnd,
+          delivery_policy_version,
+          delivery_policy,
+          cod_policy,
+          applied_rules,
+          rejected_rules,
+          shipping_qualification,
+        ]
+      properties:
+        currency: { type: string, const: VND }
+        quoted_at: { type: string, format: date-time }
+        quote_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/PricingLine' }
+        base_subtotal_vnd: { $ref: '#/components/schemas/VndAmount' }
+        discount_vnd: { $ref: '#/components/schemas/VndAmount' }
+        merchandise_payable_vnd: { $ref: '#/components/schemas/VndAmount' }
+        shipping_fee_vnd: { $ref: '#/components/schemas/VndAmount' }
+        remote_surcharge_vnd: { $ref: '#/components/schemas/VndAmount' }
+        shipping_discount_vnd: { $ref: '#/components/schemas/VndAmount' }
+        order_payable_vnd: { $ref: '#/components/schemas/VndAmount' }
+        delivery_policy_version: { type: integer, minimum: 1 }
+        delivery_policy: { $ref: '#/components/schemas/DeliveryPolicyFacts' }
+        cod_policy:
+          type: object
+          additionalProperties: false
+          required: [enabled, max_amount_vnd]
+          properties:
+            enabled: { type: boolean }
+            max_amount_vnd:
+              oneOf: [{ $ref: '#/components/schemas/VndAmount' }, { type: 'null' }]
+        applied_rules: { type: array, items: { $ref: '#/components/schemas/AppliedRule' } }
+        rejected_rules: { type: array, items: { type: object, additionalProperties: true } }
+        shipping_qualification: { type: object, additionalProperties: true }
+    DeliveryPolicyFacts:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          enabled,
+          flat_shipping_fee_vnd,
+          free_shipping_threshold_vnd,
+          remote_surcharge_vnd,
+          remote_province_codes,
+          cod_enabled,
+          cod_max_amount_vnd,
+          version,
+        ]
+      properties:
+        enabled: { type: boolean }
+        flat_shipping_fee_vnd: { $ref: '#/components/schemas/VndAmount' }
+        free_shipping_threshold_vnd:
+          oneOf: [{ $ref: '#/components/schemas/VndAmount' }, { type: 'null' }]
+        remote_surcharge_vnd: { $ref: '#/components/schemas/VndAmount' }
+        remote_province_codes:
+          type: array
+          uniqueItems: true
+          maxItems: 200
+          items: { $ref: '#/components/schemas/Code' }
+        cod_enabled: { type: boolean }
+        cod_max_amount_vnd:
+          oneOf: [{ $ref: '#/components/schemas/VndAmount' }, { type: 'null' }]
+        version: { type: integer, minimum: 1 }
+    DeliveryPolicy:
+      allOf:
+        - $ref: '#/components/schemas/DeliveryPolicyFacts'
+        - type: object
+          required: [store_id, updated_at]
+          properties:
+            store_id: { type: string, format: uuid }
+            updated_at: { type: string, format: date-time }
+      unevaluatedProperties: false
+    DeliveryPolicyUpdate:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          enabled,
+          flat_shipping_fee_vnd,
+          free_shipping_threshold_vnd,
+          remote_surcharge_vnd,
+          remote_province_codes,
+          cod_enabled,
+          cod_max_amount_vnd,
+          expected_version,
+        ]
+      properties:
+        enabled: { type: boolean }
+        flat_shipping_fee_vnd: { $ref: '#/components/schemas/VndAmount' }
+        free_shipping_threshold_vnd:
+          oneOf: [{ $ref: '#/components/schemas/VndAmount' }, { type: 'null' }]
+        remote_surcharge_vnd: { $ref: '#/components/schemas/VndAmount' }
+        remote_province_codes:
+          type: array
+          uniqueItems: true
+          maxItems: 200
+          items: { $ref: '#/components/schemas/Code' }
+        cod_enabled: { type: boolean }
+        cod_max_amount_vnd:
+          oneOf: [{ $ref: '#/components/schemas/VndAmount' }, { type: 'null' }]
+        expected_version: { type: integer, minimum: 1 }
+    OrderStatus:
+      type: string
+      enum:
+        [
+          PENDING_PAYMENT,
+          PENDING_CONFIRMATION,
+          CONFIRMED,
+          PENDING_FULFILLMENT,
+          SHIPPED,
+          DELIVERED,
+          COMPLETED,
+          CANCELLED,
+          CLOSED,
+        ]
+    PaymentMethod:
+      type: string
+      enum: [COD, ONLINE]
+    PaymentStatus:
+      type: string
+      enum: [PENDING, PROCESSING, SUCCEEDED, FAILED, EXPIRED, CANCELLED]
+    OrderItem:
+      type: object
+      additionalProperties: false
+      required: [sku_code, quantity, payable_vnd]
+      properties:
+        sku_code: { $ref: '#/components/schemas/Code' }
+        quantity: { type: integer, minimum: 1 }
+        payable_vnd: { $ref: '#/components/schemas/VndAmount' }
+    OrderSummary:
+      type: object
+      additionalProperties: false
+      required:
+        [id, order_number, status, payment_method, payment_status, payable_vnd, created_at, items]
+      properties:
+        id: { type: string, format: uuid }
+        order_number: { type: string, maxLength: 40 }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        payment_method: { $ref: '#/components/schemas/PaymentMethod' }
+        payment_status: { $ref: '#/components/schemas/PaymentStatus' }
+        payable_vnd: { $ref: '#/components/schemas/VndAmount' }
+        created_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/OrderItem' }
+    OrderPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OrderSummary' } }
+        next_cursor: { oneOf: [{ type: string, format: uuid }, { type: 'null' }] }
+    OrderAddress:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          recipient_name,
+          masked_phone,
+          province_code,
+          province_name,
+          district_code,
+          district_name,
+          ward_code,
+          ward_name,
+          detail,
+        ]
+      properties:
+        recipient_name: { type: string }
+        masked_phone: { type: string }
+        province_code: { oneOf: [{ $ref: '#/components/schemas/Code' }, { type: 'null' }] }
+        province_name: { oneOf: [{ type: string }, { type: 'null' }] }
+        district_code: { oneOf: [{ $ref: '#/components/schemas/Code' }, { type: 'null' }] }
+        district_name: { oneOf: [{ type: string }, { type: 'null' }] }
+        ward_code: { oneOf: [{ $ref: '#/components/schemas/Code' }, { type: 'null' }] }
+        ward_name: { oneOf: [{ type: string }, { type: 'null' }] }
+        detail: { type: string }
+    OrderTransition:
+      type: object
+      additionalProperties: false
+      required: [event, from_status, to_status, reason, created_at]
+      properties:
+        event: { type: string }
+        from_status:
+          oneOf: [{ $ref: '#/components/schemas/OrderStatus' }, { type: 'null' }]
+        to_status: { $ref: '#/components/schemas/OrderStatus' }
+        reason: { oneOf: [{ type: string }, { type: 'null' }] }
+        created_at: { type: string, format: date-time }
+    SnapshotSummary:
+      type: object
+      additionalProperties: false
+      required: [snapshot_type, payload_hash, created_at]
+      properties:
+        snapshot_type: { type: string, enum: [ADDRESS, PRICING, DELIVERY_POLICY, COUPON] }
+        payload_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        created_at: { type: string, format: date-time }
+    OrderDetail:
+      allOf:
+        - $ref: '#/components/schemas/OrderSummary'
+        - type: object
+          required: [address, cancellation_reason, snapshots, transitions]
+          properties:
+            address:
+              oneOf: [{ $ref: '#/components/schemas/OrderAddress' }, { type: 'null' }]
+            cancellation_reason: { oneOf: [{ type: string }, { type: 'null' }] }
+            snapshots: { type: array, items: { $ref: '#/components/schemas/SnapshotSummary' } }
+            transitions: { type: array, items: { $ref: '#/components/schemas/OrderTransition' } }
+      unevaluatedProperties: false
+    AdminOrderDetail:
+      allOf:
+        - $ref: '#/components/schemas/OrderDetail'
+        - type: object
+          required: [note, tags]
+          properties:
+            note: { oneOf: [{ type: string }, { type: 'null' }] }
+            tags: { type: array, maxItems: 20, items: { type: string, maxLength: 64 } }
+      unevaluatedProperties: false
+    OrderAction:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 2, maxLength: 500 }
+    AdminOrderAction:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string, minLength: 2, maxLength: 500 }
+    AdminOrderNote:
+      type: object
+      additionalProperties: false
+      required: [note]
+      properties:
+        note: { type: string, maxLength: 2000 }
+        tags:
+          type: array
+          maxItems: 20
+          items: { type: string, minLength: 1, maxLength: 64 }

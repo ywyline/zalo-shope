@@ -128,6 +128,14 @@ model Store {
   carts                         Cart[]
   cartItems                     CartItem[]
   warehouseLocalizations        WarehouseLocalization[]
+  administrativeAreas           AdministrativeArea[]
+  deliveryPolicy                StoreDeliveryPolicy?
+  addresses                     Address[]
+  orders                        Order[]
+  orderItems                    OrderItem[]
+  orderSnapshots                OrderSnapshot[]
+  orderTransitions              OrderTransition[]
+  idempotencyRecords            IdempotencyRecord[]
 
   @@map("stores")
 }
@@ -191,16 +199,17 @@ model AdminUser {
   createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  platformRolesGranted       AdminPlatformRole[]  @relation("AdminPlatformRoleAdmin")
-  platformRolesGrantedBy     AdminPlatformRole[]  @relation("AdminPlatformRoleGrantor")
-  storeRoles                 AdminStoreRole[]     @relation("AdminStoreRoleAdmin")
-  storeRolesGrantedBy        AdminStoreRole[]     @relation("AdminStoreRoleGrantor")
+  platformRolesGranted       AdminPlatformRole[]   @relation("AdminPlatformRoleAdmin")
+  platformRolesGrantedBy     AdminPlatformRole[]   @relation("AdminPlatformRoleGrantor")
+  storeRoles                 AdminStoreRole[]      @relation("AdminStoreRoleAdmin")
+  storeRolesGrantedBy        AdminStoreRole[]      @relation("AdminStoreRoleGrantor")
   adminSessions              AdminSession[]
   inventoryOperations        InventoryOperation[]
-  promotionsCreated          Promotion[]          @relation("PromotionCreatedBy")
-  promotionsUpdated          Promotion[]          @relation("PromotionUpdatedBy")
-  promotionVersionsPublished PromotionVersion[]   @relation("PromotionVersionPublishedBy")
+  promotionsCreated          Promotion[]           @relation("PromotionCreatedBy")
+  promotionsUpdated          Promotion[]           @relation("PromotionUpdatedBy")
+  promotionVersionsPublished PromotionVersion[]    @relation("PromotionVersionPublishedBy")
   promotionOperations        PromotionOperation[]
+  deliveryPoliciesUpdated    StoreDeliveryPolicy[] @relation("DeliveryPolicyUpdatedBy")
 
   @@map("admin_users")
 }
@@ -312,14 +321,17 @@ model Member {
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store         Store                    @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  identities    MemberExternalIdentity[]
-  phoneContact  MemberPhoneContact?
-  consents      Consent[]
-  sessions      MemberSession[]
-  searchHistory MemberSearchHistory[]
-  coupons       MemberCoupon[]
-  carts         Cart[]
+  store              Store                    @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  identities         MemberExternalIdentity[]
+  phoneContact       MemberPhoneContact?
+  consents           Consent[]
+  sessions           MemberSession[]
+  searchHistory      MemberSearchHistory[]
+  coupons            MemberCoupon[]
+  carts              Cart[]
+  addresses          Address[]
+  orders             Order[]
+  idempotencyRecords IdempotencyRecord[]
 
   @@unique([storeId, id])
   @@index([storeId, status])
@@ -583,6 +595,7 @@ model Brand {
   brand_media            BrandMedia[]
   stores                 Store                   @relation(fields: [storeId], references: [id])
   products               Product[]
+  orderItems             OrderItem[]
   productSearchDocuments ProductSearchDocument[]
   promotionTargets       PromotionTarget[]
 
@@ -661,6 +674,7 @@ model Category {
   products                     Product[]
   productSearchDocuments       ProductSearchDocument[]
   promotionTargets             PromotionTarget[]
+  orderItems                   OrderItem[]
 
   @@unique([storeId, code])
   @@unique([storeId, id])
@@ -975,6 +989,7 @@ model Product {
   skus                         Sku[]
   productSearchDocuments       ProductSearchDocument[]
   promotionTargets             PromotionTarget[]
+  orderItems                   OrderItem[]
 
   @@unique([storeId, code])
   @@unique([storeId, id])
@@ -1039,6 +1054,7 @@ model Sku {
   inventoryReservationItems InventoryReservationItem[]
   promotionTargets          PromotionTarget[]
   cartItems                 CartItem[]
+  orderItems                OrderItem[]
 
   @@unique([storeId, code])
   @@unique([storeId, id])
@@ -1148,6 +1164,7 @@ model InventoryReservation {
   store             Store                      @relation(fields: [storeId], references: [id], onDelete: Restrict)
   terminalOperation InventoryOperation?        @relation(fields: [storeId, terminalOperationId], references: [storeId, id], onDelete: Restrict)
   items             InventoryReservationItem[]
+  order             Order?
 
   @@unique([storeId, id])
   @@unique([storeId, reservationKey])
@@ -1414,22 +1431,26 @@ model Coupon {
 }
 
 model MemberCoupon {
-  id        String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId   String             @map("store_id") @db.Uuid
-  couponId  String             @map("coupon_id") @db.Uuid
-  memberId  String             @map("member_id") @db.Uuid
-  status    MemberCouponStatus @default(CLAIMED)
-  claimedAt DateTime           @default(now()) @map("claimed_at") @db.Timestamptz(6)
-  expiresAt DateTime?          @map("expires_at") @db.Timestamptz(6)
-  createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id          String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId     String             @map("store_id") @db.Uuid
+  couponId    String             @map("coupon_id") @db.Uuid
+  memberId    String             @map("member_id") @db.Uuid
+  status      MemberCouponStatus @default(CLAIMED)
+  claimedAt   DateTime           @default(now()) @map("claimed_at") @db.Timestamptz(6)
+  expiresAt   DateTime?          @map("expires_at") @db.Timestamptz(6)
+  usedAt      DateTime?          @map("used_at") @db.Timestamptz(6)
+  usedOrderId String?            @map("used_order_id") @db.Uuid
+  createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store  Store  @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  coupon Coupon @relation(fields: [storeId, couponId], references: [storeId, id], onDelete: Restrict)
-  member Member @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+  store     Store  @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  coupon    Coupon @relation(fields: [storeId, couponId], references: [storeId, id], onDelete: Restrict)
+  member    Member @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+  usedOrder Order? @relation(fields: [storeId, usedOrderId], references: [storeId, id], onDelete: Restrict)
 
   @@unique([storeId, id])
   @@unique([storeId, couponId, memberId])
+  @@unique([storeId, usedOrderId])
   @@index([storeId, memberId, status, expiresAt])
   @@map("member_coupons")
 }
@@ -1446,6 +1467,7 @@ model Cart {
   store  Store      @relation(fields: [storeId], references: [id], onDelete: Restrict)
   member Member     @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
   items  CartItem[]
+  orders Order[]
 
   @@unique([storeId, id])
   @@index([storeId, memberId, status])
@@ -1472,6 +1494,230 @@ model CartItem {
   @@unique([storeId, id])
   @@unique([storeId, cartId, skuId])
   @@map("cart_items")
+}
+
+model StoreDeliveryPolicy {
+  id                       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                  String   @map("store_id") @db.Uuid
+  version                  Int      @default(1)
+  enabled                  Boolean  @default(true)
+  flatShippingFeeVnd       BigInt   @map("flat_shipping_fee_vnd")
+  freeShippingThresholdVnd BigInt?  @map("free_shipping_threshold_vnd")
+  remoteSurchargeVnd       BigInt   @default(0) @map("remote_surcharge_vnd")
+  remoteProvinceCodes      String[] @default([]) @map("remote_province_codes")
+  codEnabled               Boolean  @default(true) @map("cod_enabled")
+  codMaxAmountVnd          BigInt?  @map("cod_max_amount_vnd")
+  updatedByAdminId         String?  @map("updated_by_admin_id") @db.Uuid
+  createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store     Store      @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  updatedBy AdminUser? @relation("DeliveryPolicyUpdatedBy", fields: [updatedByAdminId], references: [id], onDelete: Restrict)
+
+  @@unique([storeId])
+  @@unique([storeId, id])
+  @@map("store_delivery_policies")
+}
+
+model AdministrativeArea {
+  id            String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId       String                  @map("store_id") @db.Uuid
+  code          String                  @db.VarChar(32)
+  level         AdministrativeAreaLevel
+  parentCode    String?                 @map("parent_code") @db.VarChar(32)
+  name          String                  @db.VarChar(160)
+  enabled       Boolean                 @default(true)
+  sourceVersion String                  @map("source_version") @db.VarChar(128)
+  createdAt     DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store             Store                @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  parent            AdministrativeArea?  @relation("AdministrativeAreaHierarchy", fields: [storeId, parentCode], references: [storeId, code], onDelete: Restrict, onUpdate: Cascade)
+  children          AdministrativeArea[] @relation("AdministrativeAreaHierarchy")
+  provinceAddresses Address[]            @relation("AddressProvinceArea")
+  districtAddresses Address[]            @relation("AddressDistrictArea")
+  wardAddresses     Address[]            @relation("AddressWardArea")
+
+  @@unique([storeId, code])
+  @@index([storeId, level, parentCode, enabled, code])
+  @@map("administrative_areas")
+}
+
+model Address {
+  id                      String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                 String        @map("store_id") @db.Uuid
+  memberId                String        @map("member_id") @db.Uuid
+  recipientNameCiphertext String        @map("recipient_name_ciphertext") @db.Text
+  phoneHash               String        @map("phone_hash") @db.VarChar(128)
+  phoneCiphertext         String        @map("phone_ciphertext") @db.Text
+  provinceCode            String        @map("province_code") @db.VarChar(32)
+  provinceName            String        @map("province_name") @db.VarChar(160)
+  districtCode            String        @map("district_code") @db.VarChar(32)
+  districtName            String        @map("district_name") @db.VarChar(160)
+  wardCode                String        @map("ward_code") @db.VarChar(32)
+  wardName                String        @map("ward_name") @db.VarChar(160)
+  detailCiphertext        String        @map("detail_ciphertext") @db.Text
+  label                   String?       @db.VarChar(64)
+  isDefault               Boolean       @default(false) @map("is_default")
+  status                  AddressStatus @default(ACTIVE)
+  version                 Int           @default(1)
+  createdAt               DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store        Store              @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  member       Member             @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+  orders       Order[]
+  provinceArea AdministrativeArea @relation("AddressProvinceArea", fields: [storeId, provinceCode], references: [storeId, code], onDelete: Restrict, onUpdate: Cascade)
+  districtArea AdministrativeArea @relation("AddressDistrictArea", fields: [storeId, districtCode], references: [storeId, code], onDelete: Restrict, onUpdate: Cascade)
+  wardArea     AdministrativeArea @relation("AddressWardArea", fields: [storeId, wardCode], references: [storeId, code], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([storeId, id])
+  @@unique([storeId, memberId, phoneHash])
+  @@index([storeId, memberId, status, updatedAt(sort: Desc)])
+  @@map("addresses")
+}
+
+model Order {
+  id                  String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId             String             @map("store_id") @db.Uuid
+  memberId            String             @map("member_id") @db.Uuid
+  cartId              String?            @map("cart_id") @db.Uuid
+  addressId           String?            @map("address_id") @db.Uuid
+  reservationId       String?            @map("reservation_id") @db.Uuid
+  orderNumber         String             @map("order_number") @db.VarChar(40)
+  status              OrderStatus        @default(PENDING_CONFIRMATION)
+  paymentMethod       OrderPaymentMethod @map("payment_method")
+  paymentStatus       OrderPaymentStatus @map("payment_status")
+  currency            String             @default("VND") @db.Char(3)
+  baseSubtotalVnd     BigInt             @map("base_subtotal_vnd")
+  itemDiscountVnd     BigInt             @default(0) @map("item_discount_vnd")
+  couponDiscountVnd   BigInt             @default(0) @map("coupon_discount_vnd")
+  orderDiscountVnd    BigInt             @default(0) @map("order_discount_vnd")
+  shippingFeeVnd      BigInt             @map("shipping_fee_vnd")
+  remoteSurchargeVnd  BigInt             @default(0) @map("remote_surcharge_vnd")
+  shippingDiscountVnd BigInt             @default(0) @map("shipping_discount_vnd")
+  payableVnd          BigInt             @map("payable_vnd")
+  quoteHash           String             @map("quote_hash") @db.Char(64)
+  cancellationReason  String?            @map("cancellation_reason") @db.VarChar(500)
+  adminNote           String?            @map("admin_note") @db.VarChar(2000)
+  tags                String[]           @default([])
+  version             Int                @default(1)
+  confirmedAt         DateTime?          @map("confirmed_at") @db.Timestamptz(6)
+  cancelledAt         DateTime?          @map("cancelled_at") @db.Timestamptz(6)
+  closedAt            DateTime?          @map("closed_at") @db.Timestamptz(6)
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store             Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  member            Member                @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+  cart              Cart?                 @relation(fields: [storeId, cartId], references: [storeId, id], onDelete: Restrict)
+  address           Address?              @relation(fields: [storeId, addressId], references: [storeId, id], onDelete: Restrict)
+  reservation       InventoryReservation? @relation(fields: [storeId, reservationId], references: [storeId, id], onDelete: Restrict)
+  items             OrderItem[]
+  snapshots         OrderSnapshot[]
+  transitions       OrderTransition[]
+  idempotency       IdempotencyRecord[]
+  usedMemberCoupons MemberCoupon[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, orderNumber])
+  @@unique([storeId, reservationId])
+  @@index([storeId, memberId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([storeId, status, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("orders")
+}
+
+model OrderItem {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId           String   @map("store_id") @db.Uuid
+  orderId           String   @map("order_id") @db.Uuid
+  skuId             String   @map("sku_id") @db.Uuid
+  productId         String   @map("product_id") @db.Uuid
+  brandId           String   @map("brand_id") @db.Uuid
+  categoryId        String   @map("category_id") @db.Uuid
+  skuCode           String   @map("sku_code") @db.VarChar(64)
+  productName       String   @map("product_name") @db.VarChar(240)
+  brandName         String   @map("brand_name") @db.VarChar(240)
+  optionSnapshot    Json     @map("option_snapshot")
+  unitPriceVnd      BigInt   @map("unit_price_vnd")
+  quantity          Int
+  subtotalVnd       BigInt   @map("subtotal_vnd")
+  itemDiscountVnd   BigInt   @default(0) @map("item_discount_vnd")
+  couponDiscountVnd BigInt   @default(0) @map("coupon_discount_vnd")
+  orderDiscountVnd  BigInt   @default(0) @map("order_discount_vnd")
+  payableVnd        BigInt   @map("payable_vnd")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store    Store    @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order    Order    @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  sku      Sku      @relation(fields: [storeId, skuId], references: [storeId, id], onDelete: Restrict)
+  product  Product  @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict)
+  brand    Brand    @relation(fields: [storeId, brandId], references: [storeId, id], onDelete: Restrict)
+  category Category @relation(fields: [storeId, categoryId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@index([storeId, orderId])
+  @@map("order_items")
+}
+
+model OrderSnapshot {
+  id           String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId      String            @map("store_id") @db.Uuid
+  orderId      String            @map("order_id") @db.Uuid
+  snapshotType OrderSnapshotType @map("snapshot_type")
+  payload      Json
+  payloadHash  String            @map("payload_hash") @db.Char(64)
+  createdAt    DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order Order @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, orderId, snapshotType])
+  @@map("order_snapshots")
+}
+
+model OrderTransition {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId       String         @map("store_id") @db.Uuid
+  orderId       String         @map("order_id") @db.Uuid
+  fromStatus    OrderStatus?   @map("from_status")
+  toStatus      OrderStatus    @map("to_status")
+  event         String         @db.VarChar(64)
+  reason        String?        @db.VarChar(500)
+  actorType     AuditActorType @map("actor_type")
+  actorId       String         @map("actor_id") @db.Uuid
+  correlationId String         @map("correlation_id") @db.VarChar(128)
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order Order @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@index([storeId, orderId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("order_transitions")
+}
+
+model IdempotencyRecord {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId        String   @map("store_id") @db.Uuid
+  memberId       String?  @map("member_id") @db.Uuid
+  orderId        String?  @map("order_id") @db.Uuid
+  operation      String   @db.VarChar(64)
+  idempotencyKey String   @map("idempotency_key") @db.VarChar(128)
+  requestHash    String   @map("request_hash") @db.Char(64)
+  response       Json
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store  Store   @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  member Member? @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+  order  Order?  @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, operation, idempotencyKey])
+  @@index([storeId, expiresAt])
+  @@map("idempotency_records")
 }
 
 enum InventoryMovementType {
@@ -1560,6 +1806,7 @@ enum CouponStatus {
 
 enum MemberCouponStatus {
   CLAIMED
+  USED
   EXPIRED
   DISABLED
 
@@ -1572,6 +1819,62 @@ enum CartStatus {
   ABANDONED
 
   @@map("cart_status")
+}
+
+enum AddressStatus {
+  ACTIVE
+  DISABLED
+
+  @@map("address_status")
+}
+
+enum AdministrativeAreaLevel {
+  PROVINCE
+  DISTRICT
+  WARD
+
+  @@map("administrative_area_level")
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PENDING_CONFIRMATION
+  CONFIRMED
+  PENDING_FULFILLMENT
+  SHIPPED
+  DELIVERED
+  COMPLETED
+  CANCELLED
+  CLOSED
+
+  @@map("order_status")
+}
+
+enum OrderPaymentMethod {
+  COD
+  ONLINE
+
+  @@map("order_payment_method")
+}
+
+enum OrderPaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  EXPIRED
+  CANCELLED
+
+  @@map("order_payment_status")
+}
+
+enum OrderSnapshotType {
+  ADDRESS
+  PRICING
+  DELIVERY_POLICY
+  COUPON
+
+  @@map("order_snapshot_type")
 }
 
 enum ProductStatus {

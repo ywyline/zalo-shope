@@ -371,9 +371,16 @@ export function CartView({ locale }: { locale: Locale }): JSX.Element {
           <strong>{formatVnd(cart.quote?.merchandise_payable_vnd ?? 0, locale)}</strong>
         </div>
         <p>{message(locale, 'cart.checkoutNext')}</p>
-        <button className="button-primary" disabled type="button">
+        <Link
+          aria-disabled={cart.blocking || !cart.items.some((item) => item.selected)}
+          className="button-primary"
+          onClick={(event) => {
+            if (cart.blocking || !cart.items.some((item) => item.selected)) event.preventDefault();
+          }}
+          to="/checkout"
+        >
           {message(locale, 'cart.checkoutUnavailable')}
-        </button>
+        </Link>
       </section>
     </div>
   );

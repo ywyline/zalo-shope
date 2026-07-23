@@ -546,10 +546,12 @@ export class PricingService {
     ) {
       throw new ConflictException('COUPON_INVALID');
     }
-    // M3 has no completed-order facts, so an authenticated member satisfies
-    // new-customer eligibility until M4 replaces this with an order query.
-    if (coupon.newCustomerOnly && !member && !adminPreview) {
-      throw new ConflictException('MEMBER_INELIGIBLE');
+    if (coupon.newCustomerOnly && !adminPreview) {
+      if (!member) throw new ConflictException('MEMBER_INELIGIBLE');
+      const completedOrders = await transaction.order.count({
+        where: { memberId: member.id, status: 'COMPLETED', storeId },
+      });
+      if (completedOrders > 0) throw new ConflictException('MEMBER_INELIGIBLE');
     }
     const promotion = promotions.find((item) => item.id === coupon.promotionVersionId);
     if (!promotion || promotion.bucket !== 'COUPON') {
