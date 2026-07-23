@@ -3,11 +3,58 @@ import { createHmac } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createMediaStorageS3Client,
   createZaloTestToken,
   DeterministicZaloTestProvider,
+  S3MediaStorageProvider,
   ZaloOpenApiIdentityProvider,
   ZaloProviderError,
 } from './index';
+
+describe('S3 media storage configuration', () => {
+  it('passes a temporary STS session token to the S3 client', async () => {
+    const client = createMediaStorageS3Client({
+      S3_ACCESS_KEY: 'temporary-access-key',
+      S3_BUCKET: 'zalo-shop-staging',
+      S3_ENDPOINT: 'https://objects.example.test',
+      S3_FORCE_PATH_STYLE: false,
+      S3_REGION: 'ap-southeast-1',
+      S3_SECRET_KEY: 'temporary-secret-key',
+      S3_SESSION_TOKEN: 'temporary-session-token',
+    });
+    try {
+      await expect(client.config.credentials()).resolves.toMatchObject({
+        accessKeyId: 'temporary-access-key',
+        secretAccessKey: 'temporary-secret-key',
+        sessionToken: 'temporary-session-token',
+      });
+    } finally {
+      client.destroy();
+    }
+  });
+
+  it('binds a create-only upload to an If-None-Match precondition', async () => {
+    const storage = new S3MediaStorageProvider({
+      S3_ACCESS_KEY: 'temporary-access-key',
+      S3_BUCKET: 'zalo-shop-staging',
+      S3_ENDPOINT: 'https://objects.example.test',
+      S3_FORCE_PATH_STYLE: false,
+      S3_REGION: 'ap-southeast-1',
+      S3_SECRET_KEY: 'temporary-secret-key',
+      S3_SESSION_TOKEN: 'temporary-session-token',
+    });
+
+    await expect(
+      storage.createUploadTarget({
+        byteSize: 5,
+        checksumSha256: 'a'.repeat(64),
+        contentType: 'application/octet-stream',
+        createOnly: true,
+        objectKey: 'staging/store/readiness/run/probe.bin',
+      }),
+    ).resolves.toMatchObject({ headers: { 'if-none-match': '*' } });
+  });
+});
 
 const options = {
   audience: 'zalo-test',

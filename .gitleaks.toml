@@ -1,0 +1,28 @@
+title = "Zalo Shop secret scanning configuration"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+    [[rules.allowlists]]
+    description = "Public RFC 6238 SHA-1 TOTP vector in security tests"
+    condition = "AND"
+    paths = ['''^(packages/security/src/index\.spec\.ts|tests/integration/m1-auth\.test\.ts)$''']
+    regexTarget = "secret"
+    regexes = ['''^GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ$''']
+
+    [[rules.allowlists]]
+    description = "Deterministic non-secret SKU option combination fixture"
+    condition = "AND"
+    paths = ['''^tests/integration/m36-cart-api\.test\.ts$''']
+    regexTarget = "secret"
+    regexes = ['''^m36-fashion=0$''']
+
+    [[rules.allowlists]]
+    description = "Inert logger redaction sentinels"
+    condition = "AND"
+    paths = ['''^packages/logger/src/index\.spec\.ts$''']
+    regexTarget = "secret"
+    regexes = ['''^(M37_API_KEY_SECRET|M37_CORRELATION_SECRET)$''']

@@ -131,7 +131,7 @@ SELECT set_config('app.correlation_id', $4, true);
 1. Mini App 先使用 `getSetting` 判断授权状态。
 2. 用户主动进入需要手机号的流程后调用 `authorize(scope.userPhonenumber)`。
 3. 授权成功后，客户端把一次性 token 交给 API；解码操作只在服务端适配器进行。
-4. 拒绝时展示手工输入；服务端规范化为 E.164 越南号码并记录 `DENIED` 与后续 `MANUAL` 来源。
+4. 拒绝时展示手工输入；服务端将越南或中国大陆手机号规范化为 E.164，并记录 `DENIED` 与后续 `MANUAL` 来源。
 5. 未配置真实 Zalo 服务端凭据时不调用或伪造解码 API。
 
 ### 3.5 会话
@@ -254,7 +254,8 @@ interface ZaloIdentityProvider {
 - 服务端错误返回 `message_key`；客户端决定显示语言，越南语资源是 CI 必填基线。
 - VND 使用整数输入和 `Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', maximumFractionDigits: 0 })`。
 - 日期使用显式 `Asia/Ho_Chi_Minh`；数据库和 API 传 ISO 8601 UTC。
-- 越南手机号接受 `0xxxxxxxxx`、`84xxxxxxxxx`、`+84xxxxxxxxx`，规范化为 `+84...`；不接受模糊长度或非移动/有效号段规则之外输入。
+- 越南手机号接受 `0xxxxxxxxx`、`84xxxxxxxxx`、`+84xxxxxxxxx`，规范化为 `+84...`；中国大陆手机号接受 `1xxxxxxxxxx`、`86xxxxxxxxxxx`、`+86xxxxxxxxxxx`，规范化为 `+86...`。
+- 会员联系方式只允许受支持的越南或中国大陆移动号码；其他国家/地区、模糊长度和明显无效号段均拒绝。现有 `+84` 密文与 HMAC 无需迁移，`+86` 复用相同的按商城加密、查重、同意和审计边界。
 - 地址格式器按“详细地址，坊/社，区/县，省/市，Việt Nam”组合；M1 只实现结构与格式器，行政区主数据在 M4 引入。
 
 ## 8. UI 范围
@@ -328,7 +329,8 @@ production 启动时必须拒绝弱默认值、测试 provider、缺失加密密
 2. 真实 Zalo Token/手机号解码只能在 Zalo 真机和服务端凭据具备后验收；浏览器模拟器不能证明集成完成。
 3. 管理端生产域名/同站策略未确定，刷新 Cookie 部署形态需在部署方案确定后复核。
 4. PII 生产密钥必须进入批准的密钥管理系统；M1 只能验证 local/test 密钥路径。
-5. 越南手机号号段会变化；M1 只做严格 E.164 结构与常见移动前缀校验，生产发布前需更新权威号段数据。
+5. 越南和中国大陆手机号号段会变化；M1 只做严格 E.164 结构与常见移动前缀校验，生产发布前需更新权威号段数据。
+6. 接受中国大陆手机号扩大了个人信息主体范围；上线前需由专业人员复核中国个人信息保护、跨境处理告知/同意和数据主体权利路径，本设计不构成法律意见。
 
 ## 13. 官方平台依据
 

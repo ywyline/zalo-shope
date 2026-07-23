@@ -19,7 +19,7 @@ const storefronts = [
     primarySku: 'beauty-local-primary-default',
     productZh: '晨露焕新精华',
     titles: { en: 'Glow, softly', vi: 'Rạng rỡ thật dịu dàng', zh: '温柔焕亮' },
-    url: 'http://127.0.0.1:5174/',
+    url: `http://127.0.0.1:${process.env.E2E_BEAUTY_MINI_APP_PORT ?? '5174'}/`,
   },
   {
     code: 'fashion-local',
@@ -326,4 +326,42 @@ test('buyer cart keeps an explicit recoverable Zalo sign-in state on web preview
   await expect(page.getByRole('heading', { name: '连接后使用购物车' })).toBeVisible();
   await expectNoHorizontalOverflow(page);
   expect(browserErrors).toEqual([]);
+});
+
+test('profile phone controls expose clear selected and fallback states', async ({
+  page,
+}, testInfo) => {
+  await installZaloBridge(page, testInfo.project.name);
+  await page.goto(`${storefronts[0].url}#/profile`);
+  await expect(page.locator('.status-card.success')).toBeVisible();
+
+  const zaloButton = page.locator('.identity-actions button').nth(0);
+  const manualButton = page.locator('.identity-actions button').nth(1);
+  const [zaloInactiveBackground, manualInactiveBackground] = await Promise.all([
+    zaloButton.evaluate((element) => getComputedStyle(element).backgroundColor),
+    manualButton.evaluate((element) => getComputedStyle(element).backgroundColor),
+  ]);
+
+  await expect(zaloButton).toHaveAttribute('aria-pressed', 'false');
+  await expect(manualButton).toHaveAttribute('aria-pressed', 'false');
+  expect(zaloInactiveBackground).toBe(manualInactiveBackground);
+  await manualButton.click();
+  await expect(manualButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(zaloButton).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('.manual-form')).toBeVisible();
+  const [zaloAfterSelection, manualAfterSelection] = await Promise.all([
+    zaloButton.evaluate((element) => getComputedStyle(element).backgroundColor),
+    manualButton.evaluate((element) => getComputedStyle(element).backgroundColor),
+  ]);
+  expect(zaloAfterSelection).toBe(zaloInactiveBackground);
+  expect(manualAfterSelection).not.toBe(manualInactiveBackground);
+  expect(manualAfterSelection).not.toBe(zaloAfterSelection);
+
+  await zaloButton.click();
+  await expect(page.locator('.manual-form')).toBeVisible();
+  await expect(page.locator('.feedback')).toBeVisible();
+  await manualButton.click();
+  await expect(page.locator('.manual-form')).toBeVisible();
+  await expect(page.locator('.feedback')).toHaveCount(0);
+  await expect(manualButton).toHaveAttribute('aria-pressed', 'true');
 });

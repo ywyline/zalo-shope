@@ -65,4 +65,53 @@ describe('local infrastructure', () => {
       await storage.removeObject(objectKey);
     }
   });
+
+  it('prevents a create-only signed upload from replacing an existing object', async () => {
+    const storage = new S3MediaStorageProvider(runtimeConfig);
+    const originalBody = Buffer.from('readiness-original-object');
+    const replacementBody = Buffer.from('readiness-replacement-object');
+    const objectKey = `test/10000000-0000-4000-8000-000000000001/readiness/${randomUUID()}`;
+
+    try {
+      const firstTarget = await storage.createUploadTarget({
+        byteSize: originalBody.length,
+        checksumSha256: createHash('sha256').update(originalBody).digest('hex'),
+        contentType: 'application/octet-stream',
+        createOnly: true,
+        objectKey,
+      });
+      const firstResponse = await fetch(firstTarget.url, {
+        body: originalBody,
+        headers: firstTarget.headers,
+        method: 'PUT',
+      });
+      expect(firstResponse.status).toBeLessThan(300);
+
+      const secondTarget = await storage.createUploadTarget({
+        byteSize: replacementBody.length,
+        checksumSha256: createHash('sha256').update(replacementBody).digest('hex'),
+        contentType: 'application/octet-stream',
+        createOnly: true,
+        objectKey,
+      });
+      const secondResponse = await fetch(secondTarget.url, {
+        body: replacementBody,
+        headers: secondTarget.headers,
+        method: 'PUT',
+      });
+      expect([409, 412]).toContain(secondResponse.status);
+
+      const readTarget = await storage.createReadUrl(objectKey);
+      const readResponse = await fetch(readTarget.url);
+      expect(readResponse.status).toBe(200);
+      await expect(readResponse.arrayBuffer()).resolves.toEqual(
+        originalBody.buffer.slice(
+          originalBody.byteOffset,
+          originalBody.byteOffset + originalBody.byteLength,
+        ),
+      );
+    } finally {
+      await storage.removeObject(objectKey);
+    }
+  });
 });

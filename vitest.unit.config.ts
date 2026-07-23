@@ -7,7 +7,7 @@ export default defineConfig({
       reporter: ['text', 'json', 'html'],
     },
     environment: 'node',
-    include: ['apps/**/*.spec.ts', 'packages/**/*.spec.ts'],
+    include: ['apps/**/*.spec.ts', 'packages/**/*.spec.ts', 'tests/readiness/**/*.spec.ts'],
     passWithNoTests: false,
   },
 });

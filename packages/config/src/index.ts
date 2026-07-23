@@ -15,6 +15,45 @@ const optionalSecret = z.preprocess(
   z.string().min(8).optional(),
 );
 
+const productionPlaceholderValues = {
+  AUTH_JWT_SECRET: [
+    'local_jwt_secret_replace_before_shared_deployment',
+    'test_jwt_secret_that_is_at_least_32_characters',
+  ],
+  PII_ENCRYPTION_KEY: [
+    'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+    'AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=',
+  ],
+  PII_HASH_KEY: [
+    'local_pii_hash_key_replace_before_shared_deployment',
+    'test_pii_hash_key_that_is_at_least_32_characters',
+  ],
+  S3_ACCESS_KEY: ['minio_local'],
+  S3_BUCKET: ['zalo-shop-local'],
+  S3_ENDPOINT: ['http://localhost:9000'],
+  S3_SECRET_KEY: ['minio_local_development_only'],
+} as const;
+
+type ProductionPlaceholderField = keyof typeof productionPlaceholderValues;
+
+function isProductionPlaceholder(field: ProductionPlaceholderField, value: string): boolean {
+  const placeholders = productionPlaceholderValues[field] as readonly string[];
+  if (field === 'PII_ENCRYPTION_KEY') {
+    const decodedValue = Buffer.from(value, 'base64');
+    return placeholders.some((placeholder) =>
+      decodedValue.equals(Buffer.from(placeholder, 'base64')),
+    );
+  }
+  if (field !== 'S3_ENDPOINT') return placeholders.includes(value);
+
+  try {
+    const normalizedValue = new URL(value).href;
+    return placeholders.some((placeholder) => new URL(placeholder).href === normalizedValue);
+  } catch {
+    return false;
+  }
+}
+
 const runtimeConfigSchema = z
   .object({
     AUTH_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
@@ -68,6 +107,7 @@ const runtimeConfigSchema = z
     S3_FORCE_PATH_STYLE: booleanFromString,
     S3_REGION: z.string().min(1).default('us-east-1'),
     S3_SECRET_KEY: z.string().min(8),
+    S3_SESSION_TOKEN: optionalSecret,
     WORKER_HOST: z.string().min(1).default('0.0.0.0'),
     WORKER_PORT: z.coerce.number().int().min(1).max(65_535).default(3001),
     ZALO_APP_ID: optionalNumericIdentifier,
@@ -79,6 +119,18 @@ const runtimeConfigSchema = z
     ZALO_TOKEN_METADATA_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(300),
   })
   .superRefine((config, context) => {
+    if (config.NODE_ENV === 'production') {
+      for (const field of Object.keys(
+        productionPlaceholderValues,
+      ) as ProductionPlaceholderField[]) {
+        if (!isProductionPlaceholder(field, config[field])) continue;
+        context.addIssue({
+          code: 'custom',
+          message: 'must not use a repository development or test placeholder in production',
+          path: [field],
+        });
+      }
+    }
     if (config.ZALO_IDENTITY_PROVIDER === 'test' && !config.ZALO_TEST_TOKEN_SECRET) {
       context.addIssue({
         code: 'custom',

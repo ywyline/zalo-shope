@@ -23,31 +23,49 @@ export interface MediaStorageProvider {
     byteSize: number;
     checksumSha256: string;
     contentType: string;
+    createOnly?: boolean;
     objectKey: string;
   }): Promise<{ expiresAt: Date; headers: Readonly<Record<string, string>>; url: string }>;
   inspectObject(objectKey: string): Promise<MediaObjectMetadata>;
   removeObject?(objectKey: string): Promise<void>;
 }
 
+export type S3MediaStorageConfig = Pick<
+  RuntimeConfig,
+  | 'S3_ACCESS_KEY'
+  | 'S3_BUCKET'
+  | 'S3_ENDPOINT'
+  | 'S3_FORCE_PATH_STYLE'
+  | 'S3_REGION'
+  | 'S3_SECRET_KEY'
+  | 'S3_SESSION_TOKEN'
+>;
+
+export function createMediaStorageS3Client(config: S3MediaStorageConfig): S3Client {
+  return new S3Client({
+    credentials: {
+      accessKeyId: config.S3_ACCESS_KEY,
+      secretAccessKey: config.S3_SECRET_KEY,
+      ...(config.S3_SESSION_TOKEN ? { sessionToken: config.S3_SESSION_TOKEN } : {}),
+    },
+    endpoint: config.S3_ENDPOINT,
+    forcePathStyle: config.S3_FORCE_PATH_STYLE,
+    region: config.S3_REGION,
+  });
+}
+
 export class S3MediaStorageProvider implements MediaStorageProvider {
   readonly #client: S3Client;
 
-  public constructor(private readonly config: RuntimeConfig) {
-    this.#client = new S3Client({
-      credentials: {
-        accessKeyId: config.S3_ACCESS_KEY,
-        secretAccessKey: config.S3_SECRET_KEY,
-      },
-      endpoint: config.S3_ENDPOINT,
-      forcePathStyle: config.S3_FORCE_PATH_STYLE,
-      region: config.S3_REGION,
-    });
+  public constructor(private readonly config: S3MediaStorageConfig) {
+    this.#client = createMediaStorageS3Client(config);
   }
 
   public async createUploadTarget(input: {
     byteSize: number;
     checksumSha256: string;
     contentType: string;
+    createOnly?: boolean;
     objectKey: string;
   }) {
     const expiresIn = 300;
@@ -57,12 +75,14 @@ export class S3MediaStorageProvider implements MediaStorageProvider {
       ChecksumSHA256: Buffer.from(input.checksumSha256, 'hex').toString('base64'),
       ContentLength: input.byteSize,
       ContentType: input.contentType,
+      ...(input.createOnly ? { IfNoneMatch: '*' } : {}),
       Key: input.objectKey,
     });
     return {
       expiresAt: new Date(Date.now() + expiresIn * 1_000),
       headers: {
         'content-type': input.contentType,
+        ...(input.createOnly ? { 'if-none-match': '*' } : {}),
         'x-amz-checksum-sha256': Buffer.from(input.checksumSha256, 'hex').toString('base64'),
       },
       url: await getSignedUrl(this.#client, command, { expiresIn }),

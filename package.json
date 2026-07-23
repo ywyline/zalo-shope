@@ -26,8 +26,12 @@
     "test:e2e:install": "playwright install chromium webkit",
     "test:e2e:run": "corepack pnpm --filter @zalo-shop/database migrate:deploy && corepack pnpm --filter @zalo-shop/database seed && playwright test",
     "test:integration": "corepack pnpm run build:packages && vitest run --config vitest.integration.config.ts",
+    "test:migration:m2-upgrade": "dotenv -e .env.test.example -- tsx tests/migration/m2-upgrade.ts",
+    "test:readiness:http": "tsx tests/readiness/http-baseline.ts",
+    "test:readiness:storage": "corepack pnpm run build:packages && tsx tests/readiness/storage-preflight.ts",
     "test:unit": "corepack pnpm run build:packages && vitest run --config vitest.unit.config.ts",
-    "typecheck": "corepack pnpm run build:packages && corepack pnpm --recursive --filter \"./apps/**\" run typecheck",
+    "typecheck": "corepack pnpm run build:packages && corepack pnpm --recursive --filter \"./apps/**\" run typecheck && corepack pnpm run typecheck:readiness",
+    "typecheck:readiness": "tsc --noEmit --strict --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext --types node tests/migration/m2-upgrade.ts tests/readiness/http-baseline.ts tests/readiness/storage-preflight.ts tests/readiness/readiness-safety.spec.ts",
     "verify": "corepack pnpm run format:check && corepack pnpm run lint && corepack pnpm run typecheck && corepack pnpm run test:unit && corepack pnpm run build && corepack pnpm run db:validate"
   },
   "devDependencies": {

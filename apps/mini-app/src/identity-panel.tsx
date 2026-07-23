@@ -4,12 +4,16 @@ import { translate, type MessageKey } from '@zalo-shop/i18n';
 import { API_BASE, STORE_CODE, type Locale } from './catalog-api';
 import { useMemberSession } from './member-session';
 
+type PhoneSource = 'manual' | 'zalo';
+
 export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
   const session = useMemberSession();
   const [manualOpen, setManualOpen] = useState(false);
   const [phone, setPhone] = useState('');
   const [consent, setConsent] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [requestingZalo, setRequestingZalo] = useState(false);
+  const [phoneSource, setPhoneSource] = useState<PhoneSource>();
   const [feedback, setFeedback] = useState<string>();
   const t = (key: MessageKey): string => translate(locale, key);
 
@@ -41,7 +45,15 @@ export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
           method: 'PUT',
         },
       );
-      if (!response.ok) throw new Error('Phone update failed');
+      if (!response.ok) {
+        if (isZalo && response.status === 400) {
+          setManualOpen(true);
+          setPhoneSource('manual');
+          setFeedback(t('identity.phoneUnsupported'));
+          return;
+        }
+        throw new Error('Phone update failed');
+      }
       const result = (await response.json()) as { masked_phone?: string };
       setFeedback(`${t('identity.phoneSaved')} ${result.masked_phone ?? ''}`.trim());
       setManualOpen(false);
@@ -53,6 +65,10 @@ export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
   };
 
   const requestZaloPhone = async (): Promise<void> => {
+    setRequestingZalo(true);
+    setManualOpen(false);
+    setPhoneSource('zalo');
+    setFeedback(undefined);
     try {
       const { getPhoneNumber } = await import('zmp-sdk');
       const result = await getPhoneNumber();
@@ -60,8 +76,17 @@ export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
       await savePhone({ phoneToken: result.token });
     } catch {
       setManualOpen(true);
+      setPhoneSource('manual');
       setFeedback(t('identity.phoneDenied'));
+    } finally {
+      setRequestingZalo(false);
     }
+  };
+
+  const openManualPhone = (): void => {
+    setManualOpen(true);
+    setPhoneSource('manual');
+    setFeedback(undefined);
   };
 
   const submitManual = (event: React.FormEvent<HTMLFormElement>): void => {
@@ -91,6 +116,7 @@ export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
         <div className="status-card error" role="alert">
           <span aria-hidden="true">!</span>
           <strong>{t('identity.error')}</strong>
+          {session.failureCode && <code>{session.failureCode}</code>}
           <button onClick={() => void session.connect()} type="button">
             {t('app.retry')}
           </button>
@@ -105,16 +131,20 @@ export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
 
       <div className="identity-actions">
         <button
-          className="button-primary"
-          disabled={session.status !== 'ready'}
+          aria-busy={requestingZalo}
+          aria-pressed={phoneSource === 'zalo'}
+          className={`phone-source-button${phoneSource === 'zalo' ? ' is-selected' : ''}`}
+          disabled={session.status !== 'ready' || requestingZalo || saving}
           onClick={() => void requestZaloPhone()}
           type="button"
         >
           {t('identity.requestPhone')}
         </button>
         <button
-          className="button-quiet"
-          onClick={() => setManualOpen((value) => !value)}
+          aria-pressed={phoneSource === 'manual'}
+          className={`phone-source-button${phoneSource === 'manual' ? ' is-selected' : ''}`}
+          disabled={requestingZalo || saving}
+          onClick={openManualPhone}
           type="button"
         >
           {t('identity.manual')}
@@ -133,7 +163,7 @@ export function IdentityPanel({ locale }: { locale: Locale }): JSX.Element {
               autoComplete="tel"
               inputMode="tel"
               onChange={(event) => setPhone(event.target.value)}
-              placeholder="0912 345 678"
+              placeholder={t('identity.phonePlaceholder')}
               value={phone}
             />
           </label>

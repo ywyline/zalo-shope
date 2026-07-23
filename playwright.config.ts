@@ -7,6 +7,7 @@ const webServerEnvironment = {
 };
 const e2eApiPort = process.env.E2E_API_PORT ?? process.env.API_PORT ?? '3000';
 const e2eApiBaseUrl = `http://127.0.0.1:${e2eApiPort}`;
+const e2eBeautyMiniAppPort = process.env.E2E_BEAUTY_MINI_APP_PORT ?? '5174';
 
 export default defineConfig({
   expect: { timeout: 7_500 },
@@ -67,8 +68,7 @@ export default defineConfig({
       url: 'http://127.0.0.1:5173/',
     },
     {
-      command:
-        'corepack pnpm --filter @zalo-shop/mini-app exec vite --host 127.0.0.1 --port 5174 --strictPort',
+      command: `corepack pnpm --filter @zalo-shop/mini-app exec vite --host 127.0.0.1 --port ${e2eBeautyMiniAppPort} --strictPort`,
       env: {
         ...webServerEnvironment,
         VITE_API_BASE_URL: '/api',
@@ -81,7 +81,7 @@ export default defineConfig({
       stderr: 'pipe',
       stdout: 'ignore',
       timeout: 120_000,
-      url: 'http://127.0.0.1:5174/',
+      url: `http://127.0.0.1:${e2eBeautyMiniAppPort}/`,
     },
     {
       command:

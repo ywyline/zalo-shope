@@ -17,7 +17,7 @@
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "react-router-dom": "6.30.4",
-    "zmp-sdk": "2.51.6",
+    "zmp-sdk": "2.51.8",
     "zmp-ui": "1.11.14"
   },
   "devDependencies": {

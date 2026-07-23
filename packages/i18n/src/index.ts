@@ -83,12 +83,16 @@ const vi = {
     'Danh tính được xác minh riêng cho từng cửa hàng. Số điện thoại chỉ được xin để liên hệ đơn hàng và giao hàng khi bạn chủ động chọn.',
   'identity.loading': 'Đang kết nối an toàn…',
   'identity.manual': 'Nhập số điện thoại',
-  'identity.manualHint': 'Bạn có thể nhập số Việt Nam. Số được mã hóa và không hiển thị đầy đủ.',
+  'identity.manualHint':
+    'Bạn có thể nhập số di động Việt Nam hoặc Trung Quốc đại lục. Số được mã hóa và không hiển thị đầy đủ.',
   'identity.manualRequired': 'Vui lòng nhập số điện thoại và xác nhận đồng ý.',
-  'identity.phone': 'Số điện thoại Việt Nam',
+  'identity.phone': 'Số di động Việt Nam hoặc Trung Quốc',
   'identity.phoneDenied': 'Bạn chưa cấp quyền số điện thoại. Hãy dùng cách nhập thủ công.',
   'identity.phoneError': 'Không thể lưu số điện thoại lúc này. Vui lòng thử lại.',
   'identity.phoneSaved': 'Đã lưu an toàn:',
+  'identity.phoneUnsupported':
+    'Số điện thoại Zalo không phải số di động Việt Nam hoặc Trung Quốc đại lục được hỗ trợ. Hãy nhập thủ công.',
+  'identity.phonePlaceholder': '0912 345 678 / 138 1234 5678',
   'identity.phoneTitle': 'Thêm số điện thoại',
   'identity.ready': 'Đã kết nối với Zalo',
   'identity.requestPhone': 'Dùng số từ Zalo',
@@ -222,12 +226,14 @@ const zh: Partial<Record<MessageKey, string>> = {
   'identity.intro': '身份按商城独立验证。只有你主动选择时，才会请求手机号用于订单联系和配送。',
   'identity.loading': '正在安全连接…',
   'identity.manual': '手工输入手机号',
-  'identity.manualHint': '你可以输入越南手机号；号码会加密保存，不会完整显示。',
+  'identity.manualHint': '你可以输入越南或中国大陆手机号；号码会加密保存，不会完整显示。',
   'identity.manualRequired': '请输入手机号并确认同意。',
-  'identity.phone': '越南手机号',
+  'identity.phone': '越南或中国大陆手机号',
   'identity.phoneDenied': '你尚未授权手机号，可以使用手工输入。',
   'identity.phoneError': '当前无法保存手机号，请重试。',
   'identity.phoneSaved': '已安全保存：',
+  'identity.phoneUnsupported': 'Zalo 账号手机号不是受支持的越南或中国大陆手机号，请使用手工输入。',
+  'identity.phonePlaceholder': '0912 345 678 / 138 1234 5678',
   'identity.phoneTitle': '添加手机号',
   'identity.ready': '已连接 Zalo',
   'identity.requestPhone': '使用 Zalo 手机号',
@@ -360,12 +366,16 @@ const en: Partial<Record<MessageKey, string>> = {
     'Identity is verified per store. Your phone is requested for order contact and delivery only when you choose to share it.',
   'identity.loading': 'Connecting securely…',
   'identity.manual': 'Enter phone manually',
-  'identity.manualHint': 'Enter a Vietnamese number. It is encrypted and never shown in full.',
+  'identity.manualHint':
+    'Enter a Vietnamese or mainland China mobile number. It is encrypted and never shown in full.',
   'identity.manualRequired': 'Enter a phone number and confirm consent.',
-  'identity.phone': 'Vietnamese phone number',
+  'identity.phone': 'Vietnam or mainland China mobile number',
   'identity.phoneDenied': 'Phone access was not granted. Use manual entry instead.',
   'identity.phoneError': 'The phone number could not be saved. Please retry.',
   'identity.phoneSaved': 'Saved securely:',
+  'identity.phoneUnsupported':
+    'The Zalo account phone is not a supported Vietnam or mainland China mobile number. Use manual entry instead.',
+  'identity.phonePlaceholder': '0912 345 678 / 138 1234 5678',
   'identity.phoneTitle': 'Add a phone number',
   'identity.ready': 'Connected to Zalo',
   'identity.requestPhone': 'Use Zalo phone number',
@@ -455,6 +465,7 @@ export function formatVietnamDate(value: Date | number | string, locale: Locale 
 }
 
 const VIETNAM_MOBILE_PATTERN = /^0(?:3[2-9]|5[25689]|7[06-9]|8[1-689]|9[0-46-9])\d{7}$/;
+const CHINA_MOBILE_PATTERN = /^1[3-9]\d{9}$/;
 
 export function normalizeVietnamPhone(input: string): string {
   const compact = input.replace(/[\s().-]/g, '');
@@ -468,6 +479,32 @@ export function normalizeVietnamPhone(input: string): string {
     throw new TypeError('Invalid Vietnam mobile number');
   }
   return `+84${national.slice(1)}`;
+}
+
+export function normalizeChinaPhone(input: string): string {
+  const compact = input.replace(/[\s().-]/g, '');
+  const national = compact.startsWith('+86')
+    ? compact.slice(3)
+    : compact.startsWith('86')
+      ? compact.slice(2)
+      : compact;
+
+  if (!CHINA_MOBILE_PATTERN.test(national)) {
+    throw new TypeError('Invalid mainland China mobile number');
+  }
+  return `+86${national}`;
+}
+
+export function normalizeSupportedPhone(input: string): string {
+  try {
+    return normalizeVietnamPhone(input);
+  } catch {
+    try {
+      return normalizeChinaPhone(input);
+    } catch {
+      throw new TypeError('Invalid supported mobile number');
+    }
+  }
 }
 
 export type VietnamAddress = Readonly<{

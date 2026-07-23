@@ -1,6 +1,6 @@
 # M3 库存、搜索、购物车、促销与价格计算阶段总结
 
-> 状态：M3.1-M3.7 已按批准边界完成自动化收口；外部上线条件与迁移测试保留项见第 6 节
+> 状态：M3.1-M3.7 已按批准边界完成自动化收口；M3 当时的保留项及 Post-M3 技术收口见第 6、7 节
 >
 > 日期：2026-07-22
 >
@@ -72,16 +72,25 @@ M3.7 新增两条前向完整性迁移：
 - M3 只做向后兼容新增；不删除或重命名 M1/M2 接口与业务表。应用回滚到 M2 时保留 M3 schema 和事实，停止 M3 路由/worker。
 - 搜索文档是可重建派生数据；库存流水、预留、促销命令、发布版本、优惠券领取和购物车事实不能用回滚脚本删除。产生事实后只允许向前修复；库存错误使用新的反向调整。
 - 独立全新 scratch 库已人工演练 9 条迁移全量 deploy，重复 deploy 返回 `No pending migrations to apply`，两次 `NODE_ENV=test` seed 成功。授权管理员在仅有 seed 的 0 商品/0 文档基线上连续两次重建成功，未授权 UUID 被明确拒绝。
-- 无 M3 事实时，两条 M3.7 `down.sql` 均成功并可重新前滚；插入一条专用 `inventory_operation` 事实后，两条 down 分别真实返回 SQLSTATE `55000`。清除该专用事实后，9 个 `down.sql` 按逆序全部成功。scratch 库随后已删除，仓库目前没有可重复执行的迁移演练脚本。
-- 尚缺从只包含 M2 schema/数据的自动化升级 fixture。现有空库/人工 scratch 证据不能替代该 fixture；在补齐前，M2-only 升级回归属于明确的迁移测试保留项。
+- 无 M3 事实时，两条 M3.7 `down.sql` 均成功并可重新前滚；插入一条专用 `inventory_operation` 事实后，两条 down 分别真实返回 SQLSTATE `55000`。清除该专用事实后，9 个 `down.sql` 按逆序全部成功。scratch 库随后已删除；这是 M3 收口时的人工历史证据。
+- M3 收口时尚缺从只包含 M2 schema/数据的自动化升级 fixture。Post-M3 已新增 `corepack pnpm test:migration:m2-upgrade`，使用真实 M2 迁移前缀、代表性双商城 fixture、升级前后 fingerprint、重复部署、搜索回填、RLS/权限和自动清理；连续两轮升级及本地全量门禁已通过，该历史仓库内保留项已关闭。
 
 ## 6. 保留项与边界
 
-| 保留项                                  | 当前影响                                                    | 后续处理                                                      |
-| --------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------- |
-| M2-only 自动化升级 fixture 缺失         | M2 数据原地升级尚无仓库内可重复回归                         | 在下一次迁移变更前补 fixture，并纳入 CI 或受控迁移演练命令    |
-| Zalo 宿主真机/真实生产凭据未验收        | 不能宣称真实宿主身份、设备交互或生产 Zalo 配置完成          | 取得测试应用和凭据后按官方流程完成 Android/iPhone 真机验收    |
-| 生产对象存储/CDN、数据库权限/规模未验收 | 本地 MinIO、PostgreSQL 与小规模搜索结果不代表生产容量和权限 | 部署前验证生产 bucket、扩展权限、查询计划、批次时长与回滚窗口 |
-| 远程 CI 与越南专业合规复核              | 本地自动化不构成远程流水线证据或法律、税务、行业合规结论    | 上线前归档 CI、资质、隐私与专业复核证据                       |
+| 保留项                               | 当前状态/影响                                                                     | 后续处理                                                          |
+| ------------------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| M2-only 自动升级 fixture             | Post-M3 本地全量门禁及连续两轮升级已通过，仓库内缺失项关闭                        | 真实生产数据升级仍需独立受控演练                                  |
+| secret-scan 与生产示例占位值         | gitleaks 正反向、production fail-fast 和全量门禁通过，仓库内缺失项关闭            | 远程 Quality workflow 待本变更提交/推送后归档                     |
+| Zalo 宿主真机/真实生产凭据未验收     | 不能宣称真实宿主身份、设备交互、生产 Zalo 或真实秘密注入完成                      | 取得测试应用、Android/iPhone 和受控 HTTPS API 后按证据矩阵验收    |
+| 真实 staging S3/CDN 与生产权限未验收 | 本地 MinIO、`HeadBucket` 和预检脚本不代表真实 bucket、CDN、IAM/KMS 或生命周期通过 | 由基础设施所有者准备 guard、临时最小权限凭据和 staging 域名后运行 |
+| 近生产规模性能未验收                 | HTTP baseline 不代表越南 4G 首屏、生产容量、查询计划或扩缩容结论                  | 批准 SLO 和近生产拓扑后执行合成/负载/真机或 RUM 验收              |
+| 越南专业合规复核                     | 自动门禁和空白模板不构成法律、税务、隐私或行业意见                                | 由越南律师、会计和适用行业专家逐商城签字                          |
 
 M3 不实现地址、结算、订单、运费、COD、支付、物流、退款或售后，也不伪造销量、最终运费、优惠券核销或订单应付。进入 M4 仍需用户明确批准新的高风险状态机、数据模型、迁移和验收计划。
+
+## 7. Post-M3 就绪收口补充
+
+- 仓库内技术实现：M2-only 自动升级、精确 gitleaks allowlist、生产 JWT/PII/S3 示例占位值拒绝、目标 bucket `HeadBucket`、可选 STS session token、HTTP baseline、guard-first staging S3/CDN 预检，以及 Zalo/越南合规证据矩阵。
+- 本地技术收口：`verify`（23 文件/173 项）、M2 升级连续两轮、19 文件/103 项集成、15/15 E2E、gitleaks 正反向、依赖审计、Compose 与 HTTP local smoke 已通过，关闭三个仓库内技术缺口；远程 workflow 尚未运行。
+- 外部边界：readiness 工具默认拒绝 production；HTTP 远程运行需要短期 staging guard，存储写入需要精确 endpoint/bucket、可写前缀之外的 guard 和 `finally` 清理。未取得真实 staging、设备、SLO 或专业签字前，相应项目仍为 `NOT_RUN`/`BLOCKED`。
+- 本补充不改变 M3 原始测试统计，不代表远程 CI、生产部署或 M4 获得批准。完整证据见 `docs/reports/post-m3-readiness-closeout-report.md`；运行和外部验收要求见 `docs/testing/readiness-runbook.md`、`docs/testing/zalo-real-device-evidence-matrix.md` 与 `docs/testing/vietnam-compliance-signoff-matrix.md`。

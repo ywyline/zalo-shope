@@ -203,8 +203,8 @@ importers:
         specifier: 6.30.4
         version: 6.30.4(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       zmp-sdk:
-        specifier: 2.51.6
-        version: 2.51.6(@babel/core@7.29.7)
+        specifier: 2.51.8
+        version: 2.51.8(@babel/core@7.29.7)
       zmp-ui:
         specifier: 1.11.14
         version: 1.11.14(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -6551,8 +6551,8 @@ packages:
     resolution: {integrity: sha512-SaV3NC0WHXzVaW1W6qcFbNc597YKcROs1fPZQRSvOq2t4J5xfIf5KTeN8vgPxpIDQrbHwGeh68U+6Balf1UnZw==}
     hasBin: true
 
-  zmp-sdk@2.51.6:
-    resolution: {integrity: sha512-uM5vaVD5BmXeJg7LMSuIfHyGT37bF4/c2yJYESfdKKUP+8dFVKaZMjc8yKtRhy6rLuiVY9uwlycMQ2w3HOLOfA==}
+  zmp-sdk@2.51.8:
+    resolution: {integrity: sha512-hdsgTV87Mye2Jb6OGoibH6wMl2uX/AVFnIbIn4ODEXnkJA2ammWvtAHsVvW0F8iPHYwO1tZz8UTu7id9B/m//Q==}
 
   zmp-ui@1.11.14:
     resolution: {integrity: sha512-BN2YjNfxyjeXSABOkB04eU7wN2iOA4CRQGuX2a5fGGRCtMyNngiYhCv6n0CyNaviSoZj0htowccDNXr4zWUcCg==}
@@ -13637,7 +13637,7 @@ snapshots:
       - webpack-hot-middleware
       - webpack-plugin-serve
 
-  zmp-sdk@2.51.6(@babel/core@7.29.7):
+  zmp-sdk@2.51.8(@babel/core@7.29.7):
     dependencies:
       '@babel/cli': 7.29.7(@babel/core@7.29.7)
       '@swc/helpers': 0.4.37

@@ -2,7 +2,9 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已按批准边界完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归，以及管理端 Chromium、Android Chromium、iPhone WebKit 共 15 项可重复浏览器 E2E。M3 最终 `verify`（21 个单元测试文件/138 项）、19 个文件/102 项集成测试、15/15 Playwright、生产依赖审计、Compose 和 fresh scratch 迁移门禁通过；M2-only 自动化升级 fixture、Zalo 宿主真机、生产对象存储/CDN、生产规模/权限和越南专业合规复核仍是明确保留项。M3 总结见 `docs/reports/m3-completion-report.md`，M4 尚未批准。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已按批准边界完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归，以及管理端 Chromium、Android Chromium、iPhone WebKit 共 15 项可重复浏览器 E2E。M3 最终 `verify`（21 个单元测试文件/138 项）、19 个文件/102 项集成测试、15/15 Playwright、生产依赖审计、Compose 和 fresh scratch 迁移门禁通过。
+
+Post-M3 仓库内就绪收口已通过本地全量门禁：`verify`（26 个单元测试文件/206 项）、M2-only 连续两轮 4→9 迁移升级、19 个文件/103 项集成测试、15/15 Playwright、gitleaks 正反向、生产依赖审计、Compose 与本地 HTTP smoke 均通过。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。真实 staging S3/CDN、近生产规模性能、真实生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。M3 总结见 `docs/reports/m3-completion-report.md`，本轮证据见 `docs/reports/post-m3-readiness-closeout-report.md`；M4 尚未批准。
 
 ## 应用与包
 
@@ -127,7 +129,25 @@ $env:SEARCH_REBUILD_ACTOR_ID='<authorized-admin-uuid>'
 corepack pnpm --filter @zalo-shop/database search:rebuild
 ```
 
-迁移目录提供人工审查的 `down.sql`，仅允许用于无真实身份/审计/M3 事实的 local/test 环境；有数据后采用向前修复。M3 已在独立 scratch 库人工演练全量/重复 deploy、双次 seed、搜索重建授权和受控 down，但仓库尚缺只含 M2 schema/数据的自动化升级 fixture；下一次迁移变更前必须补齐该可重复回归。首个管理员使用 `admin:create` CLI 和一次性环境变量创建，不得把密码或 TOTP secret 写入文件。
+迁移目录提供人工审查的 `down.sql`，仅允许用于无真实身份/审计/M3 事实的 local/test 环境；有数据后采用向前修复。仓库提供严格限制为 `NODE_ENV=test`、loopback PostgreSQL 和随机 `zalo_shop_m2_upgrade_*` scratch 数据库的 M2-to-current 回归；它部署真实 M2 迁移前缀和代表性双商城数据，验证完整升级、重复部署、fingerprint、搜索回填、RLS/权限与零虚构 M3 事实，并在成功或失败后清理：
+
+```powershell
+corepack pnpm infra:up
+corepack pnpm test:migration:m2-upgrade
+```
+
+该自动化不会改变已有开发数据库，也不替代真实生产数据的受控升级演练。首个管理员使用 `admin:create` CLI 和一次性环境变量创建，不得把密码或 TOTP secret 写入文件。
+
+## Post-M3 readiness 工具
+
+HTTP smoke/baseline 和 staging S3/CDN 预检不新增第三方依赖，也不默认连接远程环境：
+
+```powershell
+corepack pnpm test:readiness:http
+corepack pnpm test:readiness:storage
+```
+
+HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD 中无差异的受审 origin 策略和目标同源、24 小时内有效的 guard，production 始终拒绝。对象存储预检只允许 staging，先读取可写前缀之外的 guard，再在 `staging/{store_id}/readiness/` 下执行 create-only checksum upload/head/read/可选 CDN 读取，并只删除能够证明属于本次探针的对象。完整环境变量、guard 格式、最小权限和证据边界见 `docs/testing/readiness-runbook.md`，近生产拓扑、数据量、SLO 和签字见 `docs/testing/performance-acceptance-matrix.md`。没有真实 staging、批准 SLO、Zalo 设备或专业签字时，工具/模板只能保持 `NOT_RUN`、`BLOCKED` 或 baseline，不能写成生产验收通过。
 
 ## M1 API 与安全边界
 
@@ -140,8 +160,10 @@ corepack pnpm --filter @zalo-shop/database search:rebuild
 ## 环境与密钥
 
 - `.env.example` 和 `.env.test.example` 只包含本地开发占位凭据。
+- `NODE_ENV=production` 会在启动配置解析阶段拒绝上述示例中的 JWT、PII 和 S3 占位值；生产值必须由部署密钥系统独立注入。
 - `.env`、生产凭据、Zalo Token、支付密钥和物流密钥禁止提交。
 - API/worker 启动时会验证数据库、Redis 和对象存储配置。
+- 对象存储就绪检查只对配置的 `S3_BUCKET` 执行 `HeadBucket`，不要求账户级 `ListBuckets`；临时 STS 凭据可通过可选的 `S3_SESSION_TOKEN` 注入。
 - 日志默认遮盖认证、Cookie 和 Zalo Token 请求头。
 - `ZALO_IDENTITY_PROVIDER=test` 只允许 `NODE_ENV=test`；生产环境会拒绝启动该 provider。
 - 真实 Zalo 登录使用 `ZALO_IDENTITY_PROVIDER=open-api`，并要求服务端配置 `ZALO_APP_ID`、`ZALO_MINI_APP_ID` 和 `ZALO_APP_SECRET`。App Secret 只能写入被 Git 忽略的本地环境或部署密钥，禁止写入 `VITE_*`、前端代码、终端输出和版本库。

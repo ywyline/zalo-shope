@@ -151,7 +151,7 @@ describe('M1 authentication integration', () => {
     });
   });
 
-  it('stores manually supplied phone data encrypted with explicit consent', async () => {
+  it('stores Vietnam and mainland China phone data encrypted with explicit consent', async () => {
     if (!memberId) throw new Error('member fixture missing');
     const consentEventId = randomUUID();
     const result = await service.saveManualPhone({
@@ -192,6 +192,27 @@ describe('M1 authentication integration', () => {
       }),
     ).rejects.toThrow('conflict');
     await expect(owner.consent.count({ where: { eventId: consentEventId } })).resolves.toBe(1);
+
+    const chinaConsentEventId = randomUUID();
+    const chinaResult = await service.saveManualPhone({
+      consentEventId: chinaConsentEventId,
+      memberId,
+      phone: '138 1234 5678',
+      policyVersion: 'phone-v1',
+      storeCode: 'beauty-local',
+      storeId: BEAUTY_STORE_ID,
+    });
+    expect(chinaResult.masked_phone).toBe('+861••••678');
+    const chinaContact = await owner.memberPhoneContact.findUniqueOrThrow({
+      where: { storeId_memberId: { memberId, storeId: BEAUTY_STORE_ID } },
+    });
+    expect(chinaContact.phoneCiphertext).not.toContain('+8613812345678');
+    expect(decryptSensitive(chinaContact.phoneCiphertext, config.PII_ENCRYPTION_KEY)).toBe(
+      '+8613812345678',
+    );
+    await expect(
+      owner.consent.count({ where: { eventId: chinaConsentEventId, memberId } }),
+    ).resolves.toBe(1);
   });
 
   it('reads member data, updates locale and records consent idempotently', async () => {
@@ -229,14 +250,14 @@ describe('M1 authentication integration', () => {
     ).resolves.toBe(1);
   });
 
-  it('binds a one-time Zalo phone token to the authenticated member identity', async () => {
+  it('binds a one-time mainland China Zalo phone token to the member identity', async () => {
     if (!memberId || !zaloAccessToken) throw new Error('member fixture missing');
     const phoneToken = createZaloTestToken(
       {
         kind: 'zalo_phone',
         miniAppId: MINI_APP_ID,
         parentAppId: PARENT_APP_ID,
-        phone: '+84987654321',
+        phone: '+8613912345678',
         subjectId,
       },
       providerOptions,
@@ -251,7 +272,7 @@ describe('M1 authentication integration', () => {
         storeCode: 'beauty-local',
         storeId: BEAUTY_STORE_ID,
       }),
-    ).resolves.toEqual({ masked_phone: '+849••••321' });
+    ).resolves.toEqual({ masked_phone: '+861••••678' });
     await expect(
       service.saveZaloPhone({
         accessToken: zaloAccessToken,

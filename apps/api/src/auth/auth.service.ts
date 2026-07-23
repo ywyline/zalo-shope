@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -12,7 +13,7 @@ import type { RuntimeConfig } from '@zalo-shop/config';
 import type { PrismaClient } from '@zalo-shop/database';
 import { withStoreTransaction } from '@zalo-shop/database';
 import { createStoreContext } from '@zalo-shop/domain';
-import { normalizeVietnamPhone } from '@zalo-shop/i18n';
+import { normalizeSupportedPhone } from '@zalo-shop/i18n';
 import {
   ZaloProviderError,
   type ZaloIdentity,
@@ -67,6 +68,14 @@ async function useZaloProvider<T>(operation: () => Promise<T>): Promise<T> {
       throw new UnauthorizedException('Zalo credential is invalid');
     }
     throw new ServiceUnavailableException('Zalo identity service is unavailable');
+  }
+}
+
+export function normalizeMemberPhone(phone: string): string {
+  try {
+    return normalizeSupportedPhone(phone);
+  } catch {
+    throw new BadRequestException('A valid Vietnam or mainland China mobile number is required');
   }
 }
 
@@ -517,7 +526,7 @@ export class AuthService {
     return this.persistPhone({
       consentEventId: input.consentEventId,
       memberId: input.memberId,
-      phone: normalizeVietnamPhone(input.phone),
+      phone: normalizeMemberPhone(input.phone),
       policyVersion: input.policyVersion,
       source: 'MANUAL',
       store,
@@ -578,7 +587,7 @@ export class AuthService {
     return this.persistPhone({
       consentEventId: input.consentEventId,
       memberId: input.memberId,
-      phone: normalizeVietnamPhone(decoded.phoneE164),
+      phone: normalizeMemberPhone(decoded.phoneE164),
       policyVersion: input.policyVersion,
       source: 'ZALO',
       store,

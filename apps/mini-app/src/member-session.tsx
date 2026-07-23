@@ -9,6 +9,11 @@ import React, {
 } from 'react';
 
 import { API_BASE, STORE_CODE } from './catalog-api';
+import {
+  establishZaloSession,
+  ZaloSessionError,
+  type ZaloSessionFailureCode,
+} from './zalo-session-client';
 
 type SessionStatus = 'error' | 'loading' | 'ready';
 
@@ -26,6 +31,7 @@ declare global {
 type MemberSession = {
   accessToken?: string;
   connect(): Promise<boolean>;
+  failureCode?: ZaloSessionFailureCode;
   invalidate(): void;
   status: SessionStatus;
   zaloAccessToken?: string;
@@ -52,15 +58,15 @@ function isZaloRuntime(): boolean {
   );
 }
 
-async function getZaloAccessToken(): Promise<string> {
+async function getZaloAccessToken(): Promise<unknown> {
   const hostname = window.location.hostname.toLowerCase();
   if (testBridgeEnabled && (hostname === 'localhost' || hostname === '127.0.0.1')) {
     const bridge = window.__ZALO_SHOP_E2E_BRIDGE__;
     if (!bridge) throw new Error('The test Zalo bridge is unavailable');
-    return String(await bridge.getAccessToken());
+    return bridge.getAccessToken();
   }
   const { getAccessToken } = await import('zmp-sdk');
-  return String(await getAccessToken());
+  return getAccessToken();
 }
 
 export function MemberSessionProvider({ children }: { children: React.ReactNode }): JSX.Element {
@@ -68,33 +74,34 @@ export function MemberSessionProvider({ children }: { children: React.ReactNode 
   const [status, setStatus] = useState<SessionStatus>('loading');
   const [accessToken, setAccessToken] = useState<string>();
   const [zaloAccessToken, setZaloAccessToken] = useState<string>();
+  const [failureCode, setFailureCode] = useState<ZaloSessionFailureCode>();
 
   const invalidate = useCallback((): void => {
     setAccessToken(undefined);
     setZaloAccessToken(undefined);
+    setFailureCode(undefined);
     setStatus('error');
   }, []);
 
   const connect = useCallback(async (): Promise<boolean> => {
     setStatus('loading');
+    setFailureCode(undefined);
     try {
-      if (!isZaloRuntime()) throw new Error('Zalo runtime is unavailable');
-      const token = await getZaloAccessToken();
-      if (!token) throw new Error('Zalo access token is unavailable');
-      const response = await fetch(`${API_BASE}/v1/auth/zalo/exchange`, {
-        headers: { 'X-Store-Code': STORE_CODE, 'X-Zalo-Access-Token': token },
-        method: 'POST',
+      const session = await establishZaloSession({
+        apiBase: API_BASE,
+        fetcher: (input, init) => fetch(input, init),
+        getAccessToken: getZaloAccessToken,
+        runtimeAvailable: isZaloRuntime(),
+        storeCode: STORE_CODE,
       });
-      if (!response.ok) throw new Error('Identity exchange failed');
-      const session = (await response.json()) as { access_token?: string };
-      if (!session.access_token) throw new Error('Identity response is invalid');
-      setAccessToken(session.access_token);
-      setZaloAccessToken(token);
+      setAccessToken(session.accessToken);
+      setZaloAccessToken(session.zaloAccessToken);
       setStatus('ready');
       return true;
-    } catch {
+    } catch (error) {
       setAccessToken(undefined);
       setZaloAccessToken(undefined);
+      setFailureCode(error instanceof ZaloSessionError ? error.code : 'ZALO_TOKEN_REJECTED');
       setStatus('error');
       return false;
     }
@@ -107,8 +114,8 @@ export function MemberSessionProvider({ children }: { children: React.ReactNode 
   }, [connect]);
 
   const value = useMemo(
-    () => ({ accessToken, connect, invalidate, status, zaloAccessToken }),
-    [accessToken, connect, invalidate, status, zaloAccessToken],
+    () => ({ accessToken, connect, failureCode, invalidate, status, zaloAccessToken }),
+    [accessToken, connect, failureCode, invalidate, status, zaloAccessToken],
   );
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

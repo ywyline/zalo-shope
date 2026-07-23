@@ -44,6 +44,9 @@ jobs:
       - name: Start local dependencies
         run: pnpm infra:up
 
+      - name: Test M2-to-current database upgrade
+        run: pnpm test:migration:m2-upgrade
+
       - name: Initialize test database
         run: |
           pnpm exec dotenv -e .env.test.example -- pnpm --filter @zalo-shop/database migrate:deploy
@@ -78,4 +81,27 @@ jobs:
         run: docker compose down --volumes --remove-orphans
 
       - name: Scan tracked files for secrets
+        if: ${{ !cancelled() }}
         uses: gitleaks/gitleaks-action@v2
+
+      - name: Verify the secret allowlist rejects an unapproved credential
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'rm -rf tmp/gitleaks-negative' EXIT
+          mkdir -p tmp/gitleaks-negative
+          secret="$(node -e "process.stdout.write(require('node:crypto').randomBytes(48).toString('base64url'))")"
+          printf 'const apiKey = "%s";\n' "$secret" > tmp/gitleaks-negative/unapproved.js
+          set +e
+          docker run --rm \
+            -v "$PWD:/repo" \
+            zricethezav/gitleaks:v8.24.3 \
+            detect --source=/repo/tmp/gitleaks-negative --no-git \
+            --config=/repo/.gitleaks.toml --exit-code=42
+          status=$?
+          set -e
+          if [ "$status" -ne 42 ]; then
+            echo "Expected gitleaks to reject the unapproved credential, got exit $status"
+            exit 1
+          fi
