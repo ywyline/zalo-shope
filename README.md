@@ -2,9 +2,9 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台；M4 不包含真实线上支付、物流、退款或售后。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1 已按 ZaloPay through Zalo Checkout + GHN 冻结支付、退款、物流、回调和可靠消息契约；M5.2 已实现渠道、支付/退款、物流和 outbox/inbox 数据与权限基础；M5.3 已实现商城隔离的 outbox/inbox 原语、数据库租约 worker、有限退避、死信和受审重放。M5 支付运行时 API、支付领域处理器、真实适配器和供应商沙箱事实尚未实现或验收。
 
-Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。M4 浏览器验收使用真实本地 API、PostgreSQL 和 Zalo 测试桥，不能替代 Zalo 宿主真机。真实 staging S3/CDN、越南权威行政区主数据、近生产规模性能、支付/物流沙箱、生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。阶段证据见 `docs/reports/m4-completion-report.md`。
+Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。M4 浏览器验收使用真实本地 API、PostgreSQL 和 Zalo 测试桥，不能替代 Zalo 宿主真机。真实 staging S3/CDN、越南权威行政区主数据、近生产规模性能、两个商城的 Zalo Checkout/ZaloPay 与 GHN sandbox 配置/密钥/回调条件、生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。阶段证据见 `docs/reports/m4-completion-report.md`、`docs/reports/m5.1-completion-report.md`、`docs/reports/m5.2-completion-report.md` 与 `docs/reports/m5.3-completion-report.md`。
 
 ## 应用与包
 
@@ -20,7 +20,7 @@ packages/database Prisma schema 与迁移入口
 packages/domain  StoreContext 与 deny-by-default 权限规则
 packages/contracts API 输入与错误契约
 packages/security JWT、scrypt、TOTP 与 PII 加密
-packages/integrations Zalo 身份端口和测试 provider
+packages/integrations Zalo 身份、支付与物流端口及供应商契约
 packages/i18n    vi/zh/en 回退与越南本地格式器
 packages/design-tokens Mini App/管理端共享设计 token
 ```
@@ -69,6 +69,8 @@ corepack pnpm dev
 Mini App 身份启动和手机号授权直接调用官方 ZMP SDK，服务端生产适配器尚未配置。真机模式需要有效的 Zalo Mini App ID、父 App 配置、开发者登录和官方 ZMP CLI 流程；本仓库不保存这些凭据。
 
 库存预留过期由 worker 按数据库事实逐商城轮询，默认每 5 秒处理最多 100 条；可通过 `INVENTORY_EXPIRATION_INTERVAL_MS`（1000–300000）和 `INVENTORY_EXPIRATION_BATCH_SIZE`（1–500）调整。动作键和数据库终态保证重复执行幂等；M4 会在预留进入终态后关闭仍待确认的订单或推进已消费订单，失败保留计数供下轮重试。当前无需 BullMQ。
+
+M5 outbox worker 同样通过可信商城注册表逐商城轮询，并在事务级 `store_id` RLS 上下文中使用 `FOR UPDATE SKIP LOCKED` 领取。默认每秒最多领取 25 条、租约 30 秒，重试从 1 秒指数退避并在 5 分钟封顶；分别由 `OUTBOX_WORKER_INTERVAL_MS`、`OUTBOX_WORKER_BATCH_SIZE`、`OUTBOX_WORKER_LEASE_MS`、`OUTBOX_WORKER_RETRY_BASE_DELAY_MS` 和 `OUTBOX_WORKER_RETRY_MAX_DELAY_MS` 调整。消息不会因失败删除；租约到期可恢复，达到上限进入死信。当前只注册 `NODE_ENV=test` 硬门禁的探针处理器，不会生成支付、退款、运单或轨迹事实，也不会请求 ZaloPay/GHN。
 
 公共搜索默认按来源地址每 60 秒最多 120 次请求；可通过 `SEARCH_RATE_LIMIT_WINDOW_SECONDS`（10–3600）和 `SEARCH_RATE_LIMIT_MAX_REQUESTS`（10–10000）调整。Redis 仅保存短期限流计数，不作为搜索或商城数据事实来源。
 

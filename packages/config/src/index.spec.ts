@@ -73,11 +73,26 @@ describe('parseRuntimeConfig', () => {
     expect(config.WORKER_PORT).toBe(3001);
     expect(config.INVENTORY_EXPIRATION_INTERVAL_MS).toBe(5_000);
     expect(config.INVENTORY_EXPIRATION_BATCH_SIZE).toBe(100);
+    expect(config.OUTBOX_WORKER_BATCH_SIZE).toBe(25);
+    expect(config.OUTBOX_WORKER_INTERVAL_MS).toBe(1_000);
+    expect(config.OUTBOX_WORKER_LEASE_MS).toBe(30_000);
+    expect(config.OUTBOX_WORKER_RETRY_BASE_DELAY_MS).toBe(1_000);
+    expect(config.OUTBOX_WORKER_RETRY_MAX_DELAY_MS).toBe(300_000);
     expect(config.SEARCH_RATE_LIMIT_MAX_REQUESTS).toBe(120);
     expect(config.SEARCH_RATE_LIMIT_WINDOW_SECONDS).toBe(60);
     expect(config.S3_FORCE_PATH_STYLE).toBe(true);
     expect(config.S3_SESSION_TOKEN).toBeUndefined();
     expect(config.CONTENT_EXTERNAL_TARGET_HOSTS).toEqual([]);
+  });
+
+  it('rejects an outbox retry cap below its base delay', () => {
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnvironment,
+        OUTBOX_WORKER_RETRY_BASE_DELAY_MS: '5000',
+        OUTBOX_WORKER_RETRY_MAX_DELAY_MS: '1000',
+      }),
+    ).toThrow(InvalidEnvironmentError);
   });
 
   it('normalizes the external content target allowlist', () => {

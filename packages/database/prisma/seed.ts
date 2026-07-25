@@ -41,6 +41,18 @@ const permissionSeeds = [
   ['store.orders.manage', PermissionScope.STORE, 'Manage current store orders and COD'],
   ['store.delivery.read', PermissionScope.STORE, 'Read current store delivery policy'],
   ['store.delivery.manage', PermissionScope.STORE, 'Manage current store delivery policy'],
+  ['store.payments.read', PermissionScope.STORE, 'Read current store payment attempts'],
+  ['store.payments.reconcile', PermissionScope.STORE, 'Reconcile current store payments'],
+  ['store.refunds.read', PermissionScope.STORE, 'Read current store refunds'],
+  ['store.refunds.create', PermissionScope.STORE, 'Create reviewed current store refunds'],
+  ['store.shipments.read', PermissionScope.STORE, 'Read current store shipments'],
+  ['store.shipments.create', PermissionScope.STORE, 'Create current store shipments'],
+  ['store.shipments.cancel', PermissionScope.STORE, 'Cancel current store shipments'],
+  ['store.shipments.label.read', PermissionScope.STORE, 'Read current store shipment labels'],
+  ['store.shipments.reconcile', PermissionScope.STORE, 'Reconcile current store shipments'],
+  ['store.integrations.read', PermissionScope.STORE, 'Read redacted integration configuration'],
+  ['store.integrations.manage', PermissionScope.STORE, 'Manage integration secret references'],
+  ['store.integration-jobs.retry', PermissionScope.STORE, 'Retry reviewed integration jobs'],
 ] as const;
 
 async function seed(): Promise<void> {

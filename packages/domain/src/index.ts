@@ -114,3 +114,6 @@ export * from './pricing';
 export * from './search';
 export * from './order';
 export * from './address';
+export * from './payment';
+export * from './shipment';
+export * from './reliable-messaging';

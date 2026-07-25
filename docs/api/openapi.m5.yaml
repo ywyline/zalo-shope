@@ -1,0 +1,930 @@
+openapi: 3.1.0
+info:
+  title: Zalo Shop M5 Payment, Refund, Shipping and Integration API
+  version: 0.5.0-draft
+  description: >-
+    M5.1 已冻结、尚未实施的增量契约；与 openapi.m1-m4.yaml 共同描述目标 API。
+    支付采用 ZaloPay through Zalo Checkout，物流采用 GHN，两个商城使用独立渠道配置。
+    客户端 Checkout/PaymentDone、供应商回调和 GHN webhook 均不能直接修改金额、库存或状态。
+servers:
+  - url: http://localhost:3000
+tags:
+  - { name: Online checkout }
+  - { name: Member payments }
+  - { name: Member shipping }
+  - { name: Provider webhooks }
+  - { name: Admin payments }
+  - { name: Admin refunds }
+  - { name: Admin shipping }
+  - { name: Admin integrations }
+paths:
+  /v1/checkout/orders:
+    post:
+      tags: [Online checkout]
+      summary: 幂等创建 ONLINE 订单及首个支付尝试
+      description: >-
+        M5 对 M4 同路径的向后兼容扩展。服务端重验最终报价并在同一事务创建
+        PENDING_PAYMENT 订单、库存预留、支付尝试和 launch outbox。请求仍拒绝
+        store_id、金额、运费、库存、支付结果和供应商字段。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OnlineCheckoutOrderRequest' }
+      responses:
+        '201':
+          description: 在线订单与短期 Zalo Checkout launch；供应商 orderId 尚未由 SDK 产生
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OnlineCheckoutOrderResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+  /v1/orders/{orderId}/payments:
+    post:
+      tags: [Member payments]
+      summary: 为本人仍在支付窗口的订单创建新支付尝试
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '201':
+          description: 新尝试及短期 launch；同订单最多一个活动尝试
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentLaunch' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+  /v1/orders/{orderId}/payments/{paymentId}/provider-order:
+    post:
+      tags: [Member payments]
+      summary: 绑定 Mini App createOrder 返回的 Checkout orderId 查单提示
+      description: >-
+        provider_order_id 来自不可信客户端，只用于触发服务端 getOrderStatus。只有服务端
+        验证 amount、ZaloPay method 和签名 extradata 中的 attempt/order/nonce 后才写入绑定事实；
+        本接口本身不能确认支付成功。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderOrderBindRequest' }
+      responses:
+        '202':
+          description: 已接受查单提示
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentAttempt' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/orders/{orderId}/payments/{paymentId}:
+    get:
+      tags: [Member payments]
+      summary: 查询本人订单的内部支付状态
+      description: 客户端 PaymentDone/checkTransaction 只作提示；本响应仍以服务端事实为准。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/PaymentId'
+      responses:
+        '200':
+          description: 当前标准支付状态及恢复建议
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentAttempt' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/orders/{orderId}/shipment:
+    get:
+      tags: [Member shipping]
+      summary: 查询本人订单的运单及三语可映射轨迹
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 当前活动/历史运单；不返回 GHN Token、ShopId 或原始地址
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShipmentDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/webhooks/payments/zalo-checkout:
+    post:
+      tags: [Provider webhooks]
+      summary: 接收 Zalo Checkout 支付结果
+      description: >-
+        使用原始字段和商城独立 Checkout Private Key 校验 HmacSHA256 mac；存在扩展字段时同时
+        校验 overallMac。IP 仅为附加 allowlist。验签后仍核对 App、商城、订单、VND 金额、
+        ZaloPay method、extradata 和状态；重复/乱序事件幂等。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ZaloCheckoutCallback' }
+      responses:
+        '200':
+          description: 已处理或幂等接受
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookAcknowledgement' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401':
+          description: MAC 无效；不返回候选商城或订单信息
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/webhooks/shipping/ghn:
+    post:
+      tags: [Provider webhooks]
+      summary: 接收 GHN 未签名的运单同步提示
+      description: >-
+        GHN 当前官方 webhook 契约没有签名字段。本路由只解析、去重并调度对应商城 GHN
+        Order Info 主动查询；请求内 Status、Fee、CODAmount 等永不直接推进内部状态或金额。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GhnWebhookHint' }
+      responses:
+        '202':
+          description: 提示已接受或幂等忽略，后续以主动查单为准
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookAcknowledgement' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/admin/payments:
+    get:
+      tags: [Admin payments]
+      summary: 分页查询目标商城支付尝试
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: order_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/PaymentAttemptStatus' }
+      responses:
+        '200':
+          description: 当前商城支付页；供应商引用已掩码
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/admin/payments/{paymentId}/query:
+    post:
+      tags: [Admin payments]
+      summary: 受审触发 Zalo Checkout 主动查单
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderQueryRequest' }
+      responses:
+        '202':
+          description: 已调度；不接受管理员自报支付结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrationJob' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/payments/{paymentId}/refunds:
+    post:
+      tags: [Admin refunds]
+      summary: 创建部分或全额退款
+      description: >-
+        服务端锁定支付和退款事实重算可退款余额；不接受 provider refund ID、成功状态或库存动作。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefundCreateRequest' }
+      responses:
+        '202':
+          description: 已创建退款事实并调度供应商命令
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Refund' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/refunds:
+    get:
+      tags: [Admin refunds]
+      summary: 分页查询目标商城退款
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: payment_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/RefundStatus' }
+      responses:
+        '200':
+          description: 当前商城退款页
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RefundPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/admin/refunds/{refundId}/query:
+    post:
+      tags: [Admin refunds]
+      summary: 受审触发 Checkout 退款状态查询
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/RefundId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderQueryRequest' }
+      responses:
+        '202':
+          description: 已调度
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrationJob' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/shipping/quotes:
+    post:
+      tags: [Admin shipping]
+      summary: 从订单可信事实获取 GHN 报价
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShippingQuoteRequest' }
+      responses:
+        '201':
+          description: 可解释、带过期时间的 GHN 整数 VND 报价
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShippingQuote' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+  /v1/admin/orders/{orderId}/shipments:
+    post:
+      tags: [Admin shipping]
+      summary: 为待履约订单幂等创建唯一活动 GHN 运单
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/OrderId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShipmentCreateRequest' }
+      responses:
+        '202':
+          description: 已创建 CREATION_PENDING 运单并调度 GHN 建单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShipmentDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/shipments/{shipmentId}/cancel:
+    post:
+      tags: [Admin shipping]
+      summary: 请求取消允许取消的 GHN 运单
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/ShipmentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShipmentOperationRequest' }
+      responses:
+        '202':
+          description: 已调度；本地请求不伪造供应商取消成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrationJob' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/shipments/{shipmentId}/sync:
+    post:
+      tags: [Admin shipping]
+      summary: 主动查询 GHN Order Info 并规范化轨迹
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/ShipmentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShipmentOperationRequest' }
+      responses:
+        '202':
+          description: 已调度权威查单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrationJob' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/shipments/{shipmentId}/label:
+    get:
+      tags: [Admin shipping]
+      summary: 获取受审短期 GHN 面单访问
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/ShipmentId'
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [A5, THERMAL_80X80, THERMAL_52X70]
+            default: A5
+      responses:
+        '200':
+          description: 短期、private/no-store 访问；不暴露 GHN Token
+          headers:
+            Cache-Control:
+              schema: { type: string, const: 'private, no-store' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LabelAccess' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+  /v1/admin/integration-jobs:
+    get:
+      tags: [Admin integrations]
+      summary: 查询当前商城外部任务的脱敏状态
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, PROCESSING, SUCCEEDED, RETRY_WAIT, DEAD_LETTER]
+      responses:
+        '200':
+          description: 不含原始 payload、密钥、Token 或完整 PII
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrationJobPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/admin/integration-jobs/{jobId}/retry:
+    post:
+      tags: [Admin integrations]
+      summary: 受审重试当前商城 dead-letter 任务
+      description: 不能修改 payload、aggregate、store、provider 或 environment。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/JobId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderQueryRequest' }
+      responses:
+        '202':
+          description: 已追加重试命令
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrationJob' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+components:
+  securitySchemes:
+    StoreCode:
+      type: apiKey
+      in: header
+      name: X-Store-Code
+    MemberBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    AdminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    StoreCode:
+      name: X-Store-Code
+      in: header
+      required: true
+      schema: { type: string, minLength: 2, maxLength: 64 }
+    StoreIdQuery:
+      name: store_id
+      in: query
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PaymentId:
+      name: paymentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RefundId:
+      name: refundId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ShipmentId:
+      name: shipmentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+  schemas:
+    OnlineCheckoutOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [address_id, items, payment_method, quote_hash]
+      properties:
+        address_id: { type: string, format: uuid }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [sku_code, quantity]
+            properties:
+              sku_code: { type: string, minLength: 1, maxLength: 64 }
+              quantity: { type: integer, minimum: 1, maximum: 99 }
+        coupon_code: { type: [string, 'null'], maxLength: 64, default: null }
+        locale: { type: string, enum: [vi, zh, en], default: vi }
+        payment_method: { type: string, const: ONLINE }
+        quote_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+    OnlineCheckoutOrderResult:
+      type: object
+      additionalProperties: false
+      required: [order_id, order_number, order_status, payment]
+      properties:
+        order_id: { type: string, format: uuid }
+        order_number: { type: string }
+        order_status: { type: string, const: PENDING_PAYMENT }
+        payment: { $ref: '#/components/schemas/PaymentLaunch' }
+    PaymentLaunch:
+      type: object
+      additionalProperties: false
+      required: [payment, launch_token, action]
+      properties:
+        payment: { $ref: '#/components/schemas/PaymentAttempt' }
+        launch_token:
+          type: string
+          minLength: 32
+          description: 短期、绑定 store/member/order/payment/amount/nonce；只在内存中使用
+        action:
+          type: object
+          additionalProperties: false
+          required: [kind, expires_at, payload]
+          properties:
+            kind: { type: string, const: ZALO_CHECKOUT_CREATE_ORDER }
+            expires_at: { type: string, format: date-time }
+            payload:
+              type: object
+              additionalProperties: false
+              required: [amount, desc, item, extradata, method, mac]
+              properties:
+                amount: { type: integer, minimum: 1, maximum: 9007199254740991 }
+                desc: { type: string, minLength: 1, maxLength: 256 }
+                item:
+                  type: array
+                  description: SDK 接收数组；服务端生成 MAC 时使用该数组的 JSON String
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [id, amount]
+                    properties:
+                      id: { type: string, minLength: 1, maxLength: 128 }
+                      amount: { type: integer, minimum: 0, maximum: 9007199254740991 }
+                extradata: { type: string, description: 与 MAC 完全一致的 JSON String }
+                method:
+                  type: string
+                  enum:
+                    - '{"id":"ZALOPAY_SANDBOX","isCustom":false}'
+                    - '{"id":"ZALOPAY","isCustom":false}'
+                mac: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+    ProviderOrderBindRequest:
+      type: object
+      additionalProperties: false
+      required: [provider_order_id, launch_token]
+      properties:
+        provider_order_id: { type: string, minLength: 1, maxLength: 256 }
+        launch_token: { type: string, minLength: 32, maxLength: 4096 }
+    PaymentAttemptStatus:
+      type: string
+      enum: [CREATED, PROVIDER_PENDING, SUCCEEDED, FAILED, EXPIRED, CANCELLED, REVIEW_REQUIRED]
+    PaymentAttempt:
+      type: object
+      additionalProperties: false
+      required:
+        [id, public_number, order_id, amount_vnd, currency, status, version, expires_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        public_number: { type: string }
+        order_id: { type: string, format: uuid }
+        amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        currency: { type: string, const: VND }
+        status: { $ref: '#/components/schemas/PaymentAttemptStatus' }
+        provider_order_reference_masked: { type: [string, 'null'] }
+        recovery_action: { type: string, enum: [WAIT, RETRY_ALLOWED, CONTACT_SUPPORT, NONE] }
+        version: { type: integer, minimum: 1 }
+        expires_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    PaymentPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PaymentAttempt' } }
+        next_cursor: { type: [string, 'null'], format: uuid }
+    ProviderQueryRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, reason]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    RefundCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [amount_vnd, expected_payment_version, reason]
+      properties:
+        amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        expected_payment_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    RefundStatus:
+      type: string
+      enum: [REQUESTED, PROCESSING, SUCCEEDED, FAILED, CANCELLED, REVIEW_REQUIRED]
+    Refund:
+      type: object
+      additionalProperties: false
+      required: [id, public_number, payment_id, amount_vnd, currency, status, version, requested_at]
+      properties:
+        id: { type: string, format: uuid }
+        public_number: { type: string }
+        payment_id: { type: string, format: uuid }
+        amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        currency: { type: string, const: VND }
+        status: { $ref: '#/components/schemas/RefundStatus' }
+        provider_refund_reference_masked: { type: [string, 'null'] }
+        reason: { type: string }
+        version: { type: integer, minimum: 1 }
+        requested_at: { type: string, format: date-time }
+        updated_at: { type: [string, 'null'], format: date-time }
+    RefundPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Refund' } }
+        next_cursor: { type: [string, 'null'], format: uuid }
+    ShippingQuoteRequest:
+      type: object
+      additionalProperties: false
+      required: [order_id]
+      properties:
+        order_id: { type: string, format: uuid }
+        service_code: { type: string, minLength: 1, maxLength: 64 }
+    ShippingQuote:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          service_code,
+          base_fee_vnd,
+          insurance_fee_vnd,
+          cod_fee_vnd,
+          remote_fee_vnd,
+          other_fee_vnd,
+          total_fee_vnd,
+          expires_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        service_code: { type: string }
+        base_fee_vnd: { type: integer, minimum: 0 }
+        insurance_fee_vnd: { type: integer, minimum: 0 }
+        cod_fee_vnd: { type: integer, minimum: 0 }
+        remote_fee_vnd: { type: integer, minimum: 0 }
+        other_fee_vnd: { type: integer, minimum: 0 }
+        total_fee_vnd: { type: integer, minimum: 0 }
+        estimated_delivery_at: { type: [string, 'null'], format: date-time }
+        expires_at: { type: string, format: date-time }
+    ShipmentCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_order_version, service_code, inspection_policy, reason]
+      properties:
+        expected_order_version: { type: integer, minimum: 1 }
+        service_code: { type: string, minLength: 1, maxLength: 64 }
+        inspection_policy:
+          type: string
+          enum: [NO_INSPECTION, ALLOW_INSPECTION_NO_TRY_ON]
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    ShipmentOperationRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, reason]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    ShipmentStatus:
+      type: string
+      enum:
+        [
+          CREATION_PENDING,
+          PENDING_PICKUP,
+          IN_TRANSIT,
+          OUT_FOR_DELIVERY,
+          DELIVERED,
+          REFUSED,
+          RETURNING,
+          RETURNED,
+          EXCEPTION,
+          CANCELLED,
+          REVIEW_REQUIRED,
+        ]
+    ShipmentDetail:
+      type: object
+      additionalProperties: false
+      required:
+        [id, public_number, order_id, status, service_code, cod_amount_vnd, version, tracking]
+      properties:
+        id: { type: string, format: uuid }
+        public_number: { type: string }
+        order_id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/ShipmentStatus' }
+        service_code: { type: string }
+        cod_amount_vnd: { type: integer, minimum: 0 }
+        provider_shipment_reference_masked: { type: [string, 'null'] }
+        estimated_delivery_at: { type: [string, 'null'], format: date-time }
+        version: { type: integer, minimum: 1 }
+        tracking:
+          type: array
+          items: { $ref: '#/components/schemas/TrackingEvent' }
+    TrackingEvent:
+      type: object
+      additionalProperties: false
+      required: [id, status, message_key, occurred_at]
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/ShipmentStatus' }
+        message_key: { type: string }
+        location_masked: { type: [string, 'null'] }
+        occurred_at: { type: string, format: date-time }
+    LabelAccess:
+      type: object
+      additionalProperties: false
+      required: [url, expires_at]
+      properties:
+        url: { type: string, format: uri }
+        expires_at: { type: string, format: date-time }
+    ZaloCheckoutCallback:
+      type: object
+      additionalProperties: true
+      required: [data, mac, overallMac]
+      properties:
+        data:
+          type: object
+          additionalProperties: true
+          required: [appId, orderId, transId, amount, description, resultCode, message]
+          properties:
+            appId: { type: string, minLength: 1, maxLength: 128 }
+            orderId: { type: string, minLength: 1, maxLength: 256 }
+            transId: { type: string, minLength: 1, maxLength: 256 }
+            amount: { type: integer, minimum: 1, maximum: 9007199254740991 }
+            description: { type: string, maxLength: 1024 }
+            resultCode: { type: integer }
+            message: { type: string, maxLength: 1024 }
+            method: { type: string, maxLength: 64 }
+            merchantTransId: { type: string, maxLength: 256 }
+            extradata: { type: string, maxLength: 8192 }
+            transTime: { type: integer }
+        mac: { type: string, minLength: 32, maxLength: 256 }
+        overallMac: { type: string, minLength: 32, maxLength: 256 }
+    GhnWebhookHint:
+      type: object
+      additionalProperties: true
+      required: [ShopID, OrderCode, Status]
+      properties:
+        ShopID: { oneOf: [{ type: integer }, { type: string }] }
+        OrderCode: { type: string, minLength: 1, maxLength: 256 }
+        ClientOrderCode: { type: string, maxLength: 256 }
+        Status: { type: string, minLength: 1, maxLength: 128 }
+        Type: { type: string, maxLength: 128 }
+        Fee: { type: integer }
+        TotalFee: { type: integer }
+        CODAmount: { type: integer }
+        ReasonCode: { type: string, maxLength: 128 }
+    WebhookAcknowledgement:
+      type: object
+      additionalProperties: false
+      required: [accepted]
+      properties:
+        accepted: { type: boolean }
+    IntegrationJob:
+      type: object
+      additionalProperties: false
+      required: [id, operation, status, attempt_count, version, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        operation: { type: string }
+        status: { type: string, enum: [PENDING, PROCESSING, SUCCEEDED, RETRY_WAIT, DEAD_LETTER] }
+        attempt_count: { type: integer, minimum: 0 }
+        next_attempt_at: { type: [string, 'null'], format: date-time }
+        last_error_code: { type: [string, 'null'] }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+    IntegrationJobPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/IntegrationJob' } }
+        next_cursor: { type: [string, 'null'], format: uuid }
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message_key, correlation_id]
+      properties:
+        code:
+          type: string
+          enum:
+            [
+              AUTHENTICATION_FAILED,
+              AUTHORIZATION_DENIED,
+              INPUT_INVALID,
+              RESOURCE_NOT_FOUND,
+              CONFLICT,
+              RATE_LIMITED,
+              UPSTREAM_UNAVAILABLE,
+              INTERNAL_ERROR,
+            ]
+        message_key: { type: string }
+        correlation_id: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+  responses:
+    BadRequest:
+      description: 请求格式、严格 DTO、Header 或回调结构无效
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Unauthorized:
+      description: 认证或供应商 MAC 失败
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Forbidden:
+      description: 当前管理员没有目标商城或动作权限
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    NotFound:
+      description: 当前主体和商城范围内不存在
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Conflict:
+      description: 版本、状态、金额、幂等、退款余额或活动运单冲突
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    RateLimited:
+      description: 请求过多
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    UpstreamUnavailable:
+      description: 供应商暂不可用；不泄露上游响应正文
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }

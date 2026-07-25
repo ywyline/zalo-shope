@@ -136,6 +136,20 @@ model Store {
   orderSnapshots                OrderSnapshot[]
   orderTransitions              OrderTransition[]
   idempotencyRecords            IdempotencyRecord[]
+  paymentChannels               StorePaymentChannel[]
+  shippingChannels              StoreShippingChannel[]
+  paymentAttempts               PaymentAttempt[]
+  paymentTransitions            PaymentTransition[]
+  providerCallbacks             ProviderCallback[]
+  refunds                       Refund[]
+  refundTransitions             RefundTransition[]
+  shippingQuotes                ShippingQuote[]
+  shipments                     Shipment[]
+  shipmentItems                 ShipmentItem[]
+  trackingEvents                TrackingEvent[]
+  shippingOperations            ShippingOperation[]
+  outboxMessages                OutboxMessage[]
+  inboxMessages                 InboxMessage[]
 
   @@map("stores")
 }
@@ -178,10 +192,12 @@ model StoreZaloApp {
   createdAt   DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  store           Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  paymentChannels StorePaymentChannel[]
 
   @@id([storeId, environment])
   @@unique([environment, miniAppId])
+  @@unique([storeId, environment, miniAppId])
   @@map("store_zalo_apps")
 }
 
@@ -210,6 +226,7 @@ model AdminUser {
   promotionVersionsPublished PromotionVersion[]    @relation("PromotionVersionPublishedBy")
   promotionOperations        PromotionOperation[]
   deliveryPoliciesUpdated    StoreDeliveryPolicy[] @relation("DeliveryPolicyUpdatedBy")
+  refundsRequested           Refund[]
 
   @@map("admin_users")
 }
@@ -1077,6 +1094,7 @@ model Warehouse {
   localizations    WarehouseLocalization[]
   balances         InventoryBalance[]
   reservationItems InventoryReservationItem[]
+  shipments        Shipment[]
 
   @@unique([storeId, id])
   @@unique([storeId, code])
@@ -1608,16 +1626,21 @@ model Order {
   createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store             Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  member            Member                @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
-  cart              Cart?                 @relation(fields: [storeId, cartId], references: [storeId, id], onDelete: Restrict)
-  address           Address?              @relation(fields: [storeId, addressId], references: [storeId, id], onDelete: Restrict)
-  reservation       InventoryReservation? @relation(fields: [storeId, reservationId], references: [storeId, id], onDelete: Restrict)
-  items             OrderItem[]
-  snapshots         OrderSnapshot[]
-  transitions       OrderTransition[]
-  idempotency       IdempotencyRecord[]
-  usedMemberCoupons MemberCoupon[]
+  store              Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  member             Member                @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict)
+  cart               Cart?                 @relation(fields: [storeId, cartId], references: [storeId, id], onDelete: Restrict)
+  address            Address?              @relation(fields: [storeId, addressId], references: [storeId, id], onDelete: Restrict)
+  reservation        InventoryReservation? @relation(fields: [storeId, reservationId], references: [storeId, id], onDelete: Restrict)
+  items              OrderItem[]
+  snapshots          OrderSnapshot[]
+  transitions        OrderTransition[]
+  idempotency        IdempotencyRecord[]
+  usedMemberCoupons  MemberCoupon[]
+  paymentAttempts    PaymentAttempt[]
+  refunds            Refund[]
+  shippingQuotes     ShippingQuote[]
+  shipments          Shipment[]
+  shippingOperations ShippingOperation[]
 
   @@unique([storeId, id])
   @@unique([storeId, orderNumber])
@@ -1648,14 +1671,16 @@ model OrderItem {
   payableVnd        BigInt   @map("payable_vnd")
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  store    Store    @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  order    Order    @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
-  sku      Sku      @relation(fields: [storeId, skuId], references: [storeId, id], onDelete: Restrict)
-  product  Product  @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict)
-  brand    Brand    @relation(fields: [storeId, brandId], references: [storeId, id], onDelete: Restrict)
-  category Category @relation(fields: [storeId, categoryId], references: [storeId, id], onDelete: Restrict)
+  store         Store          @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order         Order          @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  sku           Sku            @relation(fields: [storeId, skuId], references: [storeId, id], onDelete: Restrict)
+  product       Product        @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict)
+  brand         Brand          @relation(fields: [storeId, brandId], references: [storeId, id], onDelete: Restrict)
+  category      Category       @relation(fields: [storeId, categoryId], references: [storeId, id], onDelete: Restrict)
+  shipmentItems ShipmentItem[]
 
   @@unique([storeId, id])
+  @@unique([storeId, orderId, id])
   @@index([storeId, orderId])
   @@map("order_items")
 }
@@ -1718,6 +1743,420 @@ model IdempotencyRecord {
   @@unique([storeId, operation, idempotencyKey])
   @@index([storeId, expiresAt])
   @@map("idempotency_records")
+}
+
+model StorePaymentChannel {
+  id                    String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId               String                   @map("store_id") @db.Uuid
+  deploymentEnvironment DeploymentEnvironment    @map("deployment_environment")
+  providerEnvironment   IntegrationEnvironment   @map("provider_environment")
+  providerCode          PaymentProviderCode      @map("provider_code")
+  methodCode            String                   @map("method_code") @db.VarChar(64)
+  checkoutAppId         String                   @map("checkout_app_id") @db.VarChar(128)
+  merchantReference     String?                  @map("merchant_reference") @db.VarChar(160)
+  privateKeySecretRef   String                   @map("private_key_secret_ref") @db.VarChar(512)
+  secretFingerprint     String                   @map("secret_fingerprint") @db.Char(64)
+  keyVersion            String                   @map("key_version") @db.VarChar(64)
+  status                IntegrationChannelStatus @default(DISABLED)
+  paymentWindowSeconds  Int                      @map("payment_window_seconds")
+  version               Int                      @default(1)
+  createdAt             DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store           Store            @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  zaloApp         StoreZaloApp     @relation(fields: [storeId, deploymentEnvironment, checkoutAppId], references: [storeId, environment, miniAppId], onDelete: Restrict)
+  paymentAttempts PaymentAttempt[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, deploymentEnvironment, providerCode])
+  @@index([storeId, status, providerEnvironment])
+  @@map("store_payment_channels")
+}
+
+model StoreShippingChannel {
+  id                   String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId              String                   @map("store_id") @db.Uuid
+  providerEnvironment  IntegrationEnvironment   @map("provider_environment")
+  providerCode         ShippingProviderCode     @map("provider_code")
+  shopId               String                   @map("shop_id") @db.VarChar(64)
+  tokenSecretRef       String                   @map("token_secret_ref") @db.VarChar(512)
+  secretFingerprint    String                   @map("secret_fingerprint") @db.Char(64)
+  keyVersion           String                   @map("key_version") @db.VarChar(64)
+  status               IntegrationChannelStatus @default(DISABLED)
+  originAllowlistKey   String                   @map("origin_allowlist_key") @db.VarChar(64)
+  defaultServiceCode   String?                  @map("default_service_code") @db.VarChar(64)
+  webhookPathTokenHash Bytes?                   @map("webhook_path_token_hash") @db.ByteA
+  version              Int                      @default(1)
+  createdAt            DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store              Store               @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  shippingQuotes     ShippingQuote[]
+  shipments          Shipment[]
+  shippingOperations ShippingOperation[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, providerEnvironment, providerCode])
+  @@unique([providerEnvironment, providerCode, shopId])
+  @@index([storeId, status, providerEnvironment])
+  @@map("store_shipping_channels")
+}
+
+model PaymentAttempt {
+  id                       String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                  String               @map("store_id") @db.Uuid
+  orderId                  String               @map("order_id") @db.Uuid
+  channelId                String               @map("channel_id") @db.Uuid
+  publicPaymentNumber      String               @unique @map("public_payment_number") @db.VarChar(64)
+  attemptSequence          Int                  @map("attempt_sequence")
+  amountVnd                BigInt               @map("amount_vnd")
+  currency                 String               @default("VND") @db.Char(3)
+  status                   PaymentAttemptStatus @default(CREATED)
+  version                  Int                  @default(1)
+  expiresAt                DateTime             @map("expires_at") @db.Timestamptz(6)
+  launchNonceHash          String?              @map("launch_nonce_hash") @db.Char(64)
+  launchPayloadHash        String?              @map("launch_payload_hash") @db.Char(64)
+  providerOrderId          String?              @map("provider_order_id") @db.VarChar(160)
+  providerTransactionId    String?              @map("provider_transaction_id") @db.VarChar(160)
+  providerStatus           String?              @map("provider_status") @db.VarChar(64)
+  providerOccurredAt       DateTime?            @map("provider_occurred_at") @db.Timestamptz(6)
+  succeededAt              DateTime?            @map("succeeded_at") @db.Timestamptz(6)
+  failedAt                 DateTime?            @map("failed_at") @db.Timestamptz(6)
+  cancelledAt              DateTime?            @map("cancelled_at") @db.Timestamptz(6)
+  expiredAt                DateTime?            @map("expired_at") @db.Timestamptz(6)
+  reviewRequiredAt         DateTime?            @map("review_required_at") @db.Timestamptz(6)
+  createIdempotencyKeyHash String               @map("create_idempotency_key_hash") @db.Char(64)
+  correlationId            String               @map("correlation_id") @db.VarChar(128)
+  createdAt                DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store       Store               @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order       Order               @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  channel     StorePaymentChannel @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
+  transitions PaymentTransition[]
+  refunds     Refund[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, id, orderId])
+  @@unique([storeId, orderId, attemptSequence])
+  @@unique([storeId, orderId, createIdempotencyKeyHash])
+  @@unique([storeId, channelId, providerOrderId])
+  @@unique([storeId, channelId, providerTransactionId])
+  @@index([storeId, orderId, createdAt(sort: Desc)])
+  @@index([storeId, status, expiresAt, id])
+  @@map("payment_attempts")
+}
+
+model PaymentTransition {
+  id               String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId          String                   @map("store_id") @db.Uuid
+  paymentAttemptId String                   @map("payment_attempt_id") @db.Uuid
+  fromStatus       PaymentAttemptStatus?    @map("from_status")
+  toStatus         PaymentAttemptStatus     @map("to_status")
+  event            String                   @db.VarChar(64)
+  source           ProviderTransitionSource
+  providerEventId  String?                  @map("provider_event_id") @db.VarChar(160)
+  actorType        AuditActorType?          @map("actor_type")
+  actorId          String?                  @map("actor_id") @db.Uuid
+  reason           String?                  @db.VarChar(500)
+  correlationId    String                   @map("correlation_id") @db.VarChar(128)
+  createdAt        DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store          Store          @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  paymentAttempt PaymentAttempt @relation(fields: [storeId, paymentAttemptId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@index([storeId, paymentAttemptId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("payment_transitions")
+}
+
+model ProviderCallback {
+  id                   String                           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId              String                           @map("store_id") @db.Uuid
+  channelKind          IntegrationChannelKind           @map("channel_kind")
+  channelId            String                           @map("channel_id") @db.Uuid
+  providerCode         String                           @map("provider_code") @db.VarChar(64)
+  environment          IntegrationEnvironment
+  externalEventId      String?                          @map("external_event_id") @db.VarChar(160)
+  eventDigest          String                           @map("event_digest") @db.Char(64)
+  receivedAt           DateTime                         @default(now()) @map("received_at") @db.Timestamptz(6)
+  signatureStatus      CallbackSignatureStatus          @map("signature_status")
+  trust                ProviderCallbackTrust
+  processingStatus     ProviderCallbackProcessingStatus @default(RECEIVED) @map("processing_status")
+  payloadCiphertextRef String?                          @map("payload_ciphertext_ref") @db.VarChar(512)
+  payloadDigest        String                           @map("payload_digest") @db.Char(64)
+  attemptCount         Int                              @default(0) @map("attempt_count")
+  nextAttemptAt        DateTime?                        @map("next_attempt_at") @db.Timestamptz(6)
+  lastErrorCode        String?                          @map("last_error_code") @db.VarChar(64)
+  completedAt          DateTime?                        @map("completed_at") @db.Timestamptz(6)
+  version              Int                              @default(1)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([channelKind, channelId, environment, eventDigest])
+  @@unique([channelKind, channelId, environment, externalEventId])
+  @@index([storeId, processingStatus, nextAttemptAt, id])
+  @@map("provider_callbacks")
+}
+
+model Refund {
+  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId            String       @map("store_id") @db.Uuid
+  orderId            String       @map("order_id") @db.Uuid
+  paymentAttemptId   String       @map("payment_attempt_id") @db.Uuid
+  publicRefundNumber String       @unique @map("public_refund_number") @db.VarChar(64)
+  amountVnd          BigInt       @map("amount_vnd")
+  status             RefundStatus @default(REQUESTED)
+  version            Int          @default(1)
+  reason             String       @db.VarChar(500)
+  requestedBy        String       @map("requested_by") @db.Uuid
+  providerRefundId   String?      @map("provider_refund_id") @db.VarChar(160)
+  providerStatus     String?      @map("provider_status") @db.VarChar(64)
+  idempotencyKeyHash String       @map("idempotency_key_hash") @db.Char(64)
+  requestedAt        DateTime     @default(now()) @map("requested_at") @db.Timestamptz(6)
+  succeededAt        DateTime?    @map("succeeded_at") @db.Timestamptz(6)
+  failedAt           DateTime?    @map("failed_at") @db.Timestamptz(6)
+  reviewRequiredAt   DateTime?    @map("review_required_at") @db.Timestamptz(6)
+  createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store          Store              @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order          Order              @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  paymentAttempt PaymentAttempt     @relation(fields: [storeId, paymentAttemptId, orderId], references: [storeId, id, orderId], onDelete: Restrict)
+  requester      AdminUser          @relation(fields: [requestedBy], references: [id], onDelete: Restrict)
+  transitions    RefundTransition[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, paymentAttemptId, idempotencyKeyHash])
+  @@unique([storeId, paymentAttemptId, providerRefundId])
+  @@index([storeId, orderId, requestedAt(sort: Desc), id(sort: Desc)])
+  @@index([storeId, paymentAttemptId, status])
+  @@map("refunds")
+}
+
+model RefundTransition {
+  id              String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId         String                   @map("store_id") @db.Uuid
+  refundId        String                   @map("refund_id") @db.Uuid
+  fromStatus      RefundStatus?            @map("from_status")
+  toStatus        RefundStatus             @map("to_status")
+  event           String                   @db.VarChar(64)
+  source          ProviderTransitionSource
+  providerEventId String?                  @map("provider_event_id") @db.VarChar(160)
+  actorType       AuditActorType?          @map("actor_type")
+  actorId         String?                  @map("actor_id") @db.Uuid
+  reason          String?                  @db.VarChar(500)
+  correlationId   String                   @map("correlation_id") @db.VarChar(128)
+  createdAt       DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store  Store  @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  refund Refund @relation(fields: [storeId, refundId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@index([storeId, refundId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("refund_transitions")
+}
+
+model ShippingQuote {
+  id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId               String              @map("store_id") @db.Uuid
+  orderId               String              @map("order_id") @db.Uuid
+  channelId             String              @map("channel_id") @db.Uuid
+  requestHash           String              @map("request_hash") @db.Char(64)
+  serviceCode           String              @map("service_code") @db.VarChar(64)
+  providerServiceId     Int?                @map("provider_service_id")
+  providerServiceTypeId Int?                @map("provider_service_type_id")
+  baseFeeVnd            BigInt              @map("base_fee_vnd")
+  insuranceFeeVnd       BigInt              @default(0) @map("insurance_fee_vnd")
+  codFeeVnd             BigInt              @default(0) @map("cod_fee_vnd")
+  remoteFeeVnd          BigInt              @default(0) @map("remote_fee_vnd")
+  otherFeeVnd           BigInt              @default(0) @map("other_fee_vnd")
+  totalFeeVnd           BigInt              @map("total_fee_vnd")
+  estimatedDeliveryAt   DateTime?           @map("estimated_delivery_at") @db.Timestamptz(6)
+  providerQuoteRef      String?             @map("provider_quote_ref") @db.VarChar(160)
+  source                ShippingQuoteSource
+  expiresAt             DateTime            @map("expires_at") @db.Timestamptz(6)
+  createdAt             DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store   Store                @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order   Order                @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  channel StoreShippingChannel @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@index([storeId, orderId, expiresAt(sort: Desc)])
+  @@index([storeId, channelId, requestHash, expiresAt])
+  @@map("shipping_quotes")
+}
+
+model Shipment {
+  id                        String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                   String         @map("store_id") @db.Uuid
+  orderId                   String         @map("order_id") @db.Uuid
+  warehouseId               String         @map("warehouse_id") @db.Uuid
+  channelId                 String         @map("channel_id") @db.Uuid
+  publicShipmentNumber      String         @unique @map("public_shipment_number") @db.VarChar(64)
+  status                    ShipmentStatus @default(CREATION_PENDING)
+  version                   Int            @default(1)
+  clientOrderCode           String         @map("client_order_code") @db.VarChar(64)
+  providerShipmentId        String?        @map("provider_shipment_id") @db.VarChar(160)
+  serviceCode               String         @map("service_code") @db.VarChar(64)
+  providerServiceId         Int?           @map("provider_service_id")
+  providerServiceTypeId     Int?           @map("provider_service_type_id")
+  codAmountVnd              BigInt         @default(0) @map("cod_amount_vnd")
+  addressSnapshotCiphertext String         @map("address_snapshot_ciphertext") @db.Text
+  parcelSnapshot            Json           @map("parcel_snapshot")
+  labelMetadata             Json?          @map("label_metadata")
+  createdOperationId        String?        @unique @map("created_operation_id") @db.Uuid
+  cancelledOperationId      String?        @unique @map("cancelled_operation_id") @db.Uuid
+  providerCreatedAt         DateTime?      @map("provider_created_at") @db.Timestamptz(6)
+  pickedUpAt                DateTime?      @map("picked_up_at") @db.Timestamptz(6)
+  deliveredAt               DateTime?      @map("delivered_at") @db.Timestamptz(6)
+  returnedAt                DateTime?      @map("returned_at") @db.Timestamptz(6)
+  createdAt                 DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store      Store                @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order      Order                @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  warehouse  Warehouse            @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict)
+  channel    StoreShippingChannel @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
+  items      ShipmentItem[]
+  events     TrackingEvent[]
+  operations ShippingOperation[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, id, orderId])
+  @@unique([storeId, channelId, clientOrderCode])
+  @@unique([storeId, channelId, providerShipmentId])
+  @@index([storeId, orderId, createdAt(sort: Desc)])
+  @@index([storeId, status, updatedAt])
+  @@map("shipments")
+}
+
+model ShipmentItem {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId     String   @map("store_id") @db.Uuid
+  shipmentId  String   @map("shipment_id") @db.Uuid
+  orderId     String   @map("order_id") @db.Uuid
+  orderItemId String   @map("order_item_id") @db.Uuid
+  quantity    Int
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  shipment  Shipment  @relation(fields: [storeId, shipmentId, orderId], references: [storeId, id, orderId], onDelete: Restrict)
+  orderItem OrderItem @relation(fields: [storeId, orderId, orderItemId], references: [storeId, orderId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, shipmentId, orderItemId])
+  @@index([storeId, orderId, orderItemId])
+  @@map("shipment_items")
+}
+
+model TrackingEvent {
+  id                   String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId              String              @map("store_id") @db.Uuid
+  shipmentId           String              @map("shipment_id") @db.Uuid
+  providerEventKey     String              @map("provider_event_key") @db.VarChar(160)
+  status               ShipmentStatus
+  providerStatus       String              @map("provider_status") @db.VarChar(64)
+  reasonCode           String?             @map("reason_code") @db.VarChar(64)
+  messageKey           String              @map("message_key") @db.VarChar(160)
+  locationMasked       String?             @map("location_masked") @db.VarChar(160)
+  occurredAt           DateTime            @map("occurred_at") @db.Timestamptz(6)
+  receivedAt           DateTime            @default(now()) @map("received_at") @db.Timestamptz(6)
+  source               TrackingEventSource
+  payloadCiphertextRef String?             @map("payload_ciphertext_ref") @db.VarChar(512)
+
+  store    Store    @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  shipment Shipment @relation(fields: [storeId, shipmentId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, shipmentId, providerEventKey])
+  @@index([storeId, shipmentId, occurredAt, id])
+  @@map("tracking_events")
+}
+
+model ShippingOperation {
+  id                 String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId            String                     @map("store_id") @db.Uuid
+  orderId            String                     @map("order_id") @db.Uuid
+  shipmentId         String?                    @map("shipment_id") @db.Uuid
+  channelId          String                     @map("channel_id") @db.Uuid
+  operationType      ShippingOperationType      @map("operation_type")
+  idempotencyKeyHash String                     @map("idempotency_key_hash") @db.Char(64)
+  requestHash        String                     @map("request_hash") @db.Char(64)
+  status             IntegrationOperationStatus @default(PENDING)
+  attemptCount       Int                        @default(0) @map("attempt_count")
+  nextAttemptAt      DateTime?                  @map("next_attempt_at") @db.Timestamptz(6)
+  errorCode          String?                    @map("error_code") @db.VarChar(64)
+  correlationId      String                     @map("correlation_id") @db.VarChar(128)
+  version            Int                        @default(1)
+  createdAt          DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store    Store                @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order    Order                @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  shipment Shipment?            @relation(fields: [storeId, shipmentId, orderId], references: [storeId, id, orderId], onDelete: Restrict)
+  channel  StoreShippingChannel @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, channelId, operationType, idempotencyKeyHash])
+  @@index([storeId, orderId, createdAt(sort: Desc)])
+  @@index([storeId, status, nextAttemptAt, id])
+  @@map("shipping_operations")
+}
+
+model OutboxMessage {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId        String       @map("store_id") @db.Uuid
+  aggregateType  String       @map("aggregate_type") @db.VarChar(64)
+  aggregateId    String       @map("aggregate_id") @db.Uuid
+  eventType      String       @map("event_type") @db.VarChar(128)
+  eventVersion   Int          @map("event_version")
+  idempotencyKey String       @map("idempotency_key") @db.VarChar(160)
+  payload        Json
+  status         OutboxStatus @default(PENDING)
+  availableAt    DateTime     @default(now()) @map("available_at") @db.Timestamptz(6)
+  leaseOwner     String?      @map("lease_owner") @db.VarChar(128)
+  leaseExpiresAt DateTime?    @map("lease_expires_at") @db.Timestamptz(6)
+  attemptCount   Int          @default(0) @map("attempt_count")
+  maxAttempts    Int          @default(8) @map("max_attempts")
+  lastErrorCode  String?      @map("last_error_code") @db.VarChar(64)
+  completedAt    DateTime?    @map("completed_at") @db.Timestamptz(6)
+  version        Int          @default(1)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, idempotencyKey])
+  @@index([storeId, status, availableAt, id])
+  @@index([storeId, leaseExpiresAt])
+  @@map("outbox_messages")
+}
+
+model InboxMessage {
+  id                  String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId             String                 @map("store_id") @db.Uuid
+  source              String                 @db.VarChar(64)
+  channelId           String                 @map("channel_id") @db.Uuid
+  environment         IntegrationEnvironment
+  externalMessageKey  String                 @map("external_message_key") @db.VarChar(160)
+  payloadDigest       String                 @map("payload_digest") @db.Char(64)
+  status              InboxStatus            @default(RECEIVED)
+  receivedAt          DateTime               @default(now()) @map("received_at") @db.Timestamptz(6)
+  processingStartedAt DateTime?              @map("processing_started_at") @db.Timestamptz(6)
+  completedAt         DateTime?              @map("completed_at") @db.Timestamptz(6)
+  errorCode           String?                @map("error_code") @db.VarChar(64)
+  version             Int                    @default(1)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([source, channelId, environment, externalMessageKey])
+  @@index([storeId, status, receivedAt, id])
+  @@map("inbox_messages")
 }
 
 enum InventoryMovementType {
@@ -1864,8 +2303,178 @@ enum OrderPaymentStatus {
   FAILED
   EXPIRED
   CANCELLED
+  PARTIALLY_REFUNDED
+  FULLY_REFUNDED
 
   @@map("order_payment_status")
+}
+
+enum IntegrationEnvironment {
+  SANDBOX
+  PRODUCTION
+
+  @@map("integration_environment")
+}
+
+enum IntegrationChannelStatus {
+  DISABLED
+  ACTIVE
+  SUSPENDED
+
+  @@map("integration_channel_status")
+}
+
+enum PaymentProviderCode {
+  ZALO_CHECKOUT_ZALOPAY
+
+  @@map("payment_provider_code")
+}
+
+enum ShippingProviderCode {
+  GHN
+
+  @@map("shipping_provider_code")
+}
+
+enum PaymentAttemptStatus {
+  CREATED
+  PROVIDER_PENDING
+  SUCCEEDED
+  FAILED
+  EXPIRED
+  CANCELLED
+  REVIEW_REQUIRED
+
+  @@map("payment_attempt_status")
+}
+
+enum RefundStatus {
+  REQUESTED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  REVIEW_REQUIRED
+
+  @@map("refund_status")
+}
+
+enum ProviderTransitionSource {
+  MEMBER
+  ADMIN
+  WEBHOOK
+  QUERY
+  RECONCILIATION
+  SYSTEM
+
+  @@map("provider_transition_source")
+}
+
+enum IntegrationChannelKind {
+  PAYMENT
+  SHIPPING
+
+  @@map("integration_channel_kind")
+}
+
+enum CallbackSignatureStatus {
+  VERIFIED
+  INVALID
+  NOT_AVAILABLE
+
+  @@map("callback_signature_status")
+}
+
+enum ProviderCallbackTrust {
+  AUTHENTICATED_FACT
+  UNVERIFIED_HINT
+  UNTRUSTED
+
+  @@map("provider_callback_trust")
+}
+
+enum ProviderCallbackProcessingStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  REJECTED
+  RETRY_PENDING
+  DEAD_LETTER
+
+  @@map("provider_callback_processing_status")
+}
+
+enum ShipmentStatus {
+  CREATION_PENDING
+  PENDING_PICKUP
+  IN_TRANSIT
+  OUT_FOR_DELIVERY
+  DELIVERED
+  REFUSED
+  RETURNING
+  RETURNED
+  EXCEPTION
+  CANCELLED
+  REVIEW_REQUIRED
+
+  @@map("shipment_status")
+}
+
+enum ShippingQuoteSource {
+  PROVIDER
+  FIXED_POLICY
+
+  @@map("shipping_quote_source")
+}
+
+enum TrackingEventSource {
+  QUERY
+  RECONCILIATION
+  ADMIN
+
+  @@map("tracking_event_source")
+}
+
+enum ShippingOperationType {
+  QUOTE
+  CREATE
+  CANCEL
+  QUERY_TRACKING
+  FETCH_LABEL
+  RECONCILE
+
+  @@map("shipping_operation_type")
+}
+
+enum IntegrationOperationStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  DEAD_LETTER
+  REVIEW_REQUIRED
+
+  @@map("integration_operation_status")
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  DEAD_LETTER
+
+  @@map("outbox_status")
+}
+
+enum InboxStatus {
+  RECEIVED
+  PROCESSING
+  COMPLETED
+  REJECTED
+  RETRY_PENDING
+  DEAD_LETTER
+
+  @@map("inbox_status")
 }
 
 enum OrderSnapshotType {

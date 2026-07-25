@@ -71,3 +71,4 @@ export async function withAdminAssignmentDiscoveryTransaction<T>(
 export * from './inventory-primitives';
 export * from './order-primitives';
 export * from './search-projection';
+export * from './reliable-messaging';

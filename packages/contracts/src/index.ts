@@ -13,6 +13,7 @@ export const apiErrorCodeSchema = z.enum([
   'STORE_CONTEXT_INVALID',
   'CONFLICT',
   'RATE_LIMITED',
+  'UPSTREAM_UNAVAILABLE',
   'INTERNAL_ERROR',
 ]);
 
@@ -104,3 +105,5 @@ export * from './address';
 export * from './checkout';
 export * from './delivery';
 export * from './order';
+export * from './payment';
+export * from './shipment';

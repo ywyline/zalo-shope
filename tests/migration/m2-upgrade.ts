@@ -42,6 +42,14 @@ const M2_MIGRATIONS = [
   '20260717151500_m23_finalized_status_text',
 ] as const;
 
+const M5_MIGRATIONS = [
+  '20260725090000_m52_payment_shipping_foundation',
+  '20260725093000_m52_permission_catalog',
+  '20260725100000_m52_callback_trust_guard',
+  '20260725103000_m52_payment_amount_and_permissions_guard',
+  '20260725110000_m53_reliable_message_guards',
+] as const;
+
 type MigrationRecord = {
   applied_steps_count: number;
   checksum: string;
@@ -200,6 +208,23 @@ function runPrisma(args: string[], databaseUrl: URL): void {
   if (result.error) throw result.error;
   if (result.status !== 0) {
     fail(`Prisma command failed with exit code ${String(result.status)}`);
+  }
+}
+
+function runPrismaExpectFailure(args: string[], databaseUrl: URL, expectedMessage: string): void {
+  const result = spawnSync(process.execPath, [prismaCliPath(), ...args], {
+    cwd: REPOSITORY_ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, DATABASE_URL: databaseUrl.toString() },
+    windowsHide: true,
+  });
+  if (result.error) throw result.error;
+  if (result.status === 0) {
+    fail(`Prisma command unexpectedly succeeded: ${args.join(' ')}`);
+  }
+  const detail = `${result.stderr}\n${result.stdout}`;
+  if (!detail.includes(expectedMessage)) {
+    fail(`Prisma failure did not contain the expected M5 rollback guard`);
   }
 }
 
@@ -436,8 +461,91 @@ async function run(): Promise<void> {
       ['db', 'execute', '--file', ASSERTIONS_SQL_PATH, '--schema', fullSchemaPath],
       scratchDatabaseUrl,
     );
+
+    for (const migrationName of [...M5_MIGRATIONS].reverse()) {
+      runPrisma(
+        [
+          'db',
+          'execute',
+          '--file',
+          join(MIGRATIONS_ROOT, migrationName, 'down.sql'),
+          '--schema',
+          fullSchemaPath,
+        ],
+        scratchDatabaseUrl,
+      );
+    }
+    const downState = await scratchClient.$queryRaw<
+      Array<{ m5_permissions: bigint; m5_table: string | null; partial_refund_enum: bigint }>
+    >`
+      SELECT
+        to_regclass('public.payment_attempts')::text AS m5_table,
+        (SELECT count(*) FROM permissions WHERE code LIKE 'store.payments.%'
+          OR code LIKE 'store.refunds.%' OR code LIKE 'store.shipments.%'
+          OR code LIKE 'store.integrations.%' OR code = 'store.integration-jobs.retry') AS m5_permissions,
+        (SELECT count(*) FROM pg_enum enum_value
+          JOIN pg_type enum_type ON enum_type.oid = enum_value.enumtypid
+          WHERE enum_type.typname = 'order_payment_status'
+            AND enum_value.enumlabel IN ('PARTIALLY_REFUNDED', 'FULLY_REFUNDED')) AS partial_refund_enum
+    `;
+    if (
+      downState[0]?.m5_table !== null ||
+      downState[0]?.m5_permissions !== 0n ||
+      downState[0]?.partial_refund_enum !== 0n
+    ) {
+      fail('M5 down exercise did not restore the M4 schema boundary');
+    }
+
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations"
+      WHERE migration_name = ANY(${[...M5_MIGRATIONS]})
+    `;
+    runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
+    await assertMigrationState(scratchClient, allMigrationNames);
+    const afterM5ForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
+    if (afterM5ForwardRepairFingerprint !== beforeUpgradeFingerprint) {
+      fail('M1/M2 fixture fingerprint changed during the M5 forward repair exercise');
+    }
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`
+        SELECT set_config('app.store_id', 'f2000000-0000-4000-8000-000000000001', true)
+      `;
+      await transaction.$executeRaw`
+        INSERT INTO store_zalo_apps (
+          store_id, environment, mini_app_id, enabled, created_at, updated_at
+        ) VALUES (
+          'f2000000-0000-4000-8000-000000000001', 'TEST',
+          'm52-down-guard-app', false, now(), now()
+        )
+      `;
+      await transaction.$executeRaw`
+        INSERT INTO store_payment_channels (
+          store_id, deployment_environment, provider_environment, provider_code,
+          method_code, checkout_app_id, merchant_reference, private_key_secret_ref,
+          secret_fingerprint, key_version, status, payment_window_seconds, updated_at
+        ) VALUES (
+          'f2000000-0000-4000-8000-000000000001', 'TEST', 'SANDBOX',
+          'ZALO_CHECKOUT_ZALOPAY', 'ZALOPAY_SANDBOX', 'm52-down-guard-app',
+          'm52-test-merchant', 'test://m52/down-guard/private-key',
+          ${'d'.repeat(64)}, 'test-v1', 'DISABLED', 900, now()
+        )
+      `;
+    });
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260725093000_m52_permission_catalog', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M5 permission rollback is unsafe after channel or business facts exist',
+    );
     console.log(
-      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations and preserved the M2 fingerprint`,
+      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, M5 down/forward repair and rollback guard`,
     );
   } catch (error) {
     primaryError = asError(error);

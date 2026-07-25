@@ -15,6 +15,12 @@ describe('M4 order state machine', () => {
     expect(transitionOrderStatus('CONFIRMED', 'SHIP')).toBe('SHIPPED');
   });
 
+  it('keeps the M5 online payment handoff explicit', () => {
+    const confirmed = transitionOrderStatus('PENDING_PAYMENT', 'PAYMENT_SUCCEEDED');
+    expect(confirmed).toBe('CONFIRMED');
+    expect(transitionOrderStatus(confirmed, 'FULFILLMENT_READY')).toBe('PENDING_FULFILLMENT');
+  });
+
   it('rejects terminal or unsupported transitions', () => {
     expect(() => transitionOrderStatus('COMPLETED', 'CANCEL')).toThrow('ORDER_STATE_CONFLICT');
     expect(() => transitionOrderStatus('PENDING_PAYMENT', 'CONFIRM_COD')).toThrow(

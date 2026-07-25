@@ -11,6 +11,7 @@ export type OrderStatus =
 
 export type OrderEvent =
   | 'SUBMIT_COD'
+  | 'PAYMENT_SUCCEEDED'
   | 'CONFIRM_COD'
   | 'FULFILLMENT_READY'
   | 'CANCEL'
@@ -27,7 +28,11 @@ export class OrderStateError extends Error {
 }
 
 const transitions: Readonly<Record<OrderStatus, Partial<Record<OrderEvent, OrderStatus>>>> = {
-  PENDING_PAYMENT: { CANCEL: 'CANCELLED', CLOSE: 'CLOSED' },
+  PENDING_PAYMENT: {
+    PAYMENT_SUCCEEDED: 'CONFIRMED',
+    CANCEL: 'CANCELLED',
+    CLOSE: 'CLOSED',
+  },
   PENDING_CONFIRMATION: { CONFIRM_COD: 'CONFIRMED', CANCEL: 'CANCELLED', CLOSE: 'CLOSED' },
   CONFIRMED: {
     FULFILLMENT_READY: 'PENDING_FULFILLMENT',

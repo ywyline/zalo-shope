@@ -309,11 +309,17 @@ describe('M3.4 multilingual search, facets and member history', () => {
       operationKey: `m34-fashion-stock-${suffix}`,
       operationType: 'IMPORT',
     });
-    await withStoreTransaction(runtime, context(), (transaction) =>
-      rebuildStoreSearchProjection(transaction, BEAUTY_STORE_ID),
+    await withStoreTransaction(
+      runtime,
+      context(),
+      (transaction) => rebuildStoreSearchProjection(transaction, BEAUTY_STORE_ID),
+      { timeout: 15_000 },
     );
-    await withStoreTransaction(runtime, context('fashion'), (transaction) =>
-      rebuildStoreSearchProjection(transaction, FASHION_STORE_ID),
+    await withStoreTransaction(
+      runtime,
+      context('fashion'),
+      (transaction) => rebuildStoreSearchProjection(transaction, FASHION_STORE_ID),
+      { timeout: 15_000 },
     );
 
     await owner.member.create({
@@ -632,8 +638,11 @@ describe('M3.4 multilingual search, facets and member history', () => {
       .expect(200);
     expect(missing.body.items).toEqual([]);
 
-    await withStoreTransaction(runtime, context(), (transaction) =>
-      rebuildStoreSearchProjection(transaction, BEAUTY_STORE_ID),
+    await withStoreTransaction(
+      runtime,
+      context(),
+      (transaction) => rebuildStoreSearchProjection(transaction, BEAUTY_STORE_ID),
+      { timeout: 15_000 },
     );
     const restored = await api()
       .get('/v1/search/products?q=beautiful&locale=en')

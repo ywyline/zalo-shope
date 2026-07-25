@@ -7,7 +7,10 @@ import { checkInfrastructure } from '@zalo-shop/platform';
 import { HealthController, INFRASTRUCTURE_CHECKER, RUNTIME_CONFIG } from './health.controller';
 import { InventoryExpirationService } from './inventory/inventory-expiration.service';
 import { OrderReconciliationService } from './orders/order-reconciliation.service';
-import { WORKER_DATABASE_CLIENT } from './worker.tokens';
+import { OutboxMessageDispatcher } from './reliable-messaging/outbox-message-handler';
+import { ReliableOutboxService } from './reliable-messaging/reliable-outbox.service';
+import { TestOnlyOutboxHandler } from './reliable-messaging/test-only-outbox-handler';
+import { OUTBOX_MESSAGE_HANDLERS, WORKER_DATABASE_CLIENT } from './worker.tokens';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('worker', runtimeConfig.LOG_LEVEL);
@@ -21,8 +24,16 @@ const logger = createLogger('worker', runtimeConfig.LOG_LEVEL);
       provide: WORKER_DATABASE_CLIENT,
       useFactory: () => createRuntimePrismaClient(runtimeConfig.DATABASE_RUNTIME_URL),
     },
+    {
+      inject: [RUNTIME_CONFIG],
+      provide: OUTBOX_MESSAGE_HANDLERS,
+      useFactory: (config: RuntimeConfig) =>
+        config.NODE_ENV === 'test' ? [new TestOnlyOutboxHandler(config.NODE_ENV)] : [],
+    },
     InventoryExpirationService,
     OrderReconciliationService,
+    OutboxMessageDispatcher,
+    ReliableOutboxService,
   ],
 })
 export class AppModule implements NestModule {

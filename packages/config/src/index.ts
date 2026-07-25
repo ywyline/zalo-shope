@@ -90,6 +90,16 @@ const runtimeConfigSchema = z
       .min(1_000)
       .max(300_000)
       .default(5_000),
+    OUTBOX_WORKER_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(25),
+    OUTBOX_WORKER_INTERVAL_MS: z.coerce.number().int().min(1_000).max(300_000).default(1_000),
+    OUTBOX_WORKER_LEASE_MS: z.coerce.number().int().min(5_000).max(300_000).default(30_000),
+    OUTBOX_WORKER_RETRY_BASE_DELAY_MS: z.coerce.number().int().min(100).max(300_000).default(1_000),
+    OUTBOX_WORKER_RETRY_MAX_DELAY_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(3_600_000)
+      .default(300_000),
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
       .default('info'),
@@ -119,6 +129,13 @@ const runtimeConfigSchema = z
     ZALO_TOKEN_METADATA_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(300),
   })
   .superRefine((config, context) => {
+    if (config.OUTBOX_WORKER_RETRY_MAX_DELAY_MS < config.OUTBOX_WORKER_RETRY_BASE_DELAY_MS) {
+      context.addIssue({
+        code: 'custom',
+        message: 'must be greater than or equal to OUTBOX_WORKER_RETRY_BASE_DELAY_MS',
+        path: ['OUTBOX_WORKER_RETRY_MAX_DELAY_MS'],
+      });
+    }
     if (config.NODE_ENV === 'production') {
       for (const field of Object.keys(
         productionPlaceholderValues,

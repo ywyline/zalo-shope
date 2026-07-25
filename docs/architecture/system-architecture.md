@@ -141,6 +141,16 @@ docs/
 - 回调先验证签名、时间戳/重放、金额、币种、商城和订单状态，再按供应商事件 ID 幂等处理。
 - 关键事务写入 transactional outbox；worker 重试发布，消费者使用 inbox/处理记录去重。
 - 外部调用使用超时、有限重试、退避、熔断与人工补偿入口，不能把数据库事务跨越网络调用。
+- M5.3 已实现数据库 outbox：运行角色先通过只返回活动商城安全字段的注册函数发现商城，再逐商城
+  设置 transaction-local RLS 上下文；`FOR UPDATE SKIP LOCKED` 领取短租约，领取即递增尝试次数，
+  完成/失败必须匹配商城、租约 owner、有效期和 expected version。过期租约可由其他实例恢复，
+  最后一次租约耗尽自动死信。
+- 可重试失败使用带 20% 抖动的有限指数退避，永久失败和人工复核直接死信。人工重放要求当前
+  商城任务重试权限、对应支付/退款/物流领域权限、近期 MFA、二次确认、原因和 expected version；
+  只重置调度字段并追加不含 payload 的审计。Inbox 由供应商、渠道、环境和外部事件键的数据库
+  唯一约束承担并发去重，摘要不一致稳定拒绝。
+- worker handler 以 `event_type + event_version` 注册，并至少兼容当前和上一事件版本。M5.3 仅在
+  `NODE_ENV=test` 注册无外部调用的探针处理器；非 test 构造硬失败，尚无真实支付/物流 handler。
 
 ### M4 已实施事务边界
 
@@ -148,7 +158,15 @@ docs/
 - COD 下单在单个 Serializable 事务中完成服务端重算、库存预留、订单/快照/转换、匹配购物车转换和会员券核销；任一失败整体回滚。
 - 管理端 COD 确认把库存预留消费、两段订单转换和审计放在同一事务；取消/关闭同样把库存释放或 RESTORE 与转换放在同一事务。
 - worker 先把过期预留推进终态，再关闭仍待确认的订单；冲突记录失败元数据并在下一轮重试，不删除订单或库存事实。
-- M4 没有外部支付或物流调用，因此不伪造 outbox 事件、支付成功、运单或供应商报价；M5 接入外部系统时再启用既定 outbox/inbox 边界。
+- M4 没有外部支付或物流调用，因此不伪造 outbox 事件、支付成功、运单或供应商报价；M5.2 已建立 outbox/inbox 数据边界，但在 M5.3 worker 落地前仍不创建虚构消息或外部业务事实。
+
+### M5.2 已实施数据库边界
+
+- 支付/物流渠道、支付尝试与转换、回调、退款与转换、报价、运单/行/轨迹/operation 以及 outbox/inbox 共 14 张商城表均强制 RLS；复合外键阻止跨商城订单、渠道、仓库和行项目拼接。
+- 支付尝试的 `amount_vnd/currency` 由复合外键绑定订单应付快照；活动支付与活动运单使用部分唯一索引，退款创建锁定成功支付行并将请求中、处理中和成功金额合计限制在已捕获金额内。
+- GHN webhook 在数据库层只能保存为 `NOT_AVAILABLE/UNVERIFIED_HINT`，不能伪装成已验签事实；支付回调和多态 inbox 必须匹配同商城、渠道和供应商环境。
+- 转换、报价、运单行和轨迹不可更新/删除，其他 M5 事实禁止删除；运行角色对可变表只获得受审配置、状态、供应商结果和重试列的更新权限。
+- 迁移与 seed 不创建渠道、支付、退款、运单、轨迹或消息事实。真实渠道仍默认不存在/禁用，后续只由受审管理流程创建并在 M5.5/M5.7 完成外部验收。
 
 ## 7. 身份、安全与隐私
 
@@ -171,11 +189,11 @@ docs/
 
 ### 支付
 
-定义 `PaymentProvider` 端口：创建支付、查询、验证回调、退款、查询退款和对账。P0 的具体线上渠道需在获得商户条件后确定；COD 是独立领域策略，不伪装为线上支付提供商。
+定义 `PaymentProvider` 端口：创建支付、查询、验证回调、退款、查询退款和可用范围内的对账。M5 已批准使用 ZaloPay，通过 Zalo Checkout 的 `ZALOPAY_SANDBOX/ZALOPAY` 方法接入；两个商城使用独立 App/商户配置和 secret reference。Mini App SDK 结果不确认支付成功，服务端以 Checkout HmacSHA256 回调或主动 `getOrderStatus` 为权威事实。COD 是独立领域策略，不伪装为线上支付提供商。
 
 ### 物流
 
-定义 `ShippingProvider` 端口：报价、创建/取消运单、面单、轨迹、COD 金额与对账。P0 只落地一家真实测试环境供应商，其余供应商保留契约测试而不声称已集成。
+定义 `ShippingProvider` 端口：报价、创建/取消运单、面单、轨迹、COD 金额与对账。M5 已批准首家供应商为 GHN，两个商城使用独立 ShopId/Token secret reference。2026-07-24 核验的 GHN webhook 官方文档未声明签名，因此回调只作为同步提示；内部状态必须由对应商城凭据的主动 Order Info 查询确认。其他供应商不在 M5 范围，不创建声称可用的适配器。
 
 ## 9. 部署与恢复
 
@@ -201,6 +219,8 @@ docs/
 ## 11. 已核验的官方约束
 
 - Zalo Checkout SDK 要求带支付能力的 Mini App 声明支付方式，并由用户确认、平台记录交易；服务端仍需处理支付结果：<https://docs.zaloplatforms.com/docs/MA/checkoutSdk/intro>
+- Zalo Checkout `createOrder` 从 ZMP SDK 2.45.0 起必须携带服务端生成的 MAC；ZaloPay sandbox/production 方法分别为 `ZALOPAY_SANDBOX/ZALOPAY`，无合法回调时需主动查单：<https://docs.zaloplatforms.com/docs/MA/checkoutSdk/apis/createOrder>、<https://docs.zaloplatforms.com/docs/MA/checkoutSdk/webhooks/callback>
+- GHN sandbox 使用固定 dev gateway、Token/ShopId，并提供报价、建单、查单、取消、面单与 webhook；当前 webhook 契约没有签名字段，不能单独作为权威物流事实：<https://api.ghn.vn/home/docs>
 - 手机号、定位等权限需要 Zalo 和/或用户授权，官方建议在真实使用场景请求：<https://docs.zaloplatforms.com/docs/MA/intro/request-permission>
 - Mini App 发布需经过审核，覆盖第三方跳转、性能、UI/UX、隐私、安全和 Zalo 认证：<https://docs.zaloplatforms.com/docs/MA/intro/public-mini-program>
 - 官方命令行脚手架入口为 `create-zalo-mini-app`/ZMP CLI：<https://docs.zaloplatforms.com/docs/MA/intro/getting-started/dev-use-command-line>
@@ -212,8 +232,8 @@ docs/
 
 1. 确认是否接受本技术栈和“模块化单体优先”的部署形态。
 2. 确认美妆与服装是否各自使用独立 Zalo Mini App ID 和 OA（本文按独立配置设计）。
-3. 确定 P0 线上支付渠道及是否满足 Checkout SDK 完整集成的商户条件。
-4. 确定 P0 物流商、测试账户、服务地区、COD 和面单能力。
+3. P0 线上支付已确认为 ZaloPay through Zalo Checkout；仍需提供两个商城的 Checkout/ZaloPay sandbox 商户条件、测试成员、密钥和 HTTPS 回调域名。
+4. P0 物流已确认为 GHN；仍需提供两个商城的 sandbox ShopId/Token、服务地区、仓库/退货地址、COD、面单和 webhook 配置。
 5. 确定云厂商、越南访问区域、域名、对象存储和密钥管理方案。
 6. COD 默认扣库存时点已在 M4 确认为“确认有效后扣减”；上线前仍需业务方确认各商城金额、地区和风险阈值。
 7. 确认“护肤 - 化妆品”是否应为“化妆水”；实现中保持类目可配置，不写死。
