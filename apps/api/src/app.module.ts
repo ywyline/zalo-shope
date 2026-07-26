@@ -7,12 +7,13 @@ import {
 import { parseRuntimeConfig, type RuntimeConfig } from '@zalo-shop/config';
 import { createRuntimePrismaClient } from '@zalo-shop/database';
 import {
-  DeterministicPaymentTestProvider,
+  ConfiguredPaymentProviderResolver,
   DeterministicZaloTestProvider,
+  EnvironmentSecretReferenceResolver,
   S3MediaStorageProvider,
   ZaloOpenApiIdentityProvider,
   type ZaloIdentityProvider,
-  type PaymentProvider,
+  type PaymentProviderResolver,
 } from '@zalo-shop/integrations';
 import { createHttpLogger, createLogger } from '@zalo-shop/logger';
 import { checkInfrastructure } from '@zalo-shop/platform';
@@ -71,6 +72,11 @@ import { DeliveryAdminService } from './delivery-admin/delivery-admin.service';
 import { PaymentsController } from './payments/payments.controller';
 import { PaymentsService } from './payments/payments.service';
 import { PAYMENT_PROVIDER } from './payments/payment.tokens';
+import { PaymentWebhookController } from './payments/payment-webhook.controller';
+import {
+  PaymentWebhookRateLimiter,
+  PaymentWebhookService,
+} from './payments/payment-webhook.service';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -105,11 +111,16 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
   return new DisabledZaloIdentityProvider();
 }
 
-function createPaymentProvider(config: RuntimeConfig): PaymentProvider | null {
-  if (config.PAYMENT_PROVIDER !== 'test') return null;
-  return new DeterministicPaymentTestProvider({
+function createPaymentProviderResolver(config: RuntimeConfig): PaymentProviderResolver {
+  return new ConfiguredPaymentProviderResolver({
+    mode: config.PAYMENT_PROVIDER,
     nodeEnvironment: config.NODE_ENV,
-    secret: config.PAYMENT_TEST_PROVIDER_SECRET!,
+    requestTimeoutMs: config.ZALO_CHECKOUT_REQUEST_TIMEOUT_MS,
+    responseLimitBytes: config.ZALO_CHECKOUT_RESPONSE_LIMIT_BYTES,
+    secretResolver: new EnvironmentSecretReferenceResolver(),
+    ...(config.PAYMENT_TEST_PROVIDER_SECRET
+      ? { testSecret: config.PAYMENT_TEST_PROVIDER_SECRET }
+      : {}),
   });
 }
 
@@ -140,6 +151,7 @@ function createPaymentProvider(config: RuntimeConfig): PaymentProvider | null {
     OrdersAdminController,
     DeliveryAdminController,
     PaymentsController,
+    PaymentWebhookController,
   ],
   providers: [
     AdminService,
@@ -160,6 +172,8 @@ function createPaymentProvider(config: RuntimeConfig): PaymentProvider | null {
     OrdersService,
     DeliveryAdminService,
     PaymentsService,
+    PaymentWebhookRateLimiter,
+    PaymentWebhookService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
       provide: DATABASE_CLIENT,
@@ -175,7 +189,7 @@ function createPaymentProvider(config: RuntimeConfig): PaymentProvider | null {
     },
     {
       provide: PAYMENT_PROVIDER,
-      useFactory: () => createPaymentProvider(runtimeConfig),
+      useFactory: () => createPaymentProviderResolver(runtimeConfig),
     },
     {
       provide: INFRASTRUCTURE_CHECKER,

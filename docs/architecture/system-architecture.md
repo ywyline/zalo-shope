@@ -167,6 +167,23 @@ docs/
 - 单次失败不关闭订单；支付窗口内允许幂等创建新尝试且同订单最多一个活动尝试。取消/到期按
   订单后支付尝试的统一锁顺序终止活动尝试并释放预留，迟到成功不能复活终态订单。
 
+### M5.5 已实施 Zalo Checkout 适配器与回调边界
+
+- API 与 worker 通过商城渠道解析器选择 Zalo Checkout 或受限 test provider；缓存身份包含商城、
+  App ID、method、environment、渠道/密钥版本和 secret reference。真实密钥只由受限 resolver 在
+  进程内解析，`disabled` 不回退 test provider。
+- provider-order 绑定只把客户端 Checkout order ID 当作查单提示；服务端重建并核对 launch，调用
+  `getOrderStatus` 后才绑定供应商事实。回调先用 App ID/method 唯一定位商城，再用原始 body、
+  `mac/overallMac`、商城/订单/attempt/nonce、method 和整数 VND 金额完成验证。
+- 验证后的 webhook 通过 callback/inbox 唯一键和可回收处理租约去重，再复用
+  `applyPaymentProviderFact`；HTTP 到 PostgreSQL 的重复投递测试证明同一成功事实只消费一次库存，
+  跨商城 RLS 查询不可见。已有回调事实时 M5.5 resolver 迁移拒绝回滚。
+- 已绑定供应商单号的尝试可在接受后最多 2 分钟、且尽量早于支付到期 30 秒追加商城隔离的
+  `payment.reconcile.requested.v1`。worker 在网络事务外查单，pending 使用固定上限延迟交回可靠
+  outbox，成功/失败/未知/迟到结果只经 `applyPaymentProviderFact` 推进；有限尝试耗尽后死信。
+- 真实商户凭据、HTTPS callback/trusted proxy、Zalo sandbox 查单/丢回调演练和 Zalo Testing
+  真机仍未验收。生产保持默认禁用，不据此标记 M5.5 或 M5 完成。
+
 ### M4 已实施事务边界
 
 - 地址、配送策略、订单、行、快照、转换和下单幂等记录均为强制 RLS 的商城事实；复合外键阻止跨商城拼接。

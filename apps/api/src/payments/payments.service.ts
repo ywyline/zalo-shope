@@ -12,6 +12,7 @@ import type { RuntimeConfig } from '@zalo-shop/config';
 import {
   appendOutboxMessageInTransaction,
   applyPaymentProviderFact,
+  bindPaymentProviderOrder,
   getPaymentCreationRequest,
   paymentLaunchPayloadHash,
   PaymentCommandError,
@@ -20,15 +21,24 @@ import {
   withStoreTransaction,
 } from '@zalo-shop/database';
 import { createStoreContext, type StoreContext } from '@zalo-shop/domain';
-import { ProviderIntegrationError, type PaymentProvider } from '@zalo-shop/integrations';
+import {
+  ProviderIntegrationError,
+  type PaymentProviderChannelConfig,
+  type PaymentProviderResolver,
+} from '@zalo-shop/integrations';
 
 import { AuthService } from '../auth/auth.service';
 import { DATABASE_CLIENT } from '../auth/auth.tokens';
 import { RUNTIME_CONFIG } from '../health.controller';
+import { SearchRateLimiter } from '../search/search-rate-limiter';
 import { PAYMENT_PROVIDER } from './payment.tokens';
 
 type StoreRecord = { code: string; default_locale: 'en' | 'vi' | 'zh'; id: string };
 type MemberContext = Readonly<{ context: StoreContext; memberId: string; storeId: string }>;
+
+const PAYMENT_BIND_IDEMPOTENCY_OPERATION = 'payment.bind-provider-order';
+const PAYMENT_BIND_CLAIM_LEASE_MS = 30_000;
+const PAYMENT_BIND_RESULT_TTL_MS = 24 * 60 * 60_000;
 
 function hash(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -46,7 +56,8 @@ export class PaymentsService {
     @Inject(DATABASE_CLIENT) private readonly database: PrismaClient,
     @Inject(AuthService) private readonly auth: AuthService,
     @Inject(RUNTIME_CONFIG) private readonly config: RuntimeConfig,
-    @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider | null,
+    @Inject(PAYMENT_PROVIDER) private readonly providers: PaymentProviderResolver,
+    @Inject(SearchRateLimiter) private readonly rateLimiter: SearchRateLimiter,
   ) {}
 
   public async detail(input: { authorization?: string; paymentId: string; storeCode: string }) {
@@ -59,7 +70,6 @@ export class PaymentsService {
 
   public async launch(input: { authorization?: string; paymentId: string; storeCode: string }) {
     const member = await this.memberContext(input.authorization, input.storeCode);
-    const provider = this.requireProvider();
     const attempt = await withStoreTransaction(this.database, member.context, (transaction) =>
       this.memberAttempt(transaction, member, input.paymentId),
     );
@@ -77,12 +87,11 @@ export class PaymentsService {
     ) {
       throw new ConflictException('PAYMENT_LAUNCH_NOT_READY');
     }
-    this.assertProvider(
-      request.channel.providerCode,
-      request.channel.providerEnvironment,
-      provider,
+    const created = await this.callProvider(() =>
+      this.providers
+        .resolve({ ...request.channel, storeId: member.storeId })
+        .createPayment(request),
     );
-    const created = await this.callProvider(() => provider.createPayment(request));
     if (
       paymentLaunchPayloadHash(created.launchAction) !== attempt.launchPayloadHash ||
       (attempt.providerOrderId && created.providerOrderId !== attempt.providerOrderId)
@@ -92,29 +101,93 @@ export class PaymentsService {
     return {
       expires_at: created.launchAction.expiresAt.toISOString(),
       kind: created.launchAction.kind,
+      launch_token: created.launchAction.payload.extradata,
       payload: created.launchAction.payload,
       payment_id: attempt.id,
     };
   }
 
+  public async bindProviderOrder(input: {
+    authorization?: string;
+    idempotencyKey: string;
+    launchToken: string;
+    orderId: string;
+    paymentId: string;
+    providerOrderId: string;
+    storeCode: string;
+  }) {
+    const member = await this.memberContext(input.authorization, input.storeCode);
+    await this.assertPaymentQueryAllowed(member, input.paymentId);
+    const current = await withStoreTransaction(this.database, member.context, (transaction) =>
+      this.memberAttempt(transaction, member, input.paymentId),
+    );
+    if (current.orderId !== input.orderId) throw new NotFoundException('Payment not found');
+    let request;
+    try {
+      request = await getPaymentCreationRequest(this.database, member.context, input.paymentId);
+    } catch (error) {
+      this.mapCommandError(error);
+    }
+    const idempotency = await this.claimProviderOrderBinding(member, input);
+    if (!idempotency.claimId) {
+      return this.detail({
+        authorization: input.authorization,
+        paymentId: input.paymentId,
+        storeCode: input.storeCode,
+      });
+    }
+    try {
+      const fact = await this.callProvider(async () => {
+        const provider = this.providers.resolve({ ...request.channel, storeId: member.storeId });
+        const launch = await provider.createPayment(request);
+        if (
+          paymentLaunchPayloadHash(launch.launchAction) !== current.launchPayloadHash ||
+          !this.equal(input.launchToken, launch.launchAction.payload.extradata)
+        ) {
+          throw new ProviderIntegrationError('REJECTED', false, 'Payment launch token is invalid');
+        }
+        return provider.queryPayment({
+          providerOrderId: input.providerOrderId,
+          storeId: member.storeId,
+        });
+      });
+      await bindPaymentProviderOrder(this.database, member.context, {
+        attemptId: current.id,
+        fact,
+        scheduleReconciliation: this.config.PAYMENT_RECONCILIATION_ENABLED,
+        source: 'QUERY',
+      });
+      await applyPaymentProviderFact(this.database, member.context, {
+        attemptId: current.id,
+        fact,
+        source: 'QUERY',
+      });
+      await this.completeProviderOrderBinding(member, idempotency, input.paymentId);
+    } catch (error) {
+      await this.releaseProviderOrderBinding(member, idempotency);
+      this.mapCommandError(error);
+    }
+    return this.detail({
+      authorization: input.authorization,
+      paymentId: input.paymentId,
+      storeCode: input.storeCode,
+    });
+  }
+
   public async query(input: { authorization?: string; paymentId: string; storeCode: string }) {
     const member = await this.memberContext(input.authorization, input.storeCode);
-    const provider = this.requireProvider();
+    await this.assertPaymentQueryAllowed(member, input.paymentId);
     const current = await withStoreTransaction(this.database, member.context, (transaction) =>
       this.memberAttempt(transaction, member, input.paymentId),
     );
     if (!current.providerOrderId) throw new ConflictException('PAYMENT_PROVIDER_ORDER_NOT_BOUND');
-    this.assertProvider(
-      current.channel.providerCode,
-      current.channel.providerEnvironment,
-      provider,
-    );
-    const fact = await this.callProvider(() =>
-      provider.queryPayment({
+    const fact = await this.callProvider(() => {
+      const provider = this.providers.resolve(this.channelConfig(current.channel, member.storeId));
+      return provider.queryPayment({
         providerOrderId: current.providerOrderId!,
         storeId: member.storeId,
-      }),
-    );
+      });
+    });
     try {
       await applyPaymentProviderFact(this.database, member.context, {
         attemptId: current.id,
@@ -134,7 +207,7 @@ export class PaymentsService {
     storeCode: string;
   }) {
     const member = await this.memberContext(input.authorization, input.storeCode);
-    this.requireProvider();
+    this.ensureOnlinePaymentEnabled();
     return withStoreTransaction(
       this.database,
       member.context,
@@ -183,7 +256,7 @@ export class PaymentsService {
           },
         });
         if (active) throw new ConflictException('PAYMENT_ATTEMPT_ACTIVE');
-        const channel = await this.activeTestChannel(transaction, member.storeId);
+        const channel = await this.activeChannel(transaction, member.storeId);
         const latest = await transaction.paymentAttempt.findFirst({
           orderBy: { attemptSequence: 'desc' },
           select: { attemptSequence: true },
@@ -243,15 +316,26 @@ export class PaymentsService {
     );
   }
 
-  private async activeTestChannel(transaction: StoreTransaction, storeId: string) {
-    if (this.config.NODE_ENV !== 'test' || this.config.PAYMENT_PROVIDER !== 'test') {
+  private async activeChannel(transaction: StoreTransaction, storeId: string) {
+    this.ensureOnlinePaymentEnabled();
+    const deploymentEnvironment =
+      this.config.NODE_ENV === 'production'
+        ? 'PRODUCTION'
+        : this.config.NODE_ENV === 'test'
+          ? 'TEST'
+          : 'STAGING';
+    const providerEnvironment =
+      this.config.PAYMENT_PROVIDER === 'test' || this.config.NODE_ENV !== 'production'
+        ? 'SANDBOX'
+        : undefined;
+    if (this.config.PAYMENT_PROVIDER === 'test' && this.config.NODE_ENV !== 'test') {
       throw new ConflictException('ONLINE_PAYMENT_UNAVAILABLE');
     }
     const channel = await transaction.storePaymentChannel.findFirst({
       where: {
-        deploymentEnvironment: 'TEST',
+        deploymentEnvironment,
         providerCode: 'ZALO_CHECKOUT_ZALOPAY',
-        providerEnvironment: 'SANDBOX',
+        ...(providerEnvironment ? { providerEnvironment } : {}),
         status: 'ACTIVE',
         storeId,
       },
@@ -260,19 +344,26 @@ export class PaymentsService {
     return channel;
   }
 
-  private assertProvider(
-    code: string,
-    environment: 'SANDBOX' | 'PRODUCTION',
-    provider: PaymentProvider,
-  ): void {
-    if (provider.code !== code || provider.environment !== environment) {
-      throw new ServiceUnavailableException('PAYMENT_PROVIDER_CONFIGURATION_MISMATCH');
+  private ensureOnlinePaymentEnabled(): void {
+    if (this.config.PAYMENT_PROVIDER === 'disabled') {
+      throw new ServiceUnavailableException('Payment provider is not configured');
     }
   }
 
-  private requireProvider(): PaymentProvider {
-    if (!this.provider) throw new ServiceUnavailableException('Payment provider is not configured');
-    return this.provider;
+  private channelConfig(
+    channel: {
+      checkoutAppId: string;
+      id: string;
+      keyVersion: string;
+      methodCode: string;
+      privateKeySecretRef: string;
+      providerCode: string;
+      providerEnvironment: 'SANDBOX' | 'PRODUCTION';
+      version: number;
+    },
+    storeId: string,
+  ): PaymentProviderChannelConfig {
+    return { ...channel, storeId };
   }
 
   private async callProvider<T>(operation: () => Promise<T>): Promise<T> {
@@ -284,6 +375,178 @@ export class PaymentsService {
       }
       throw error;
     }
+  }
+
+  private equal(left: string, right: string): boolean {
+    const leftHash = createHash('sha256').update(left, 'utf8').digest();
+    const rightHash = createHash('sha256').update(right, 'utf8').digest();
+    return leftHash.equals(rightHash);
+  }
+
+  private assertPaymentQueryAllowed(member: MemberContext, paymentId: string): Promise<void> {
+    return this.rateLimiter.assertAllowed(
+      '',
+      'payment-query',
+      member.storeId,
+      `${member.memberId}:${paymentId}`,
+      {
+        errorCode: 'PAYMENT_QUERY_RATE_LIMITED',
+        maxRequests: this.config.ZALO_CHECKOUT_MEMBER_QUERY_RATE_LIMIT_PER_MINUTE,
+        windowSeconds: 60,
+      },
+    );
+  }
+
+  private async claimProviderOrderBinding(
+    member: MemberContext,
+    input: {
+      idempotencyKey: string;
+      launchToken: string;
+      orderId: string;
+      paymentId: string;
+      providerOrderId: string;
+    },
+  ): Promise<Readonly<{ claimId?: string; idempotencyKeyHash: string; requestHash: string }>> {
+    const idempotencyKeyHash = hash(
+      `${member.storeId}\u0000${member.memberId}\u0000${input.idempotencyKey}`,
+    );
+    const requestHash = hash(
+      [
+        member.storeId,
+        member.memberId,
+        input.orderId,
+        input.paymentId,
+        input.providerOrderId,
+        hash(input.launchToken),
+      ].join('\u0000'),
+    );
+    return withStoreTransaction(
+      this.database,
+      member.context,
+      async (transaction) => {
+        await transaction.$executeRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(
+              ${`${member.storeId}:${PAYMENT_BIND_IDEMPOTENCY_OPERATION}:${idempotencyKeyHash}`},
+              0
+            )
+          )
+        `;
+        const current = await transaction.idempotencyRecord.findUnique({
+          where: {
+            storeId_operation_idempotencyKey: {
+              idempotencyKey: idempotencyKeyHash,
+              operation: PAYMENT_BIND_IDEMPOTENCY_OPERATION,
+              storeId: member.storeId,
+            },
+          },
+        });
+        if (current) {
+          if (
+            current.requestHash !== requestHash ||
+            current.memberId !== member.memberId ||
+            current.orderId !== input.orderId
+          ) {
+            throw new ConflictException('PAYMENT_BIND_IDEMPOTENCY_CONFLICT');
+          }
+          const response = this.providerOrderBindingState(current.response);
+          if (response.state === 'COMPLETED') {
+            return { idempotencyKeyHash, requestHash };
+          }
+          if (current.expiresAt.getTime() > Date.now()) {
+            throw new ServiceUnavailableException('PAYMENT_BIND_IN_PROGRESS');
+          }
+          const claimId = randomUUID();
+          await transaction.idempotencyRecord.update({
+            data: {
+              expiresAt: new Date(Date.now() + PAYMENT_BIND_CLAIM_LEASE_MS),
+              response: { claim_id: claimId, payment_id: input.paymentId, state: 'PROCESSING' },
+            },
+            where: { id: current.id },
+          });
+          return { claimId, idempotencyKeyHash, requestHash };
+        }
+        const claimId = randomUUID();
+        await transaction.idempotencyRecord.create({
+          data: {
+            expiresAt: new Date(Date.now() + PAYMENT_BIND_CLAIM_LEASE_MS),
+            idempotencyKey: idempotencyKeyHash,
+            memberId: member.memberId,
+            operation: PAYMENT_BIND_IDEMPOTENCY_OPERATION,
+            orderId: input.orderId,
+            requestHash,
+            response: { claim_id: claimId, payment_id: input.paymentId, state: 'PROCESSING' },
+            storeId: member.storeId,
+          },
+        });
+        return { claimId, idempotencyKeyHash, requestHash };
+      },
+      { isolationLevel: 'Serializable' },
+    );
+  }
+
+  private async completeProviderOrderBinding(
+    member: MemberContext,
+    claim: Readonly<{ claimId?: string; idempotencyKeyHash: string; requestHash: string }>,
+    paymentId: string,
+  ): Promise<void> {
+    if (!claim.claimId) return;
+    await withStoreTransaction(this.database, member.context, async (transaction) => {
+      const updated = await transaction.idempotencyRecord.updateMany({
+        data: {
+          expiresAt: new Date(Date.now() + PAYMENT_BIND_RESULT_TTL_MS),
+          response: { payment_id: paymentId, state: 'COMPLETED' },
+        },
+        where: {
+          idempotencyKey: claim.idempotencyKeyHash,
+          operation: PAYMENT_BIND_IDEMPOTENCY_OPERATION,
+          requestHash: claim.requestHash,
+          response: { path: ['claim_id'], equals: claim.claimId },
+          storeId: member.storeId,
+        },
+      });
+      if (updated.count !== 1) {
+        throw new ServiceUnavailableException('PAYMENT_BIND_CLAIM_LOST');
+      }
+    });
+  }
+
+  private async releaseProviderOrderBinding(
+    member: MemberContext,
+    claim: Readonly<{ claimId?: string; idempotencyKeyHash: string; requestHash: string }>,
+  ): Promise<void> {
+    if (!claim.claimId) return;
+    try {
+      await withStoreTransaction(this.database, member.context, async (transaction) => {
+        await transaction.idempotencyRecord.updateMany({
+          data: { expiresAt: new Date() },
+          where: {
+            idempotencyKey: claim.idempotencyKeyHash,
+            operation: PAYMENT_BIND_IDEMPOTENCY_OPERATION,
+            requestHash: claim.requestHash,
+            response: { path: ['claim_id'], equals: claim.claimId },
+            storeId: member.storeId,
+          },
+        });
+      });
+    } catch {
+      // The short lease makes a failed release recoverable without hiding the original error.
+    }
+  }
+
+  private providerOrderBindingState(
+    value: unknown,
+  ): Readonly<{ state: 'COMPLETED' | 'PROCESSING' }> {
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      Array.isArray(value) ||
+      ((value as { state?: unknown }).state !== 'COMPLETED' &&
+        (value as { state?: unknown }).state !== 'PROCESSING')
+    ) {
+      throw new ConflictException('PAYMENT_BIND_IDEMPOTENCY_INVALID');
+    }
+    return { state: (value as { state: 'COMPLETED' | 'PROCESSING' }).state };
   }
 
   private async memberAttempt(

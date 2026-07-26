@@ -1,6 +1,6 @@
 # M5 Zalo Checkout、线上支付与首家物流专项实施计划
 
-> 状态：已批准；M5.1-M5.2 已完成，下一步按受限无凭据路径实施 M5.3
+> 状态：已批准；M5.1-M5.4 已完成，M5.5 仓库自动化范围已收口，真实外部验收仍未完成
 >
 > 版本：0.2
 >
@@ -166,6 +166,8 @@ Zalo 宿主真机、GHN、退款和对账仍未实施或验收；下一步只能
 不得据此标记整个 M5 完成。
 
 ### M5.5：选定支付供应商与 Zalo Checkout
+
+- 当前记录（2026-07-26）：仓库内 Zalo Checkout 适配器、按商城渠道解析、secret reference 接缝、provider-order 绑定、原始 body webhook、callback/inbox 去重、stale PROCESSING 回收和定时丢回调补偿 worker 已实现；真实 merchant credentials、HTTPS callback、Zalo sandbox 查单/丢回调演练和 Testing 真机仍为 `BLOCKED/NOT_RUN`，因此不标记 M5.5 或 M5 完成。详见 `docs/reports/m5.5-progress-report.md`。
 
 - 按已确认官方文档实现唯一选定支付适配器，端点采用 allowlist、HTTPS、连接/响应超时、
   响应大小限制和分类错误；签名使用原始字节且采用恒定时间比较。

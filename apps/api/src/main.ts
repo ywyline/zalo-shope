@@ -2,6 +2,7 @@ import 'dotenv/config';
 import 'reflect-metadata';
 
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { createLogger, NestPinoLogger } from '@zalo-shop/logger';
 
 import { AppModule, getApiRuntimeConfig } from './app.module';
@@ -10,9 +11,11 @@ import { ApiExceptionFilter } from './api-exception.filter';
 async function bootstrap(): Promise<void> {
   const config = getApiRuntimeConfig();
   const structuredLogger = createLogger('api', config.LOG_LEVEL);
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: new NestPinoLogger(structuredLogger),
+    rawBody: true,
   });
+  app.useBodyParser('json', { limit: '128kb' });
 
   app.useGlobalFilters(new ApiExceptionFilter());
   app.enableShutdownHooks();

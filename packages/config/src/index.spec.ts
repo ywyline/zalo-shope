@@ -79,6 +79,12 @@ describe('parseRuntimeConfig', () => {
     expect(config.OUTBOX_WORKER_RETRY_BASE_DELAY_MS).toBe(1_000);
     expect(config.OUTBOX_WORKER_RETRY_MAX_DELAY_MS).toBe(300_000);
     expect(config.PAYMENT_PROVIDER).toBe('disabled');
+    expect(config.PAYMENT_RECONCILIATION_ENABLED).toBe(false);
+    expect(config.ZALO_CHECKOUT_REQUEST_TIMEOUT_MS).toBe(5_000);
+    expect(config.ZALO_CHECKOUT_RESPONSE_LIMIT_BYTES).toBe(131_072);
+    expect(config.ZALO_CHECKOUT_CALLBACK_IP_ALLOWLIST).toEqual(['118.102.2.29', '49.213.78.2']);
+    expect(config.ZALO_CHECKOUT_CALLBACK_RATE_LIMIT_PER_MINUTE).toBe(120);
+    expect(config.ZALO_CHECKOUT_MEMBER_QUERY_RATE_LIMIT_PER_MINUTE).toBe(10);
     expect(config.SEARCH_RATE_LIMIT_MAX_REQUESTS).toBe(120);
     expect(config.SEARCH_RATE_LIMIT_WINDOW_SECONDS).toBe(60);
     expect(config.S3_FORCE_PATH_STYLE).toBe(true);
@@ -116,6 +122,54 @@ describe('parseRuntimeConfig', () => {
         PAYMENT_TEST_PROVIDER_SECRET: 'p'.repeat(32),
       }),
     ).toThrow(InvalidEnvironmentError);
+  });
+
+  it('gates reconciliation production and keeps provider work inside the outbox lease', () => {
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnvironment,
+        PAYMENT_RECONCILIATION_ENABLED: 'true',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnvironment,
+        NODE_ENV: 'test',
+        OUTBOX_WORKER_INTERVAL_MS: '30001',
+        PAYMENT_PROVIDER: 'test',
+        PAYMENT_RECONCILIATION_ENABLED: 'true',
+        PAYMENT_TEST_PROVIDER_SECRET: 'p'.repeat(32),
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnvironment,
+        NODE_ENV: 'test',
+        OUTBOX_WORKER_LEASE_MS: '9000',
+        PAYMENT_PROVIDER: 'test',
+        PAYMENT_RECONCILIATION_ENABLED: 'true',
+        PAYMENT_TEST_PROVIDER_SECRET: 'p'.repeat(32),
+        ZALO_CHECKOUT_REQUEST_TIMEOUT_MS: '5000',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(
+      parseRuntimeConfig({
+        ...validEnvironment,
+        NODE_ENV: 'test',
+        PAYMENT_PROVIDER: 'test',
+        PAYMENT_RECONCILIATION_ENABLED: 'true',
+        PAYMENT_TEST_PROVIDER_SECRET: 'p'.repeat(32),
+      }).PAYMENT_RECONCILIATION_ENABLED,
+    ).toBe(true);
+  });
+
+  it('allows the real adapter mode without accepting a repository secret value', () => {
+    const config = parseRuntimeConfig({
+      ...validProductionEnvironment,
+      PAYMENT_PROVIDER: 'zalo-checkout',
+    });
+    expect(config.PAYMENT_PROVIDER).toBe('zalo-checkout');
+    expect(config.PAYMENT_TEST_PROVIDER_SECRET).toBeUndefined();
   });
 
   it('normalizes the external content target allowlist', () => {

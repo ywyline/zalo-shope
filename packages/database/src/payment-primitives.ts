@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import {
   assertPaymentFactMatches,
   PaymentInvariantError,
@@ -44,6 +44,12 @@ export type PaymentLaunchAction = Readonly<{
 export type PaymentTransitionSource =
   'MEMBER' | 'ADMIN' | 'WEBHOOK' | 'QUERY' | 'RECONCILIATION' | 'SYSTEM';
 
+export const PAYMENT_RECONCILIATION_EVENT_TYPE = 'payment.reconcile.requested';
+export const PAYMENT_RECONCILIATION_INITIAL_DELAY_MS = 2 * 60_000;
+export const PAYMENT_RECONCILIATION_EXPIRY_GUARD_MS = 30_000;
+export const PAYMENT_RECONCILIATION_RETRY_DELAY_MS = 5 * 60_000;
+export const PAYMENT_RECONCILIATION_MAX_ATTEMPTS = 8;
+
 export type PaymentCommandErrorCode =
   | 'PAYMENT_ATTEMPT_NOT_FOUND'
   | 'PAYMENT_ATTEMPT_CONFLICT'
@@ -72,9 +78,14 @@ export type PaymentCreationRequest = Readonly<{
   amountVnd: number;
   attemptId: string;
   channel: Readonly<{
+    checkoutAppId: string;
     id: string;
+    keyVersion: string;
+    methodCode: string;
+    privateKeySecretRef: string;
     providerCode: string;
     providerEnvironment: 'SANDBOX' | 'PRODUCTION';
+    version: number;
   }>;
   currency: 'VND';
   description: string;
@@ -90,6 +101,16 @@ export type PaymentCreationRequest = Readonly<{
   status: PaymentAttemptStatus;
   storeId: string;
   version: number;
+}>;
+
+export type PaymentReconciliationRequest = Readonly<{
+  attemptId: string;
+  channel: PaymentCreationRequest['channel'];
+  expiresAt: Date;
+  orderId: string;
+  providerOrderId: string | null;
+  status: PaymentAttemptStatus;
+  storeId: string;
 }>;
 
 type LockedAttempt = Prisma.PaymentAttemptGetPayload<{
@@ -228,6 +249,80 @@ function attemptResult(attempt: LockedAttempt, replayed: boolean): PaymentAttemp
   };
 }
 
+function isReconciliationPayload(
+  payload: Prisma.JsonValue,
+  storeId: string,
+  attemptId: string,
+): boolean {
+  return (
+    payload !== null &&
+    typeof payload === 'object' &&
+    !Array.isArray(payload) &&
+    Object.keys(payload).length === 2 &&
+    payload.store_id === storeId &&
+    payload.payment_attempt_id === attemptId
+  );
+}
+
+async function ensurePaymentReconciliationMessage(
+  transaction: StoreTransaction,
+  context: StoreContext,
+  attempt: LockedAttempt,
+): Promise<void> {
+  if (!attempt.providerOrderId) return;
+  const idempotencyKey = `${PAYMENT_RECONCILIATION_EVENT_TYPE}:${attempt.id}`;
+  const accepted = await transaction.paymentTransition.findFirst({
+    orderBy: { createdAt: 'asc' },
+    select: { createdAt: true },
+    where: {
+      event: 'PROVIDER_ACCEPTED',
+      paymentAttemptId: attempt.id,
+      storeId: context.storeId,
+    },
+  });
+  const anchor = accepted?.createdAt ?? attempt.updatedAt;
+  const availableAt = new Date(
+    Math.max(
+      anchor.getTime(),
+      Math.min(
+        anchor.getTime() + PAYMENT_RECONCILIATION_INITIAL_DELAY_MS,
+        attempt.expiresAt.getTime() - PAYMENT_RECONCILIATION_EXPIRY_GUARD_MS,
+      ),
+    ),
+  );
+  const existing = await transaction.outboxMessage.findUnique({
+    where: {
+      storeId_idempotencyKey: { idempotencyKey, storeId: context.storeId },
+    },
+  });
+  if (existing) {
+    if (
+      existing.aggregateId !== attempt.id ||
+      existing.aggregateType !== 'PAYMENT_ATTEMPT' ||
+      existing.eventType !== PAYMENT_RECONCILIATION_EVENT_TYPE ||
+      existing.eventVersion !== 1 ||
+      existing.maxAttempts !== PAYMENT_RECONCILIATION_MAX_ATTEMPTS ||
+      !isReconciliationPayload(existing.payload, context.storeId, attempt.id)
+    ) {
+      throw new PaymentCommandError('PAYMENT_ATTEMPT_CONFLICT');
+    }
+    return;
+  }
+  await transaction.outboxMessage.create({
+    data: {
+      aggregateId: attempt.id,
+      aggregateType: 'PAYMENT_ATTEMPT',
+      availableAt,
+      eventType: PAYMENT_RECONCILIATION_EVENT_TYPE,
+      eventVersion: 1,
+      idempotencyKey,
+      maxAttempts: PAYMENT_RECONCILIATION_MAX_ATTEMPTS,
+      payload: { payment_attempt_id: attempt.id, store_id: context.storeId },
+      storeId: context.storeId,
+    },
+  });
+}
+
 export function getPaymentCreationRequest(
   client: PrismaClient,
   context: StoreContext,
@@ -246,9 +341,14 @@ export function getPaymentCreationRequest(
       amountVnd: safeAmount(attempt.amountVnd),
       attemptId: attempt.id,
       channel: {
+        checkoutAppId: attempt.channel.checkoutAppId,
         id: attempt.channel.id,
+        keyVersion: attempt.channel.keyVersion,
+        methodCode: attempt.channel.methodCode,
+        privateKeySecretRef: attempt.channel.privateKeySecretRef,
         providerCode: attempt.channel.providerCode,
         providerEnvironment: attempt.channel.providerEnvironment,
+        version: attempt.channel.version,
       },
       currency: 'VND',
       description: `Thanh toan ${attempt.order.orderNumber}`,
@@ -268,6 +368,38 @@ export function getPaymentCreationRequest(
   });
 }
 
+export function getPaymentReconciliationRequest(
+  client: PrismaClient,
+  context: StoreContext,
+  attemptId: string,
+): Promise<PaymentReconciliationRequest> {
+  return withStoreTransaction(client, context, async (transaction) => {
+    const attempt = await transaction.paymentAttempt.findFirst({
+      include: { channel: true },
+      where: { id: attemptId, storeId: context.storeId },
+    });
+    if (!attempt) throw new PaymentCommandError('PAYMENT_ATTEMPT_NOT_FOUND');
+    return {
+      attemptId: attempt.id,
+      channel: {
+        checkoutAppId: attempt.channel.checkoutAppId,
+        id: attempt.channel.id,
+        keyVersion: attempt.channel.keyVersion,
+        methodCode: attempt.channel.methodCode,
+        privateKeySecretRef: attempt.channel.privateKeySecretRef,
+        providerCode: attempt.channel.providerCode,
+        providerEnvironment: attempt.channel.providerEnvironment,
+        version: attempt.channel.version,
+      },
+      expiresAt: attempt.expiresAt,
+      orderId: attempt.orderId,
+      providerOrderId: attempt.providerOrderId,
+      status: attempt.status,
+      storeId: attempt.storeId,
+    };
+  });
+}
+
 export function recordPaymentLaunch(
   client: PrismaClient,
   context: StoreContext,
@@ -276,6 +408,7 @@ export function recordPaymentLaunch(
     attemptId: string;
     providerOrderId?: string;
     providerStatus?: string;
+    scheduleReconciliation?: boolean;
   }>,
 ): Promise<PaymentAttemptResult> {
   return withStoreTransaction(client, context, async (transaction) => {
@@ -287,6 +420,9 @@ export function recordPaymentLaunch(
       attempt.launchPayloadHash === hashes.payloadHash &&
       (input.providerOrderId === undefined || attempt.providerOrderId === input.providerOrderId)
     ) {
+      if (input.scheduleReconciliation) {
+        await ensurePaymentReconciliationMessage(transaction, context, attempt);
+      }
       return attemptResult(attempt, true);
     }
     if (
@@ -333,6 +469,9 @@ export function recordPaymentLaunch(
       updated.order.paymentStatus = 'PROCESSING';
       updated.order.version += 1;
     }
+    if (input.scheduleReconciliation) {
+      await ensurePaymentReconciliationMessage(transaction, context, updated);
+    }
     return attemptResult(updated, false);
   });
 }
@@ -353,9 +492,14 @@ async function getPaymentCreationRequestFromLocked(
     amountVnd: safeAmount(complete.amountVnd),
     attemptId: complete.id,
     channel: {
+      checkoutAppId: complete.channel.checkoutAppId,
       id: complete.channel.id,
+      keyVersion: complete.channel.keyVersion,
+      methodCode: complete.channel.methodCode,
+      privateKeySecretRef: complete.channel.privateKeySecretRef,
       providerCode: complete.channel.providerCode,
       providerEnvironment: complete.channel.providerEnvironment,
+      version: complete.channel.version,
     },
     currency: 'VND',
     description: `Thanh toan ${complete.order.orderNumber}`,
@@ -383,6 +527,7 @@ async function transitionAttempt(
     fact: PaymentProviderFact;
     nextStatus: PaymentAttemptStatus;
     providerEventId?: string;
+    scheduleReconciliation?: boolean;
     reason?: string;
     source: PaymentTransitionSource;
   }>,
@@ -468,6 +613,32 @@ function paymentEvent(status: Exclude<PaymentProviderStatus, 'UNKNOWN'>) {
   return 'CANCEL' as const;
 }
 
+async function providerTransactionBelongsToAnotherAttempt(
+  transaction: StoreTransaction,
+  context: StoreContext,
+  attempt: LockedAttempt,
+  providerTransactionId: string,
+): Promise<boolean> {
+  await transaction.$executeRaw`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(
+        ${`${context.storeId}:${attempt.channelId}:${providerTransactionId}`},
+        0
+      )
+    )
+  `;
+  const existing = await transaction.paymentAttempt.findFirst({
+    select: { id: true },
+    where: {
+      channelId: attempt.channelId,
+      id: { not: attempt.id },
+      providerTransactionId,
+      storeId: context.storeId,
+    },
+  });
+  return existing !== null;
+}
+
 export function applyPaymentProviderFact(
   client: PrismaClient,
   context: StoreContext,
@@ -510,6 +681,23 @@ export function applyPaymentProviderFact(
     }
     if (attempt.status === 'REVIEW_REQUIRED') return attemptResult(attempt, true);
     if (
+      input.fact.providerTransactionId &&
+      (await providerTransactionBelongsToAnotherAttempt(
+        transaction,
+        context,
+        attempt,
+        input.fact.providerTransactionId,
+      ))
+    ) {
+      return requireReview(transaction, context, attempt, {
+        event: 'REQUIRE_REVIEW',
+        fact: { ...input.fact, providerTransactionId: undefined },
+        ...(input.providerEventId ? { providerEventId: input.providerEventId } : {}),
+        reason: 'PAYMENT_PROVIDER_TRANSACTION_CONFLICT',
+        source: input.source,
+      });
+    }
+    if (
       input.fact.status === 'SUCCEEDED' &&
       (attempt.status === 'FAILED' ||
         attempt.status === 'EXPIRED' ||
@@ -523,13 +711,6 @@ export function applyPaymentProviderFact(
         source: input.source,
       });
     }
-    if (
-      attempt.status === 'FAILED' ||
-      attempt.status === 'EXPIRED' ||
-      attempt.status === 'CANCELLED'
-    ) {
-      return attemptResult(attempt, true);
-    }
     if (input.fact.status === 'UNKNOWN') {
       return requireReview(transaction, context, attempt, {
         event: 'REQUIRE_REVIEW',
@@ -538,6 +719,13 @@ export function applyPaymentProviderFact(
         reason: 'PAYMENT_PROVIDER_STATUS_UNKNOWN',
         source: input.source,
       });
+    }
+    if (
+      attempt.status === 'FAILED' ||
+      attempt.status === 'EXPIRED' ||
+      attempt.status === 'CANCELLED'
+    ) {
+      return attemptResult(attempt, true);
     }
     if (input.fact.status === 'SUCCEEDED' && !input.fact.providerTransactionId) {
       return requireReview(transaction, context, attempt, {
@@ -660,6 +848,98 @@ export function applyPaymentProviderFact(
     succeeded.order.paymentStatus = order.paymentStatus;
     succeeded.order.version = order.version;
     return attemptResult(succeeded, false);
+  });
+}
+
+export function bindPaymentProviderOrder(
+  client: PrismaClient,
+  context: StoreContext,
+  input: Readonly<{
+    attemptId: string;
+    fact: PaymentProviderFact;
+    providerEventId?: string;
+    scheduleReconciliation?: boolean;
+    source: PaymentTransitionSource;
+  }>,
+): Promise<PaymentAttemptResult> {
+  return withStoreTransaction(client, context, async (transaction) => {
+    const attempt = await lockAttemptAndOrder(transaction, context.storeId, input.attemptId);
+    if (
+      input.fact.attemptId !== attempt.id ||
+      input.fact.storeId !== attempt.storeId ||
+      input.fact.orderId !== attempt.orderId ||
+      input.fact.currency !== attempt.currency ||
+      input.fact.amountVnd !== safeAmount(attempt.amountVnd) ||
+      input.fact.providerOrderId.length === 0 ||
+      input.fact.providerOrderId.length > 160
+    ) {
+      throw new PaymentCommandError('PAYMENT_FACT_INVALID');
+    }
+    if (attempt.providerOrderId === input.fact.providerOrderId) {
+      if (input.scheduleReconciliation) {
+        await ensurePaymentReconciliationMessage(transaction, context, attempt);
+      }
+      return attemptResult(attempt, true);
+    }
+    if (
+      attempt.providerOrderId !== null ||
+      attempt.launchNonceHash === null ||
+      attempt.launchPayloadHash === null
+    ) {
+      throw new PaymentCommandError('PAYMENT_ATTEMPT_CONFLICT');
+    }
+    const accepted = attempt.status === 'CREATED';
+    const nextStatus = accepted
+      ? transitionPaymentAttempt(attempt.status, 'PROVIDER_ACCEPTED')
+      : attempt.status;
+    let updated: LockedAttempt;
+    try {
+      updated = await transaction.paymentAttempt.update({
+        data: {
+          providerOrderId: input.fact.providerOrderId,
+          providerStatus: input.fact.providerStatus,
+          status: nextStatus,
+          version: { increment: 1 },
+        },
+        include: { order: true },
+        where: { storeId_id: { id: attempt.id, storeId: context.storeId } },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new PaymentCommandError('PAYMENT_ATTEMPT_CONFLICT');
+      }
+      throw error;
+    }
+    if (!accepted) {
+      if (input.scheduleReconciliation) {
+        await ensurePaymentReconciliationMessage(transaction, context, updated);
+      }
+      return attemptResult(updated, false);
+    }
+    await transaction.paymentTransition.create({
+      data: {
+        actorId: context.actor.id,
+        actorType: actorType(input.source),
+        correlationId: context.correlationId,
+        event: 'PROVIDER_ACCEPTED',
+        fromStatus: attempt.status,
+        paymentAttemptId: attempt.id,
+        ...(input.providerEventId ? { providerEventId: input.providerEventId } : {}),
+        source: input.source,
+        storeId: context.storeId,
+        toStatus: nextStatus,
+      },
+    });
+    const order = await transaction.order.update({
+      data: { paymentStatus: 'PROCESSING', version: { increment: 1 } },
+      where: { storeId_id: { id: attempt.orderId, storeId: context.storeId } },
+    });
+    updated.order.paymentStatus = order.paymentStatus;
+    updated.order.version = order.version;
+    if (input.scheduleReconciliation) {
+      await ensurePaymentReconciliationMessage(transaction, context, updated);
+    }
+    return attemptResult(updated, false);
   });
 }
 

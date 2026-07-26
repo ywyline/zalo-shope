@@ -428,7 +428,10 @@ export function createZaloTestToken(
 
 export * from './provider-contract';
 export * from './payment-provider';
+export * from './payment-provider-resolver';
 export * from './deterministic-payment-test-provider';
 export * from './shipping-provider';
 export * from './zalo-checkout-contract';
+export * from './zalo-checkout-payment-provider';
+export * from './secret-reference-resolver';
 export * from './ghn-contract';

@@ -14,6 +14,7 @@ export class OutboxHandlerError extends Error {
   public constructor(
     public readonly code: string,
     public readonly disposition: OutboxFailureDisposition,
+    public readonly retryDelayMs?: number,
   ) {
     super(code);
     this.name = 'OutboxHandlerError';

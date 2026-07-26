@@ -12,6 +12,8 @@ import {
   orderIdParamsSchema,
   paymentAttemptCreateRequestSchema,
   paymentIdParamsSchema,
+  paymentProviderOrderParamsSchema,
+  paymentProviderOrderBindRequestSchema,
 } from '@zalo-shop/contracts';
 
 import { PaymentsService } from './payments.service';
@@ -80,6 +82,27 @@ export class PaymentsController {
     return this.payments.query({
       authorization,
       paymentId: parse(paymentIdParamsSchema, params).paymentId,
+      storeCode: storeCode(headerStoreCode),
+    });
+  }
+
+  @Post('orders/:orderId/payments/:paymentId/provider-order')
+  public bindProviderOrder(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') headerStoreCode: string | undefined,
+    @Headers('idempotency-key') headerIdempotencyKey: string | undefined,
+    @Param() params: unknown,
+    @Body() body: unknown,
+  ) {
+    const route = parse(paymentProviderOrderParamsSchema, params);
+    const request = parse(paymentProviderOrderBindRequestSchema, body);
+    return this.payments.bindProviderOrder({
+      authorization,
+      idempotencyKey: idempotencyKey(headerIdempotencyKey),
+      launchToken: request.launch_token,
+      orderId: route.orderId,
+      paymentId: route.paymentId,
+      providerOrderId: request.provider_order_id,
       storeCode: storeCode(headerStoreCode),
     });
   }

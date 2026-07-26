@@ -48,6 +48,7 @@ const M5_MIGRATIONS = [
   '20260725100000_m52_callback_trust_guard',
   '20260725103000_m52_payment_amount_and_permissions_guard',
   '20260725110000_m53_reliable_message_guards',
+  '20260726120000_m55_payment_callback_channel_resolver',
 ] as const;
 
 type MigrationRecord = {
@@ -531,7 +532,30 @@ async function run(): Promise<void> {
           ${'d'.repeat(64)}, 'test-v1', 'DISABLED', 900, now()
         )
       `;
+      await transaction.$executeRaw`
+        INSERT INTO provider_callbacks (
+          store_id, channel_kind, channel_id, provider_code, environment,
+          external_event_id, event_digest, signature_status, trust, payload_digest
+        ) VALUES (
+          'f2000000-0000-4000-8000-000000000001', 'PAYMENT',
+          (SELECT id FROM store_payment_channels WHERE checkout_app_id = 'm52-down-guard-app'),
+          'ZALO_CHECKOUT_ZALOPAY', 'SANDBOX', ${`zc:${'a'.repeat(64)}`},
+          ${'b'.repeat(64)}, 'VERIFIED', 'AUTHENTICATED_FACT', ${'c'.repeat(64)}
+        )
+      `;
     });
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260726120000_m55_payment_callback_channel_resolver', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M5.5 callback resolver rollback is unsafe after callback facts exist',
+    );
     runPrismaExpectFailure(
       [
         'db',

@@ -1,8 +1,14 @@
 import { z } from 'zod';
+import { isIP } from 'node:net';
 
 const booleanFromString = z
   .enum(['true', 'false'])
   .default('true')
+  .transform((value) => value === 'true');
+
+const disabledBooleanFromString = z
+  .enum(['true', 'false'])
+  .default('false')
   .transform((value) => value === 'true');
 
 const optionalNumericIdentifier = z.preprocess(
@@ -105,8 +111,40 @@ const runtimeConfigSchema = z
       .min(1_000)
       .max(3_600_000)
       .default(300_000),
-    PAYMENT_PROVIDER: z.enum(['disabled', 'test']).default('disabled'),
+    PAYMENT_PROVIDER: z.enum(['disabled', 'test', 'zalo-checkout']).default('disabled'),
+    PAYMENT_RECONCILIATION_ENABLED: disabledBooleanFromString,
     PAYMENT_TEST_PROVIDER_SECRET: optionalStrongSecret,
+    ZALO_CHECKOUT_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(500).max(10_000).default(5_000),
+    ZALO_CHECKOUT_RESPONSE_LIMIT_BYTES: z.coerce
+      .number()
+      .int()
+      .min(1_024)
+      .max(262_144)
+      .default(131_072),
+    ZALO_CHECKOUT_CALLBACK_IP_ALLOWLIST: z
+      .string()
+      .default('118.102.2.29,49.213.78.2')
+      .transform((value) =>
+        value
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean),
+      )
+      .refine((values) => values.length > 0 && values.every((value) => isIP(value) !== 0), {
+        message: 'must contain comma-separated IP addresses',
+      }),
+    ZALO_CHECKOUT_CALLBACK_RATE_LIMIT_PER_MINUTE: z.coerce
+      .number()
+      .int()
+      .min(10)
+      .max(10_000)
+      .default(120),
+    ZALO_CHECKOUT_MEMBER_QUERY_RATE_LIMIT_PER_MINUTE: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .default(10),
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
       .default('info'),
@@ -155,6 +193,30 @@ const runtimeConfigSchema = z
         code: 'custom',
         message: 'test provider is allowed only when NODE_ENV=test',
         path: ['PAYMENT_PROVIDER'],
+      });
+    }
+    if (config.PAYMENT_RECONCILIATION_ENABLED && config.PAYMENT_PROVIDER === 'disabled') {
+      context.addIssue({
+        code: 'custom',
+        message: 'requires an enabled payment provider',
+        path: ['PAYMENT_RECONCILIATION_ENABLED'],
+      });
+    }
+    if (config.PAYMENT_RECONCILIATION_ENABLED && config.OUTBOX_WORKER_INTERVAL_MS > 30_000) {
+      context.addIssue({
+        code: 'custom',
+        message: 'must not exceed 30000ms when payment reconciliation is enabled',
+        path: ['OUTBOX_WORKER_INTERVAL_MS'],
+      });
+    }
+    if (
+      config.PAYMENT_PROVIDER !== 'disabled' &&
+      config.OUTBOX_WORKER_LEASE_MS < config.ZALO_CHECKOUT_REQUEST_TIMEOUT_MS + 5_000
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'must cover the payment provider timeout plus a 5000ms commit margin',
+        path: ['OUTBOX_WORKER_LEASE_MS'],
       });
     }
     if (config.NODE_ENV === 'production') {

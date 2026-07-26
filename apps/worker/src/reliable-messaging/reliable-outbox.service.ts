@@ -108,11 +108,11 @@ export class ReliableOutboxService implements OnModuleDestroy, OnModuleInit {
       const failure = this.failure(error);
       try {
         const result = await failOutboxMessage(this.database, context, {
-          baseDelayMs: this.config.OUTBOX_WORKER_RETRY_BASE_DELAY_MS,
+          baseDelayMs: failure.retryDelayMs ?? this.config.OUTBOX_WORKER_RETRY_BASE_DELAY_MS,
           disposition: failure.disposition,
           errorCode: failure.code,
           expectedVersion: message.version,
-          maxDelayMs: this.config.OUTBOX_WORKER_RETRY_MAX_DELAY_MS,
+          maxDelayMs: failure.retryDelayMs ?? this.config.OUTBOX_WORKER_RETRY_MAX_DELAY_MS,
           messageId: message.id,
           workerId: this.workerId,
         });
@@ -137,9 +137,14 @@ export class ReliableOutboxService implements OnModuleDestroy, OnModuleInit {
   private failure(error: unknown): Readonly<{
     code: string;
     disposition: OutboxFailureDisposition;
+    retryDelayMs?: number;
   }> {
     if (error instanceof OutboxHandlerError) {
-      return { code: error.code, disposition: error.disposition };
+      return {
+        code: error.code,
+        disposition: error.disposition,
+        ...(error.retryDelayMs === undefined ? {} : { retryDelayMs: error.retryDelayMs }),
+      };
     }
     return { code: 'UNEXPECTED_HANDLER_ERROR', disposition: 'RETRYABLE' };
   }

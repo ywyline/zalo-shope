@@ -1769,6 +1769,7 @@ model StorePaymentChannel {
 
   @@unique([storeId, id])
   @@unique([storeId, deploymentEnvironment, providerCode])
+  @@unique([checkoutAppId, methodCode])
   @@index([storeId, status, providerEnvironment])
   @@map("store_payment_channels")
 }

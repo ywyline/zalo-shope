@@ -19,22 +19,25 @@ export class SearchRateLimiter implements OnApplicationShutdown {
 
   public async assertAllowed(
     address: string,
-    scope: 'coupon-claim' | 'pricing' | 'search' = 'search',
+    scope: 'coupon-claim' | 'payment-callback' | 'payment-query' | 'pricing' | 'search' = 'search',
     storeId = 'global',
     subjectId?: string,
+    policy?: Readonly<{ errorCode: string; maxRequests: number; windowSeconds: number }>,
   ): Promise<void> {
     const identity = subjectId ? `subject:${subjectId}` : `address:${address || 'unknown'}`;
     const digest = createHmac('sha256', this.config.PII_HASH_KEY).update(identity).digest('hex');
-    const window = Math.floor(Date.now() / (this.config.SEARCH_RATE_LIMIT_WINDOW_SECONDS * 1_000));
+    const windowSeconds = policy?.windowSeconds ?? this.config.SEARCH_RATE_LIMIT_WINDOW_SECONDS;
+    const maxRequests = policy?.maxRequests ?? this.config.SEARCH_RATE_LIMIT_MAX_REQUESTS;
+    const window = Math.floor(Date.now() / (windowSeconds * 1_000));
     const key = `${this.config.NODE_ENV}:${storeId}:${scope}-rate:${digest}:${window}`;
     const count = await this.redis.eval(
       "local value = redis.call('INCR', KEYS[1]); if value == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end; return value",
       1,
       key,
-      String(this.config.SEARCH_RATE_LIMIT_WINDOW_SECONDS + 1),
+      String(windowSeconds + 1),
     );
-    if (Number(count) > this.config.SEARCH_RATE_LIMIT_MAX_REQUESTS) {
-      throw new HttpException('Search rate limit exceeded', 429);
+    if (Number(count) > maxRequests) {
+      throw new HttpException(policy?.errorCode ?? 'Search rate limit exceeded', 429);
     }
   }
 

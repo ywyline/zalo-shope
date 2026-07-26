@@ -12,11 +12,14 @@ export const paymentAttemptCreateRequestSchema = z.object({}).strict();
 export const paymentProviderOrderBindRequestSchema = z
   .object({
     launch_token: z.string().min(32).max(4_096),
-    provider_order_id: z.string().trim().min(1).max(256),
+    provider_order_id: z.string().trim().min(1).max(160),
   })
   .strict();
 
 export const paymentIdParamsSchema = z.object({ paymentId: uuidSchema }).strict();
+export const paymentProviderOrderParamsSchema = z
+  .object({ orderId: uuidSchema, paymentId: uuidSchema })
+  .strict();
 export const refundIdParamsSchema = z.object({ refundId: uuidSchema }).strict();
 
 export const paymentListQuerySchema = z

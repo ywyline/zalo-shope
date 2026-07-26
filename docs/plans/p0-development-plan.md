@@ -1,6 +1,6 @@
 # P0 分阶段开发计划
 
-> 状态：已批准，M0 已完成，M1 实施完成但验收有保留；M2.1-M2.8.4、M3.1-M3.7、M4 与 M5.1-M5.3 已完成自动化收口，下一步为受限 M5.4
+> 状态：已批准，M0 已完成，M1 实施完成但验收有保留；M2.1-M2.8.4、M3.1-M3.7、M4 与 M5.1-M5.4 已完成自动化收口；M5.5 仓库自动化范围已收口，外部验收仍阻塞
 >
 > 版本：0.4
 >
@@ -45,6 +45,10 @@ M5 受限继续批准记录（2026-07-25）：用户确认主体尚未核验且�
 M5.2 完成记录（2026-07-25）：商城隔离的支付/退款/物流渠道、支付尝试/转换、回调、退款/转换、报价、运单/行/轨迹/operation 与 outbox/inbox 共 14 张表已实施；12 项权限只登记不自动赋予生产角色。四条前向迁移提供强制 RLS、复合外键、活动单唯一约束、订单金额/币种绑定、退款容量锁、GHN 未验证提示门禁、只追加保护和运行角色列级最小授权。local/test seed 不创建渠道或业务事实；20 份迁移的升级、重复部署、down/重新前滚和 `55000` 门禁通过。下一步按批准顺序进入 M5.3，不标记 M5 完成。
 
 M5.3 完成记录（2026-07-25）：已实现商城事务内版本化 outbox、`FOR UPDATE SKIP LOCKED` 短租约领取、租约恢复、有限指数退避/抖动、分类死信、inbox 并发去重和受权限/MFA/确认/原因/expected version 保护的审计重放；消息 payload 的商城身份和状态字段组合由第 21 条前向迁移加固。集成套件在自动创建并销毁的专用数据库中验证双连接并发与跨商城边界，不在开发库留下假事实。当前只有 `NODE_ENV=test` 探针 handler，未调用供应商；下一步只进入受限 M5.4，不标记 M5 完成。
+
+M5.4 完成记录（2026-07-26）：已实现 ONLINE 原子下单、首个/重试支付尝试、异步 launch、确定性 test-only provider、统一支付事实命令、支付成功一次性库存消费、取消/过期协调和迟到成功复核。完整证据见 `docs/reports/m5.4-completion-report.md`；真实 Checkout 尚未据此验收。
+
+M5.5 进度记录（2026-07-26）：仓库内 Zalo Checkout/ZaloPay 适配器、商城渠道/secret resolver、provider-order 绑定、原始 body webhook、callback/inbox 去重和定时丢回调补偿 worker 已实现；HTTP/PostgreSQL 测试覆盖有效期内补偿成功一次性扣库存、迟到成功复核、pending 有限重试和商城隔离。真实 merchant credentials、HTTPS callback、Zalo sandbox 查单/丢回调演练和 Testing 真机仍为 `BLOCKED/NOT_RUN`，因此 M5.5 与 M5 不标记完成；详见 `docs/reports/m5.5-progress-report.md`。
 
 ## 1. 总体范围
 

@@ -1,10 +1,11 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M5 Payment, Refund, Shipping and Integration API
-  version: 0.5.4-partial
+  version: 0.5.5-partial
   description: >-
-    M5.4 已实施在线订单、支付尝试、异步 launch、本人查询/重试和 test-only 主动查单；
-    其余路径仍为 M5.5-M5.7 目标草案。本文与 openapi.m1-m4.yaml 共同描述增量 API。
+    M5.5 已实施在线订单、支付尝试、异步 launch、provider-order 绑定、本人查询/重试、
+    Zalo Checkout 主动查单和验签 webhook；其余路径仍为 M5.6-M5.7 目标草案。
+    本文与 openapi.m1-m4.yaml 共同描述增量 API。
     支付采用 ZaloPay through Zalo Checkout，物流采用 GHN，两个商城使用独立渠道配置。
     客户端 Checkout/PaymentDone、供应商回调和 GHN webhook 均不能直接修改金额、库存或状态。
 servers:
@@ -94,7 +95,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ProviderOrderBindRequest' }
       responses:
-        '202':
+        '201':
           description: 已接受查单提示
           content:
             application/json:
@@ -103,6 +104,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
   /v1/payments/{paymentId}:
     get:
       tags: [Member payments]
@@ -125,7 +127,7 @@ paths:
       tags: [Member payments]
       summary: 获取 worker 已准备且完整性校验通过的短期 Checkout 动作
       description: >-
-        M5.4 只可能由 NODE_ENV=test 的确定性适配器生成；非测试环境没有可构造的测试适配器。
+        launch 由当前商城渠道选择的 provider 生成；test provider 仍只允许 NODE_ENV=test。
         返回 MAC 但不返回 Private Key、secret reference 或其他商城配置。
       security: [{ StoreCode: [], MemberBearer: [] }]
       parameters:
@@ -133,7 +135,7 @@ paths:
         - $ref: '#/components/parameters/PaymentId'
       responses:
         '200':
-          description: 当前本人支付尝试的短期 launch
+          description: 当前本人支付尝试的短期 launch；launch_token 只用于绑定 SDK 返回的 provider order
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PaymentLaunch' }
@@ -146,8 +148,8 @@ paths:
       tags: [Member payments]
       summary: 主动查询本人支付尝试并提交统一支付事实命令
       description: >-
-        M5.4 仅调用确定性 test provider；SDK 客户端结果不作为支付成功事实。M5.5 将同一路径
-        接入真实 Zalo Checkout getOrderStatus 及限流/补偿策略。
+        按当前商城渠道调用 Zalo Checkout getOrderStatus；SDK 客户端结果不作为支付成功事实。
+        查询响应仍需核对商城、订单、尝试、method、extradata、整数 VND 金额和内部状态。
       security: [{ StoreCode: [], MemberBearer: [] }]
       parameters:
         - $ref: '#/components/parameters/StoreCode'
@@ -205,6 +207,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
   /v1/webhooks/shipping/ghn:
     post:
       tags: [Provider webhooks]
@@ -638,11 +641,12 @@ components:
     PaymentLaunch:
       type: object
       additionalProperties: false
-      required: [payment_id, kind, expires_at, payload]
+      required: [payment_id, kind, expires_at, launch_token, payload]
       properties:
         payment_id: { type: string, format: uuid }
         kind: { type: string, const: ZALO_CHECKOUT_CREATE_ORDER }
         expires_at: { type: string, format: date-time }
+        launch_token: { type: string, minLength: 32, maxLength: 4096 }
         payload:
           type: object
           additionalProperties: false
@@ -672,7 +676,7 @@ components:
       additionalProperties: false
       required: [provider_order_id, launch_token]
       properties:
-        provider_order_id: { type: string, minLength: 1, maxLength: 256 }
+        provider_order_id: { type: string, minLength: 1, maxLength: 160 }
         launch_token: { type: string, minLength: 32, maxLength: 4096 }
     PaymentAttemptStatus:
       type: string
@@ -874,11 +878,11 @@ components:
         data:
           type: object
           additionalProperties: true
-          required: [appId, orderId, transId, amount, description, resultCode, message]
+          required: [appId, orderId, transId, amount, description, resultCode, message, method]
           properties:
             appId: { type: string, minLength: 1, maxLength: 128 }
-            orderId: { type: string, minLength: 1, maxLength: 256 }
-            transId: { type: string, minLength: 1, maxLength: 256 }
+            orderId: { type: string, minLength: 1, maxLength: 160 }
+            transId: { type: string, minLength: 1, maxLength: 160 }
             amount: { type: integer, minimum: 1, maximum: 9007199254740991 }
             description: { type: string, maxLength: 1024 }
             resultCode: { type: integer }
@@ -906,9 +910,11 @@ components:
     WebhookAcknowledgement:
       type: object
       additionalProperties: false
-      required: [accepted]
+      required: [accepted, returnCode, returnMessage]
       properties:
         accepted: { type: boolean }
+        returnCode: { type: integer, enum: [1, 2] }
+        returnMessage: { type: string, maxLength: 256 }
     IntegrationJob:
       type: object
       additionalProperties: false

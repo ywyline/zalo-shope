@@ -128,8 +128,10 @@ GHN M5.1 映射：
 | `payment_window_seconds`         | int，非空                       | 受配置范围约束；不能长于库存预留窗口                           |
 | `version/timestamps`             | int/timestamptz                 | 乐观锁和审计时间                                               |
 
-唯一：`(store_id, deployment_environment, provider_code)`；`checkout_app_id` 在同环境全局唯一继续
-由 `store_zalo_apps` 保证。两个商城即使共享法人，也必须是两条独立记录和 secret reference。
+唯一：`(store_id, deployment_environment, provider_code)` 与 `(checkout_app_id, method_code)`；
+后者保证无认证 callback 在设置 RLS 商城上下文前只能定位一个候选渠道。`checkout_app_id` 在同部署
+环境全局唯一继续由 `store_zalo_apps` 保证。两个商城即使共享法人，也必须是两条独立记录和
+secret reference。
 
 ### 4.2 `store_shipping_channels`
 
@@ -187,6 +189,9 @@ attempt_count/next_attempt_at/last_error_code/completed_at/version`。
   字典序生成的 `overallMac`。使用对应商城/环境 Private Key 和恒定时间比较；校验前不信任
   app/order/amount。
 - `appId` 只用于定位候选渠道；成功处理前仍核对渠道、商城、provider order、VND 金额和订单。
+- M5.5 的 `app_security.resolve_payment_callback_channel(appId, method)` 是最小 `SECURITY DEFINER`
+  路由函数，只向 runtime 返回单一商城的渠道解析字段；函数不返回密钥，Private Key 仍由部署
+  secret reference resolver 读取。函数返回零行或多行均失败关闭，不回显候选商城。
 - GHN callback 没有官方签名契约，`signature_status=NOT_AVAILABLE`、
   `trust=UNVERIFIED_HINT`。仅用 ShopID/order code 定位候选运单并追加同步 outbox；主动查单
   返回才可创建权威轨迹/状态。
@@ -261,6 +266,10 @@ completed_at/version/timestamps`。
   下一次扫描把已过期且耗尽的租约转为死信。
 - 运行时每轮最多处理配置的 batch 数量，但每条消息只在即将处理前领取，避免串行批次中后排
   消息尚未执行就消耗租约；多 worker 实例仍依靠 `SKIP LOCKED` 并行领取不同消息。
+- M5.5 的 `payment.reconcile.requested.v1` payload 只含 `store_id/payment_attempt_id`，商城内
+  idempotency key 固定绑定支付尝试。首次可用时间为供应商接受后最多 2 分钟，并尽量保留支付
+  到期前 30 秒的处理余量；pending 以 5 分钟为上限延迟重试，最多 8 次，成功/失败/复核终态后
+  完成消息。
 - 死信重放不修改商城、聚合、事件、幂等键或 payload；只在商城任务重试权限、对应领域写权限、
   近期 MFA、二次确认、原因和 expected version 全部满足时重置调度字段。重放前后计数、错误类别
   与版本写入 append-only `audit_logs`，审计不复制消息 payload。

@@ -166,7 +166,7 @@ export class CheckoutService {
 
           const paymentChannel =
             input.request.payment_method === 'ONLINE'
-              ? await this.activeTestPaymentChannel(transaction, member.storeId)
+              ? await this.activePaymentChannel(transaction, member.storeId)
               : null;
 
           const inventoryItems = await this.resolveInventoryItems(
@@ -316,7 +316,7 @@ export class CheckoutService {
     );
     const paymentChannel =
       request.payment_method === 'ONLINE'
-        ? await this.activeTestPaymentChannel(transaction, member.storeId)
+        ? await this.activePaymentChannel(transaction, member.storeId)
         : null;
     const quoteCore = {
       address_id: address.id,
@@ -364,15 +364,28 @@ export class CheckoutService {
     };
   }
 
-  private async activeTestPaymentChannel(transaction: StoreTransaction, storeId: string) {
-    if (this.config.NODE_ENV !== 'test' || this.config.PAYMENT_PROVIDER !== 'test') {
+  private async activePaymentChannel(transaction: StoreTransaction, storeId: string) {
+    if (
+      this.config.PAYMENT_PROVIDER === 'disabled' ||
+      (this.config.PAYMENT_PROVIDER === 'test' && this.config.NODE_ENV !== 'test')
+    ) {
       throw new ConflictException('ONLINE_PAYMENT_UNAVAILABLE');
     }
+    const deploymentEnvironment =
+      this.config.NODE_ENV === 'production'
+        ? 'PRODUCTION'
+        : this.config.NODE_ENV === 'test'
+          ? 'TEST'
+          : 'STAGING';
+    const providerEnvironment =
+      this.config.PAYMENT_PROVIDER === 'test' || this.config.NODE_ENV !== 'production'
+        ? 'SANDBOX'
+        : undefined;
     const channel = await transaction.storePaymentChannel.findFirst({
       where: {
-        deploymentEnvironment: 'TEST',
+        deploymentEnvironment,
         providerCode: 'ZALO_CHECKOUT_ZALOPAY',
-        providerEnvironment: 'SANDBOX',
+        ...(providerEnvironment ? { providerEnvironment } : {}),
         status: 'ACTIVE',
         storeId,
       },

@@ -13,6 +13,7 @@ import { parseRuntimeConfig } from '@zalo-shop/config';
 import {
   adjustInventory,
   applyPaymentProviderFact,
+  claimVerifiedPaymentCallback,
   createRuntimePrismaClient,
   expireDueReservations,
   PrismaClient,
@@ -20,11 +21,16 @@ import {
   withStoreTransaction,
 } from '@zalo-shop/database';
 import { createStoreContext } from '@zalo-shop/domain';
-import { DeterministicPaymentTestProvider, type PaymentProvider } from '@zalo-shop/integrations';
+import {
+  DeterministicPaymentTestProvider,
+  type PaymentProvider,
+  type PaymentProviderResolver,
+} from '@zalo-shop/integrations';
 import { hashSensitive, signJwt } from '@zalo-shop/security';
 
 import { PAYMENT_PROVIDER } from '../../apps/api/src/payments/payment.tokens';
 import { PaymentCreateRequestedHandler } from '../../apps/worker/src/payments/payment-create-requested.handler';
+import { PaymentReconciliationRequestedHandler } from '../../apps/worker/src/payments/payment-reconciliation-requested.handler';
 import { OutboxMessageDispatcher } from '../../apps/worker/src/reliable-messaging/outbox-message-handler';
 import { ReliableOutboxService } from '../../apps/worker/src/reliable-messaging/reliable-outbox.service';
 
@@ -60,7 +66,10 @@ describe('M5.4 online payment core and test adapter', () => {
   let memberToken = '';
   let secondMemberToken = '';
   let addressId = '';
+  let secondAddressId = '';
+  let paymentProviderResolver: PaymentProviderResolver | undefined;
   const suffix = randomUUID().slice(0, 8);
+  const miniAppId = `m54-beauty-app-${suffix}`;
   const fixture = {
     balanceId: randomUUID(),
     brandId: randomUUID(),
@@ -153,21 +162,21 @@ describe('M5.4 online payment core and test adapter', () => {
     });
   }
 
-  async function createOnlineOrder(tag: string) {
+  async function createOnlineOrder(tag: string, token = memberToken, targetAddressId = addressId) {
     const body = {
-      address_id: addressId,
+      address_id: targetAddressId,
       coupon_code: null,
       items: [{ quantity: 1, sku_code: skuCode }],
       locale: 'vi',
       payment_method: 'ONLINE',
     } as const;
-    const quote = await api().post('/v1/checkout/quote').set(memberHeaders()).send(body);
+    const quote = await api().post('/v1/checkout/quote').set(memberHeaders(token)).send(body);
     expect(quote.status).toBe(201);
     expect(quote.body).not.toHaveProperty('payment_policy');
     const idempotencyKey = `m54-order-${tag}-${suffix}`;
     const created = await api()
       .post('/v1/checkout/orders')
-      .set({ ...memberHeaders(), 'Idempotency-Key': idempotencyKey })
+      .set({ ...memberHeaders(token), 'Idempotency-Key': idempotencyKey })
       .send({ ...body, quote_hash: quote.body.quote_hash });
     expect(created.status).toBe(201);
     return created.body as {
@@ -218,7 +227,6 @@ describe('M5.4 online payment core and test adapter', () => {
     runtime = createRuntimePrismaClient(runtimeUrl);
     await Promise.all([owner.$connect(), runtime.$connect()]);
 
-    const miniAppId = `m54-beauty-app-${suffix}`;
     await owner.storeZaloApp.update({
       data: { enabled: true, miniAppId, parentAppId: `m54-parent-${suffix}` },
       where: { storeId_environment: { environment: 'TEST', storeId: BEAUTY_STORE_ID } },
@@ -359,13 +367,17 @@ describe('M5.4 online payment core and test adapter', () => {
       import('../../apps/api/src/api-exception.filter'),
     ]);
     const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
-    app = module.createNestApplication();
+    app = module.createNestApplication({ rawBody: true });
     app.useGlobalFilters(new ApiExceptionFilter());
     await app.init();
-    const provider: PaymentProvider | null = app.get(PAYMENT_PROVIDER);
-    if (!provider) throw new Error('M5.4 test payment provider is unavailable');
+    paymentProviderResolver = app.get(PAYMENT_PROVIDER);
     const dispatcher = new OutboxMessageDispatcher([
-      new PaymentCreateRequestedHandler(runtime, provider),
+      new PaymentCreateRequestedHandler(
+        runtime,
+        paymentProviderResolver,
+        config.PAYMENT_RECONCILIATION_ENABLED,
+      ),
+      new PaymentReconciliationRequestedHandler(runtime, paymentProviderResolver),
     ]);
     outboxWorker = new ReliableOutboxService(runtime, config, dispatcher);
 
@@ -380,6 +392,22 @@ describe('M5.4 online payment core and test adapter', () => {
     });
     if (address.status !== 201) throw new Error(`M5.4 address setup failed: ${address.text}`);
     addressId = address.body.id;
+    const secondAddress = await api()
+      .post('/v1/member/addresses')
+      .set(memberHeaders(secondMemberToken))
+      .send({
+        detail: '18 Tran Hung Dao',
+        district_code: 'ba-dinh',
+        is_default: true,
+        phone: '+84901234568',
+        province_code: 'hn',
+        recipient_name: 'Nguyen M55',
+        ward_code: 'phuc-xa',
+      });
+    if (secondAddress.status !== 201) {
+      throw new Error(`M5.5 second address setup failed: ${secondAddress.text}`);
+    }
+    secondAddressId = secondAddress.body.id;
   }, 120_000);
 
   afterAll(async () => {
@@ -461,13 +489,135 @@ describe('M5.4 online payment core and test adapter', () => {
       kind: 'ZALO_CHECKOUT_CREATE_ORDER',
       payload: { amount: created.payable_vnd },
     });
+    expect(launch.body.launch_token).toEqual(launch.body.payload.extradata);
     expect(launch.body.payload).toHaveProperty('mac');
     expect(launch.body.payload).not.toHaveProperty('private_key');
+    const providerOrderId = (
+      await requiredOwner().paymentAttempt.findUniqueOrThrow({
+        where: { id: created.payment_attempt_id },
+      })
+    ).providerOrderId!;
+    const bindKey = `m54-bind-${suffix}-launch`;
+    const paymentProvider = paymentProviderResolver!.resolve({
+      checkoutAppId: miniAppId,
+      id: fixture.channelId,
+      keyVersion: 'test-v1',
+      methodCode: 'ZALOPAY_SANDBOX',
+      privateKeySecretRef: `test://m54/${suffix}/checkout-private-key`,
+      providerCode: 'ZALO_CHECKOUT_ZALOPAY',
+      providerEnvironment: 'SANDBOX',
+      storeId: BEAUTY_STORE_ID,
+      version: 1,
+    });
+    const queryProvider = vi.spyOn(paymentProvider, 'queryPayment');
+    try {
+      const bindRequest = {
+        launch_token: launch.body.launch_token,
+        provider_order_id: providerOrderId,
+      };
+      const bound = await api()
+        .post(`/v1/orders/${created.id}/payments/${created.payment_attempt_id}/provider-order`)
+        .set({ ...memberHeaders(), 'Idempotency-Key': bindKey })
+        .send(bindRequest);
+      const replay = await api()
+        .post(`/v1/orders/${created.id}/payments/${created.payment_attempt_id}/provider-order`)
+        .set({ ...memberHeaders(), 'Idempotency-Key': bindKey })
+        .send(bindRequest);
+      const conflict = await api()
+        .post(`/v1/orders/${created.id}/payments/${created.payment_attempt_id}/provider-order`)
+        .set({ ...memberHeaders(), 'Idempotency-Key': bindKey })
+        .send({ ...bindRequest, provider_order_id: `${providerOrderId}-different` });
+      expect(bound.status).toBe(201);
+      expect(replay.status).toBe(201);
+      expect(replay.body.id).toBe(bound.body.id);
+      expect(conflict.status).toBe(409);
+      expect(queryProvider).toHaveBeenCalledOnce();
+    } finally {
+      queryProvider.mockRestore();
+    }
+    const bindRecord = await requiredOwner().idempotencyRecord.findFirstOrThrow({
+      where: { operation: 'payment.bind-provider-order', orderId: created.id },
+    });
+    expect(bindRecord.idempotencyKey).not.toBe(bindKey);
+    expect(JSON.stringify(bindRecord.response)).not.toContain(launch.body.launch_token);
     const queried = await api()
       .post(`/v1/payments/${created.payment_attempt_id}/query`)
       .set(memberHeaders());
     expect(queried.status).toBe(201);
     expect(queried.body.status).toBe('PROVIDER_PENDING');
+    const reconciliationMessages = await requiredOwner().outboxMessage.findMany({
+      where: {
+        aggregateId: created.payment_attempt_id,
+        eventType: 'payment.reconcile.requested',
+      },
+    });
+    expect(reconciliationMessages).toHaveLength(1);
+    expect(reconciliationMessages[0]).toMatchObject({ maxAttempts: 8, status: 'PENDING' });
+    expect(reconciliationMessages[0]!.availableAt.getTime()).toBeGreaterThan(Date.now() + 110_000);
+    expect(reconciliationMessages[0]!.availableAt.getTime()).toBeLessThan(Date.now() + 130_000);
+    expect(
+      await withStoreTransaction(
+        requiredRuntime(),
+        workerContext(FASHION_STORE_ID),
+        (transaction) =>
+          transaction.outboxMessage.count({ where: { id: reconciliationMessages[0]!.id } }),
+      ),
+    ).toBe(0);
+  });
+
+  it('rejects a provider order whose signed identity belongs to another member attempt', async () => {
+    const attacker = await createOnlineOrder('bind-attacker');
+    const victim = await createOnlineOrder('bind-victim', secondMemberToken, secondAddressId);
+    await processPaymentCreate();
+    const launch = await api()
+      .get(`/v1/payments/${attacker.payment_attempt_id}/launch`)
+      .set(memberHeaders());
+    expect(launch.status).toBe(200);
+    const victimFact = await paymentFact(victim.payment_attempt_id, 'PENDING');
+    const realProvider = paymentProviderResolver!.resolve({
+      checkoutAppId: miniAppId,
+      id: fixture.channelId,
+      keyVersion: 'test-v1',
+      methodCode: 'ZALOPAY_SANDBOX',
+      privateKeySecretRef: `test://m54/${suffix}/checkout-private-key`,
+      providerCode: 'ZALO_CHECKOUT_ZALOPAY',
+      providerEnvironment: 'SANDBOX',
+      storeId: BEAUTY_STORE_ID,
+      version: 1,
+    });
+    const provider = {
+      code: realProvider.code,
+      createPayment: (input: Parameters<PaymentProvider['createPayment']>[0]) =>
+        realProvider.createPayment(input),
+      createRefund: realProvider.createRefund.bind(realProvider),
+      environment: realProvider.environment,
+      parseCallback: realProvider.parseCallback.bind(realProvider),
+      queryPayment: vi.fn().mockResolvedValue(victimFact),
+      queryRefund: realProvider.queryRefund.bind(realProvider),
+    } satisfies PaymentProvider;
+    const resolveProvider = vi.spyOn(paymentProviderResolver!, 'resolve').mockReturnValue(provider);
+    try {
+      const response = await api()
+        .post(`/v1/orders/${attacker.id}/payments/${attacker.payment_attempt_id}/provider-order`)
+        .set({ ...memberHeaders(), 'Idempotency-Key': `m55-cross-bind-${suffix}` })
+        .send({
+          launch_token: launch.body.launch_token,
+          provider_order_id: victimFact.providerOrderId,
+        });
+      expect(response.status).toBe(409);
+    } finally {
+      resolveProvider.mockRestore();
+    }
+    const [attackerAttempt, victimAttempt] = await Promise.all([
+      requiredOwner().paymentAttempt.findUniqueOrThrow({
+        where: { id: attacker.payment_attempt_id },
+      }),
+      requiredOwner().paymentAttempt.findUniqueOrThrow({
+        where: { id: victim.payment_attempt_id },
+      }),
+    ]);
+    expect(attackerAttempt.status).toBe('PROVIDER_PENDING');
+    expect(victimAttempt.status).toBe('PROVIDER_PENDING');
   });
 
   it('commits a matching success once with inventory and both order transitions', async () => {
@@ -512,6 +662,88 @@ describe('M5.4 online payment core and test adapter', () => {
     expect(reservation.status).toBe('CONSUMED');
     expect(balance.onHand).toBe(29);
     expect(consumeOperations).toBe(1);
+  });
+
+  it('routes a duplicate provider transaction to review without consuming inventory', async () => {
+    const firstOrder = await createOnlineOrder('provider-tx-first');
+    const secondOrder = await createOnlineOrder('provider-tx-second');
+    await processPaymentCreate();
+    const firstFact = await paymentFact(firstOrder.payment_attempt_id, 'SUCCEEDED');
+    const secondFact = {
+      ...(await paymentFact(secondOrder.payment_attempt_id, 'SUCCEEDED')),
+      providerTransactionId: firstFact.providerTransactionId,
+    };
+
+    await applyPaymentProviderFact(requiredRuntime(), workerContext(), {
+      attemptId: firstOrder.payment_attempt_id,
+      fact: firstFact,
+      source: 'QUERY',
+    });
+    const duplicate = await applyPaymentProviderFact(requiredRuntime(), workerContext(), {
+      attemptId: secondOrder.payment_attempt_id,
+      fact: secondFact,
+      source: 'WEBHOOK',
+    });
+
+    expect(duplicate.status).toBe('REVIEW_REQUIRED');
+    const [secondReservation, secondConsumeCount, transition] = await Promise.all([
+      requiredOwner().inventoryReservation.findFirstOrThrow({
+        where: { order: { id: secondOrder.id } },
+      }),
+      requiredOwner().inventoryOperation.count({
+        where: { operationKey: `m54-payment-consume-${secondOrder.payment_attempt_id}` },
+      }),
+      requiredOwner().paymentTransition.findFirstOrThrow({
+        orderBy: { createdAt: 'desc' },
+        where: { paymentAttemptId: secondOrder.payment_attempt_id },
+      }),
+    ]);
+    expect(secondReservation.status).toBe('ACTIVE');
+    expect(secondConsumeCount).toBe(0);
+    expect(transition.reason).toBe('PAYMENT_PROVIDER_TRANSACTION_CONFLICT');
+  });
+
+  it('serializes concurrent facts that reuse one provider transaction', async () => {
+    const firstOrder = await createOnlineOrder('provider-tx-race-first');
+    const secondOrder = await createOnlineOrder('provider-tx-race-second');
+    await processPaymentCreate();
+    const firstFact = await paymentFact(firstOrder.payment_attempt_id, 'SUCCEEDED');
+    const secondFact = {
+      ...(await paymentFact(secondOrder.payment_attempt_id, 'SUCCEEDED')),
+      providerTransactionId: firstFact.providerTransactionId,
+    };
+
+    const results = await Promise.all([
+      applyPaymentProviderFact(requiredRuntime(), workerContext(), {
+        attemptId: firstOrder.payment_attempt_id,
+        fact: firstFact,
+        source: 'QUERY',
+      }),
+      applyPaymentProviderFact(requiredRuntime(), workerContext(), {
+        attemptId: secondOrder.payment_attempt_id,
+        fact: secondFact,
+        source: 'WEBHOOK',
+      }),
+    ]);
+
+    expect(results.map(({ status }) => status).sort()).toEqual(['REVIEW_REQUIRED', 'SUCCEEDED']);
+    const [reservations, consumeCount] = await Promise.all([
+      requiredOwner().inventoryReservation.findMany({
+        where: { order: { id: { in: [firstOrder.id, secondOrder.id] } } },
+      }),
+      requiredOwner().inventoryOperation.count({
+        where: {
+          operationKey: {
+            in: [
+              `m54-payment-consume-${firstOrder.payment_attempt_id}`,
+              `m54-payment-consume-${secondOrder.payment_attempt_id}`,
+            ],
+          },
+        },
+      }),
+    ]);
+    expect(reservations.map(({ status }) => status).sort()).toEqual(['ACTIVE', 'CONSUMED']);
+    expect(consumeCount).toBe(1);
   });
 
   it('keeps a failed attempt retryable and enforces one active idempotent retry', async () => {
@@ -631,5 +863,293 @@ describe('M5.4 online payment core and test adapter', () => {
     ]);
     expect(order).toMatchObject({ paymentStatus: 'EXPIRED', status: 'CLOSED' });
     expect(attempt.status).toBe('EXPIRED');
+  });
+
+  it('reconciles an expired late success to review without consuming released inventory', async () => {
+    const created = await createOnlineOrder('reconcile-late-success');
+    await processPaymentCreate();
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + 11 * 60_000);
+      await expireDueReservations(requiredRuntime(), workerContext());
+      await reconcileReservationBackedOrders(requiredRuntime(), workerContext());
+    } finally {
+      vi.useRealTimers();
+    }
+    const reconciliation = await requiredOwner().outboxMessage.findFirstOrThrow({
+      where: {
+        aggregateId: created.payment_attempt_id,
+        eventType: 'payment.reconcile.requested',
+      },
+    });
+    await requiredOwner().outboxMessage.update({
+      data: { availableAt: new Date(Date.now() - 1_000) },
+      where: { id: reconciliation.id },
+    });
+    const successProvider = new DeterministicPaymentTestProvider({
+      nodeEnvironment: 'test',
+      secret: config.PAYMENT_TEST_PROVIDER_SECRET!,
+      status: 'SUCCEEDED',
+    });
+    const resolveProvider = vi
+      .spyOn(paymentProviderResolver!, 'resolve')
+      .mockReturnValue(successProvider);
+    try {
+      await outboxWorker!.runOnce();
+    } finally {
+      resolveProvider.mockRestore();
+    }
+    const [attempt, order, reservation, consumeCount, message] = await Promise.all([
+      requiredOwner().paymentAttempt.findUniqueOrThrow({
+        where: { id: created.payment_attempt_id },
+      }),
+      requiredOwner().order.findUniqueOrThrow({ where: { id: created.id } }),
+      requiredOwner().inventoryReservation.findFirstOrThrow({
+        where: { order: { id: created.id } },
+      }),
+      requiredOwner().inventoryOperation.count({
+        where: { operationKey: `m54-payment-consume-${created.payment_attempt_id}` },
+      }),
+      requiredOwner().outboxMessage.findUniqueOrThrow({ where: { id: reconciliation.id } }),
+    ]);
+    expect(attempt.status).toBe('REVIEW_REQUIRED');
+    expect(order.status).toBe('CLOSED');
+    expect(reservation.status).toBe('EXPIRED');
+    expect(consumeCount).toBe(0);
+    expect(message.status).toBe('COMPLETED');
+  });
+
+  it('recovers a lost success callback before expiry and consumes inventory once', async () => {
+    const created = await createOnlineOrder('reconcile-before-expiry');
+    await processPaymentCreate();
+    const reconciliation = await requiredOwner().outboxMessage.findFirstOrThrow({
+      where: {
+        aggregateId: created.payment_attempt_id,
+        eventType: 'payment.reconcile.requested',
+      },
+    });
+    await requiredOwner().outboxMessage.update({
+      data: { availableAt: new Date(Date.now() - 1_000) },
+      where: { id: reconciliation.id },
+    });
+    const successProvider = new DeterministicPaymentTestProvider({
+      nodeEnvironment: 'test',
+      secret: config.PAYMENT_TEST_PROVIDER_SECRET!,
+      status: 'SUCCEEDED',
+    });
+    const resolveProvider = vi
+      .spyOn(paymentProviderResolver!, 'resolve')
+      .mockReturnValue(successProvider);
+    try {
+      await outboxWorker!.runOnce();
+    } finally {
+      resolveProvider.mockRestore();
+    }
+
+    const [attempt, order, reservation, consumeCount, message] = await Promise.all([
+      requiredOwner().paymentAttempt.findUniqueOrThrow({
+        where: { id: created.payment_attempt_id },
+      }),
+      requiredOwner().order.findUniqueOrThrow({ where: { id: created.id } }),
+      requiredOwner().inventoryReservation.findFirstOrThrow({
+        where: { order: { id: created.id } },
+      }),
+      requiredOwner().inventoryOperation.count({
+        where: { operationKey: `m54-payment-consume-${created.payment_attempt_id}` },
+      }),
+      requiredOwner().outboxMessage.findUniqueOrThrow({ where: { id: reconciliation.id } }),
+    ]);
+    expect(attempt.status).toBe('SUCCEEDED');
+    expect(order).toMatchObject({ paymentStatus: 'SUCCEEDED', status: 'PENDING_FULFILLMENT' });
+    expect(reservation.status).toBe('CONSUMED');
+    expect(consumeCount).toBe(1);
+    expect(message.status).toBe('COMPLETED');
+  });
+
+  it('retries a still-pending reconciliation through the leased outbox', async () => {
+    const created = await createOnlineOrder('reconcile-pending');
+    await processPaymentCreate();
+    const reconciliation = await requiredOwner().outboxMessage.findFirstOrThrow({
+      where: {
+        aggregateId: created.payment_attempt_id,
+        eventType: 'payment.reconcile.requested',
+      },
+    });
+    await requiredOwner().outboxMessage.update({
+      data: { availableAt: new Date(Date.now() - 1_000) },
+      where: { id: reconciliation.id },
+    });
+
+    await outboxWorker!.runOnce();
+
+    const retried = await requiredOwner().outboxMessage.findUniqueOrThrow({
+      where: { id: reconciliation.id },
+    });
+    expect(retried).toMatchObject({
+      attemptCount: 1,
+      lastErrorCode: 'RETRYABLE_PAYMENT_RECONCILIATION_PENDING',
+      status: 'PENDING',
+    });
+    expect(retried.availableAt.getTime()).toBeGreaterThan(Date.now() + 3 * 60_000);
+  });
+
+  it('applies an authenticated HTTP callback once through PostgreSQL and tenant RLS', async () => {
+    const created = await createOnlineOrder('webhook');
+    await processPaymentCreate();
+    const fact = await paymentFact(created.payment_attempt_id, 'SUCCEEDED');
+    const externalEventId = `zc:${createHash('sha256')
+      .update(`m55-http-${created.payment_attempt_id}`)
+      .digest('hex')}`;
+    const authenticatedProvider = {
+      code: 'ZALO_CHECKOUT_ZALOPAY',
+      environment: 'SANDBOX',
+      createPayment: vi.fn(),
+      createRefund: vi.fn(),
+      parseCallback: vi.fn().mockResolvedValue({
+        externalEventId,
+        fact,
+        trust: 'AUTHENTICATED_FACT',
+      }),
+      queryPayment: vi.fn(),
+      queryRefund: vi.fn(),
+    } as unknown as PaymentProvider;
+    const resolver = app.get<PaymentProviderResolver>(PAYMENT_PROVIDER);
+    const resolveProvider = vi.spyOn(resolver, 'resolve').mockReturnValue(authenticatedProvider);
+    const callbackBody = {
+      data: { appId: miniAppId, method: 'ZALOPAY_SANDBOX' },
+    };
+    try {
+      const first = await api()
+        .post('/v1/webhooks/payments/zalo-checkout')
+        .set('Content-Type', 'application/json')
+        .send(callbackBody);
+      const replay = await api()
+        .post('/v1/webhooks/payments/zalo-checkout')
+        .set('Content-Type', 'application/json')
+        .send(callbackBody);
+      expect(first.status).toBe(200);
+      expect(first.body).toMatchObject({ accepted: true, returnCode: 1 });
+      expect(replay.status).toBe(200);
+      expect(replay.body).toMatchObject({ accepted: true, returnCode: 2 });
+    } finally {
+      resolveProvider.mockRestore();
+    }
+    const [attempt, callbackCount, inboxCount, consumeCount, crossStoreCallbacks] =
+      await Promise.all([
+        requiredOwner().paymentAttempt.findUniqueOrThrow({
+          where: { id: created.payment_attempt_id },
+        }),
+        requiredOwner().providerCallback.count({ where: { externalEventId } }),
+        requiredOwner().inboxMessage.count({ where: { externalMessageKey: externalEventId } }),
+        requiredOwner().inventoryOperation.count({
+          where: { operationKey: `m54-payment-consume-${created.payment_attempt_id}` },
+        }),
+        withStoreTransaction(requiredRuntime(), workerContext(FASHION_STORE_ID), (transaction) =>
+          transaction.providerCallback.count({ where: { externalEventId } }),
+        ),
+      ]);
+    expect(attempt.status).toBe('SUCCEEDED');
+    expect(callbackCount).toBe(1);
+    expect(inboxCount).toBe(1);
+    expect(consumeCount).toBe(1);
+    expect(crossStoreCallbacks).toBe(0);
+  });
+
+  it('accepts pending then successful callbacks for the same provider transaction', async () => {
+    const created = await createOnlineOrder('webhook-state-progression');
+    await processPaymentCreate();
+    const pendingFact = await paymentFact(created.payment_attempt_id, 'PENDING');
+    const succeededFact = await paymentFact(created.payment_attempt_id, 'SUCCEEDED');
+    const pendingEventId = `zc:${createHash('sha256')
+      .update(`m55-pending-${created.payment_attempt_id}`)
+      .digest('hex')}`;
+    const succeededEventId = `zc:${createHash('sha256')
+      .update(`m55-succeeded-${created.payment_attempt_id}`)
+      .digest('hex')}`;
+    const authenticatedProvider = {
+      code: 'ZALO_CHECKOUT_ZALOPAY',
+      environment: 'SANDBOX',
+      createPayment: vi.fn(),
+      createRefund: vi.fn(),
+      parseCallback: vi
+        .fn()
+        .mockResolvedValueOnce({
+          externalEventId: pendingEventId,
+          fact: pendingFact,
+          trust: 'AUTHENTICATED_FACT',
+        })
+        .mockResolvedValueOnce({
+          externalEventId: succeededEventId,
+          fact: succeededFact,
+          trust: 'AUTHENTICATED_FACT',
+        }),
+      queryPayment: vi.fn(),
+      queryRefund: vi.fn(),
+    } as unknown as PaymentProvider;
+    const resolver = app.get<PaymentProviderResolver>(PAYMENT_PROVIDER);
+    const resolveProvider = vi.spyOn(resolver, 'resolve').mockReturnValue(authenticatedProvider);
+    try {
+      const pending = await api()
+        .post('/v1/webhooks/payments/zalo-checkout')
+        .set('Content-Type', 'application/json')
+        .send({ data: { appId: miniAppId, method: 'ZALOPAY_SANDBOX', phase: 'pending' } });
+      const succeeded = await api()
+        .post('/v1/webhooks/payments/zalo-checkout')
+        .set('Content-Type', 'application/json')
+        .send({ data: { appId: miniAppId, method: 'ZALOPAY_SANDBOX', phase: 'succeeded' } });
+      expect(pending.body).toMatchObject({ accepted: true, returnCode: 1 });
+      expect(succeeded.body).toMatchObject({ accepted: true, returnCode: 1 });
+    } finally {
+      resolveProvider.mockRestore();
+    }
+
+    const [attempt, callbackCount, inboxCount, consumeCount] = await Promise.all([
+      requiredOwner().paymentAttempt.findUniqueOrThrow({
+        where: { id: created.payment_attempt_id },
+      }),
+      requiredOwner().providerCallback.count({
+        where: { externalEventId: { in: [pendingEventId, succeededEventId] } },
+      }),
+      requiredOwner().inboxMessage.count({
+        where: { externalMessageKey: { in: [pendingEventId, succeededEventId] } },
+      }),
+      requiredOwner().inventoryOperation.count({
+        where: { operationKey: `m54-payment-consume-${created.payment_attempt_id}` },
+      }),
+    ]);
+    expect(attempt.status).toBe('SUCCEEDED');
+    expect(callbackCount).toBe(2);
+    expect(inboxCount).toBe(2);
+    expect(consumeCount).toBe(1);
+  });
+
+  it('reclaims a callback lease left in PROCESSING after a handler crash', async () => {
+    const externalEventId = `zc:${'a'.repeat(64)}`;
+    const eventDigest = 'b'.repeat(64);
+    const payloadDigest = 'c'.repeat(64);
+    const first = await claimVerifiedPaymentCallback(requiredRuntime(), workerContext(), {
+      channelId: fixture.channelId,
+      environment: 'SANDBOX',
+      eventDigest,
+      externalEventId,
+      payloadDigest,
+    });
+    expect(first.claimed).toBe(true);
+    expect(first.inFlight).toBe(false);
+    await requiredOwner().inboxMessage.update({
+      data: { processingStartedAt: new Date(Date.now() - 6 * 60_000) },
+      where: { id: first.inboxId },
+    });
+    const reclaimed = await claimVerifiedPaymentCallback(requiredRuntime(), workerContext(), {
+      channelId: fixture.channelId,
+      environment: 'SANDBOX',
+      eventDigest,
+      externalEventId,
+      payloadDigest,
+    });
+    expect(reclaimed.claimed).toBe(true);
+    expect(reclaimed.inFlight).toBe(false);
+    expect(reclaimed.callbackVersion).toBe(first.callbackVersion + 2);
+    expect(reclaimed.inboxVersion).toBe(first.inboxVersion + 2);
   });
 });
