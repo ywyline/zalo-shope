@@ -1,10 +1,11 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M5 Payment, Refund, Shipping and Integration API
-  version: 0.5.5-partial
+  version: 0.5.6-partial
   description: >-
     M5.5 已实施在线订单、支付尝试、异步 launch、provider-order 绑定、本人查询/重试、
-    Zalo Checkout 主动查单和验签 webhook；其余路径仍为 M5.6-M5.7 目标草案。
+    Zalo Checkout 主动查单和验签 webhook；M5.6 已实施 GHN 报价、运单命令、面单代理、
+    权威轨迹查询和未签名 webhook hint。退款/对账路径仍为 M5.7 目标草案。
     本文与 openapi.m1-m4.yaml 共同描述增量 API。
     支付采用 ZaloPay through Zalo Checkout，物流采用 GHN，两个商城使用独立渠道配置。
     客户端 Checkout/PaymentDone、供应商回调和 GHN webhook 均不能直接修改金额、库存或状态。
@@ -177,7 +178,7 @@ paths:
           description: 当前活动/历史运单；不返回 GHN Token、ShopId 或原始地址
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ShipmentDetail' }
+              schema: { $ref: '#/components/schemas/MemberShipmentEnvelope' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
   /v1/webhooks/payments/zalo-checkout:
@@ -382,6 +383,65 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+  /v1/admin/inventory/administrative-areas:
+    get:
+      tags: [Admin shipping]
+      summary: 读取当前商城仓库履约可选行政区
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - name: level
+          in: query
+          required: true
+          schema: { type: string, enum: [PROVINCE, DISTRICT, WARD] }
+        - name: parent_code
+          in: query
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 64
+            pattern: '^[a-z][a-z0-9-]*$'
+      responses:
+        '200':
+          description: 当前商城启用行政区；区/坊必须使用父级 code 查询
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdministrativeAreaPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/admin/inventory/warehouses/{warehouseId}/fulfillment-profile:
+    put:
+      tags: [Admin shipping]
+      summary: 创建或替换加密仓库履约资料
+      description: >-
+        需要近期 MFA 和 store.inventory.manage。联系人、电话和详细地址完整替换并加密保存，
+        响应只返回完整性、地区、启用状态和版本。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - name: warehouseId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WarehouseFulfillmentProfileInput' }
+      responses:
+        '200':
+          description: 已受审保存；不回显敏感原文
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WarehouseFulfillmentProfileView' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /v1/admin/orders/{orderId}/shipments:
     post:
       tags: [Admin shipping]
@@ -402,7 +462,7 @@ paths:
           description: 已创建 CREATION_PENDING 运单并调度 GHN 建单
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ShipmentDetail' }
+              schema: { $ref: '#/components/schemas/ShipmentCommand' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -422,13 +482,13 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ShipmentOperationRequest' }
+            schema: { $ref: '#/components/schemas/ShipmentCancelRequest' }
       responses:
         '202':
           description: 已调度；本地请求不伪造供应商取消成功
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/IntegrationJob' }
+              schema: { $ref: '#/components/schemas/ShipmentCommand' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -448,13 +508,13 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ShipmentOperationRequest' }
+            schema: { $ref: '#/components/schemas/ShipmentSyncRequest' }
       responses:
         '202':
           description: 已调度权威查单
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/IntegrationJob' }
+              schema: { $ref: '#/components/schemas/ShipmentCommand' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -488,6 +548,46 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+  /v1/admin/orders/{orderId}/shipment:
+    get:
+      tags: [Admin shipping]
+      summary: 查询当前商城订单的脱敏运单与轨迹
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 运单不存在时 shipment 为 null；不返回完整供应商引用或地址
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminShipmentEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/shipping/labels/{token}:
+    get:
+      tags: [Admin shipping]
+      summary: 使用短期内部 token 代理 GHN A5 PDF 面单
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 4096 }
+      responses:
+        '200':
+          description: 固定 GHN origin/path、禁止 redirect 且限制 8 MiB 的 PDF 流
+          headers:
+            Cache-Control:
+              schema: { type: string, const: 'private, no-store' }
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/UpstreamUnavailable' }
   /v1/admin/integration-jobs:
     get:
@@ -788,6 +888,8 @@ components:
           remote_fee_vnd,
           other_fee_vnd,
           total_fee_vnd,
+          source,
+          estimated_delivery_at,
           expires_at,
         ]
       properties:
@@ -799,24 +901,35 @@ components:
         remote_fee_vnd: { type: integer, minimum: 0 }
         other_fee_vnd: { type: integer, minimum: 0 }
         total_fee_vnd: { type: integer, minimum: 0 }
+        source: { type: string, enum: [PROVIDER] }
         estimated_delivery_at: { type: [string, 'null'], format: date-time }
         expires_at: { type: string, format: date-time }
     ShipmentCreateRequest:
       type: object
       additionalProperties: false
-      required: [expected_order_version, service_code, inspection_policy, reason]
+      required: [confirmation_code, expected_order_version, service_code, inspection_policy, reason]
       properties:
+        confirmation_code: { type: string, const: CREATE_SHIPMENT }
         expected_order_version: { type: integer, minimum: 1 }
         service_code: { type: string, minLength: 1, maxLength: 64 }
         inspection_policy:
           type: string
           enum: [NO_INSPECTION, ALLOW_INSPECTION_NO_TRY_ON]
         reason: { type: string, minLength: 10, maxLength: 500 }
-    ShipmentOperationRequest:
+    ShipmentCancelRequest:
       type: object
       additionalProperties: false
-      required: [expected_version, reason]
+      required: [confirmation_code, expected_version, reason]
       properties:
+        confirmation_code: { type: string, const: CANCEL_SHIPMENT }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    ShipmentSyncRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: SYNC_SHIPMENT }
         expected_version: { type: integer, minimum: 1 }
         reason: { type: string, minLength: 10, maxLength: 500 }
     ShipmentStatus:
@@ -835,30 +948,98 @@ components:
           CANCELLED,
           REVIEW_REQUIRED,
         ]
-    ShipmentDetail:
+    ShipmentCommand:
       type: object
       additionalProperties: false
       required:
-        [id, public_number, order_id, status, service_code, cod_amount_vnd, version, tracking]
+        [
+          shipment_id,
+          operation_id,
+          operation_status,
+          order_id,
+          public_number,
+          status,
+          provider_shipment_reference_masked,
+          version,
+          replayed,
+        ]
       properties:
-        id: { type: string, format: uuid }
+        shipment_id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        operation_status: { type: string }
         public_number: { type: string }
         order_id: { type: string, format: uuid }
         status: { $ref: '#/components/schemas/ShipmentStatus' }
-        service_code: { type: string }
-        cod_amount_vnd: { type: integer, minimum: 0 }
         provider_shipment_reference_masked: { type: [string, 'null'] }
-        estimated_delivery_at: { type: [string, 'null'], format: date-time }
         version: { type: integer, minimum: 1 }
-        tracking:
+        replayed: { type: boolean }
+    MemberShipment:
+      type: object
+      additionalProperties: false
+      required: [created_at, delivered_at, public_number, status, tracking_events, updated_at]
+      properties:
+        created_at: { type: string, format: date-time }
+        delivered_at: { type: [string, 'null'], format: date-time }
+        public_number: { type: string }
+        status: { $ref: '#/components/schemas/ShipmentStatus' }
+        tracking_events:
           type: array
           items: { $ref: '#/components/schemas/TrackingEvent' }
+        updated_at: { type: string, format: date-time }
+    MemberShipmentEnvelope:
+      type: object
+      additionalProperties: false
+      required: [shipment]
+      properties:
+        shipment:
+          oneOf:
+            - { type: 'null' }
+            - { $ref: '#/components/schemas/MemberShipment' }
+    AdminShipment:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          created_at,
+          label_ready,
+          latest_operation_status,
+          provider_reference_masked,
+          public_number,
+          service_code,
+          shipment_id,
+          status,
+          tracking_events,
+          updated_at,
+          version,
+        ]
+      properties:
+        created_at: { type: string, format: date-time }
+        label_ready: { type: boolean }
+        latest_operation_status: { type: [string, 'null'] }
+        provider_reference_masked: { type: [string, 'null'] }
+        public_number: { type: string }
+        service_code: { type: string }
+        shipment_id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/ShipmentStatus' }
+        tracking_events:
+          type: array
+          items: { $ref: '#/components/schemas/TrackingEvent' }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+    AdminShipmentEnvelope:
+      type: object
+      additionalProperties: false
+      required: [shipment]
+      properties:
+        shipment:
+          oneOf:
+            - { type: 'null' }
+            - { $ref: '#/components/schemas/AdminShipment' }
     TrackingEvent:
       type: object
       additionalProperties: false
-      required: [id, status, message_key, occurred_at]
+      required: [location_masked, status, message_key, occurred_at]
       properties:
-        id: { type: string, format: uuid }
         status: { $ref: '#/components/schemas/ShipmentStatus' }
         message_key: { type: string }
         location_masked: { type: [string, 'null'] }
@@ -868,8 +1049,76 @@ components:
       additionalProperties: false
       required: [url, expires_at]
       properties:
-        url: { type: string, format: uri }
+        url: { type: string, format: uri-reference }
         expires_at: { type: string, format: date-time }
+    AdministrativeAreaPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, level, name, parent_code, source_version]
+            properties:
+              code: { type: string }
+              level: { type: string, enum: [PROVINCE, DISTRICT, WARD] }
+              name: { type: string }
+              parent_code: { type: [string, 'null'] }
+              source_version: { type: string }
+    WarehouseFulfillmentProfileInput:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          confirmation_code,
+          contact_name,
+          detail,
+          district_code,
+          expected_profile_version,
+          phone,
+          province_code,
+          ward_code,
+        ]
+      properties:
+        confirmation_code: { type: string, const: FULFILLMENT }
+        contact_name: { type: string, minLength: 1, maxLength: 160 }
+        detail: { type: string, minLength: 3, maxLength: 500 }
+        district_code: { type: string, minLength: 1, maxLength: 32 }
+        enabled: { type: boolean }
+        expected_profile_version: { type: integer, minimum: 0 }
+        phone: { type: string, minLength: 9, maxLength: 24 }
+        province_code: { type: string, minLength: 1, maxLength: 32 }
+        ward_code: { type: string, minLength: 1, maxLength: 32 }
+    WarehouseFulfillmentProfileView:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          configured,
+          district_code,
+          district_name,
+          enabled,
+          province_code,
+          province_name,
+          updated_at,
+          version,
+          ward_code,
+          ward_name,
+        ]
+      properties:
+        configured: { type: boolean, const: true }
+        district_code: { type: string }
+        district_name: { type: string }
+        enabled: { type: boolean }
+        province_code: { type: string }
+        province_name: { type: string }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+        ward_code: { type: string }
+        ward_name: { type: string }
     ZaloCheckoutCallback:
       type: object
       additionalProperties: true

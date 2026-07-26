@@ -20,6 +20,41 @@ export const GHN_ENDPOINT_PATHS = {
   quote: '/shiip/public-api/v2/shipping-order/fee',
 } as const;
 
+export const GHN_LABEL_PATH = '/a5/public-api/printA5';
+
+const GHN_SERVICE_CODE = /^GHN:(\d{1,10}):(\d{1,10})$/u;
+
+export function ghnServiceCode(serviceId: number, serviceTypeId: number): string {
+  if (
+    !Number.isSafeInteger(serviceId) ||
+    serviceId <= 0 ||
+    !Number.isSafeInteger(serviceTypeId) ||
+    serviceTypeId <= 0
+  ) {
+    throw new Error('GHN service identifiers must be positive safe integers');
+  }
+  return `GHN:${serviceId}:${serviceTypeId}`;
+}
+
+export function parseGhnServiceCode(value: string): {
+  serviceId: number;
+  serviceTypeId: number;
+} {
+  const match = GHN_SERVICE_CODE.exec(value);
+  if (!match) throw new Error('GHN service code is invalid');
+  const serviceId = Number(match[1]);
+  const serviceTypeId = Number(match[2]);
+  if (
+    !Number.isSafeInteger(serviceId) ||
+    serviceId <= 0 ||
+    !Number.isSafeInteger(serviceTypeId) ||
+    serviceTypeId <= 0
+  ) {
+    throw new Error('GHN service code is invalid');
+  }
+  return { serviceId, serviceTypeId };
+}
+
 export function ghnOrigin(environment: ProviderEnvironment): string {
   return GHN_ORIGINS[environment];
 }

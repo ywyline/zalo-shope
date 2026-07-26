@@ -435,3 +435,5 @@ export * from './zalo-checkout-contract';
 export * from './zalo-checkout-payment-provider';
 export * from './secret-reference-resolver';
 export * from './ghn-contract';
+export * from './ghn-shipping-provider';
+export * from './shipping-provider-resolver';

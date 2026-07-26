@@ -374,16 +374,52 @@ test('authenticated buyer creates an address, places one idempotent COD order an
   await expect.poll(() => orderResponses.length).toBeGreaterThan(0);
   expect(new Set(orderResponses.map(({ id }) => id)).size).toBe(1);
   expect(orderResponses.every(({ status }) => status === 201)).toBe(true);
+  const orderId = orderResponses[0]!.id;
 
   await page.getByRole('link', { name: 'Xem đơn hàng' }).click();
-  await expect(page.locator('.order-status')).toHaveText('Chờ xác nhận');
+  await expect(page.locator('.page-intro .order-status')).toHaveText('Chờ xác nhận');
+  await expect(page.locator('.shipment-tracking')).toContainText('Đơn hàng chưa có vận đơn.');
+  await page.route(`**/v1/orders/${orderId}/shipment`, async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        shipment: {
+          created_at: '2026-07-26T10:00:00.000Z',
+          delivered_at: null,
+          public_number: 'SHIP_BROWSER_0001',
+          status: 'CANCELLED',
+          tracking_events: [
+            {
+              location_masked: 'Quận 1',
+              message_key: 'shipment.tracking.cancelled',
+              occurred_at: '2026-07-26T10:05:00.000Z',
+              status: 'CANCELLED',
+            },
+          ],
+          updated_at: '2026-07-26T10:05:00.000Z',
+        },
+      },
+      status: 200,
+    });
+  });
   await page.getByLabel('Lý do hủy').fill('Kiểm tra hủy đơn E2E');
   const cancelResponse = page.waitForResponse(
     (response) => response.request().method() === 'POST' && response.url().includes('/cancel'),
   );
   await page.getByRole('button', { name: 'Hủy đơn hàng' }).click();
   expect((await cancelResponse).status()).toBe(201);
-  await expect(page.locator('.order-status')).toHaveText('Đã hủy');
+  await expect(page.locator('.page-intro .order-status')).toHaveText('Đã hủy');
+  const tracking = page.locator('.shipment-tracking');
+  await expect(tracking.getByRole('heading', { name: 'Theo dõi giao hàng' })).toBeVisible();
+  await expect(tracking).toContainText('Đã hủy vận đơn');
+  await expect(tracking).toContainText('Vận đơn đã được hủy.');
+  await page.getByRole('button', { name: 'ZH', exact: true }).click();
+  await expect(tracking.getByRole('heading', { name: '物流跟踪' })).toBeVisible();
+  await expect(tracking).toContainText('运单已取消。');
+  await page.getByRole('button', { name: 'EN', exact: true }).click();
+  await expect(tracking.getByRole('heading', { name: 'Shipment tracking' })).toBeVisible();
+  await expect(tracking).toContainText('The shipment was cancelled.');
+  await page.getByRole('button', { name: 'VI', exact: true }).click();
 
   await page.goto(`${store.url}#/orders`);
   await expect(page.getByRole('heading', { name: 'Đơn hàng của tôi' })).toBeVisible();

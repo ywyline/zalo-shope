@@ -74,6 +74,7 @@ describe('M5 strict shipment DTOs', () => {
   it('rejects client supplier IDs, status and COD amounts when creating a shipment', () => {
     expect(
       shipmentCreateRequestSchema.parse({
+        confirmation_code: 'CREATE_SHIPMENT',
         expected_order_version: 3,
         inspection_policy: 'NO_INSPECTION',
         reason: 'Warehouse handoff approved',
@@ -83,6 +84,7 @@ describe('M5 strict shipment DTOs', () => {
     expect(() =>
       shipmentCreateRequestSchema.parse({
         cod_amount_vnd: 500_000,
+        confirmation_code: 'CREATE_SHIPMENT',
         expected_order_version: 3,
         inspection_policy: 'NO_INSPECTION',
         provider_shipment_id: 'client-controlled',

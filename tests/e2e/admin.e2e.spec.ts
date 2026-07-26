@@ -280,6 +280,92 @@ test('inventory workbench stays isolated, supports reversible adjustments and va
   expect(browserErrors).toEqual([]);
 });
 
+test('fulfillment profile form is trilingual and submits only the audited warehouse contract', async ({
+  page,
+}) => {
+  const browserErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+
+  let submitted: Record<string, unknown> | undefined;
+  await page.route('**/v1/admin/inventory/warehouses/*/fulfillment-profile?*', async (route) => {
+    if (route.request().method() !== 'PUT') {
+      await route.continue();
+      return;
+    }
+    submitted = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        configured: true,
+        district_code: 'quan-1',
+        district_name: 'Quận 1',
+        enabled: true,
+        province_code: 'hcm',
+        province_name: 'Thành phố Hồ Chí Minh',
+        updated_at: new Date().toISOString(),
+        version: 1,
+        ward_code: 'ben-nghe',
+        ward_name: 'Phường Bến Nghé',
+      },
+      status: 200,
+    });
+  });
+
+  await signIn(page);
+  await page.getByRole('button', { name: 'Warehouses & inventory' }).click();
+  await page.getByRole('button', { name: 'Warehouses', exact: true }).click();
+  const warehouse = page.locator('.warehouse-grid article').filter({
+    hasText: 'Beauty local test warehouse',
+  });
+  await warehouse.getByRole('button', { name: 'Fulfillment profile' }).click();
+
+  const language = page.getByLabel('Language');
+  await language.selectOption('zh');
+  await expect(page.getByRole('heading', { name: '仓库履约资料' })).toBeVisible();
+  await language.selectOption('vi');
+  await expect(page.getByRole('heading', { name: 'Thông tin lấy hàng' })).toBeVisible();
+  await language.selectOption('en');
+
+  const form = page.locator('form.fulfillment-profile-dialog');
+  await expect(form.getByRole('heading', { name: 'Fulfillment profile' })).toBeVisible();
+  const regions = form.locator('.fulfillment-region-fields select');
+  await regions.nth(0).selectOption('hcm');
+  await expect(regions.nth(1).locator('option[value="quan-1"]')).toHaveCount(1);
+  await regions.nth(1).selectOption('quan-1');
+  await expect(regions.nth(2).locator('option[value="ben-nghe"]')).toHaveCount(1);
+  await regions.nth(2).selectOption('ben-nghe');
+  await form.getByLabel('Detailed pickup address').fill('18 Browser Test Street');
+  await form.getByLabel('Pickup contact').fill('Browser Fulfillment');
+  await form.getByLabel('Pickup phone').fill('+84901234567');
+  await form.getByLabel('Type FULFILLMENT to confirm').fill('FULFILLMENT');
+  await form.getByRole('button', { name: 'Save fulfillment profile' }).click();
+
+  await expect(page.locator('.inventory-workbench .workbench-message.success')).toContainText(
+    'Inventory operation completed safely.',
+  );
+  expect(submitted).toMatchObject({
+    confirmation_code: 'FULFILLMENT',
+    contact_name: 'Browser Fulfillment',
+    detail: '18 Browser Test Street',
+    district_code: 'quan-1',
+    enabled: true,
+    expected_profile_version: 0,
+    phone: '+84901234567',
+    province_code: 'hcm',
+    ward_code: 'ben-nghe',
+  });
+  expect(submitted).not.toHaveProperty('store_id');
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+  expect(browserErrors).toEqual([]);
+});
+
 test('independent admin sessions reject a stale inventory adjustment and restore the winning delta', async ({
   browser,
 }) => {

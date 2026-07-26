@@ -182,12 +182,16 @@ describe('M4 address, checkout and COD orders', () => {
     await owner.sku.create({
       data: {
         code: skuCode,
+        heightMillimeters: 80,
         id: fixture.skuId,
+        lengthMillimeters: 180,
         optionCombinationHash: 'a'.repeat(64),
         optionCombinationKey: `m4=${suffix}`,
         productId: fixture.productId,
         salePriceVnd: 120_000,
         storeId: BEAUTY_STORE_ID,
+        weightGrams: 250,
+        widthMillimeters: 120,
       },
     });
     await owner.inventoryBalance.create({
@@ -609,6 +613,22 @@ describe('M4 address, checkout and COD orders', () => {
       where: { sourceId: first.body.id },
     });
     expect(reservation.status).toBe('ACTIVE');
+    await expect(
+      owner.orderItem.findFirstOrThrow({
+        select: {
+          heightMillimeters: true,
+          lengthMillimeters: true,
+          weightGrams: true,
+          widthMillimeters: true,
+        },
+        where: { orderId: first.body.id, storeId: BEAUTY_STORE_ID },
+      }),
+    ).resolves.toEqual({
+      heightMillimeters: 80,
+      lengthMillimeters: 180,
+      weightGrams: 250,
+      widthMillimeters: 120,
+    });
     const changed = await api()
       .post('/v1/checkout/orders')
       .set({ ...headers, 'Idempotency-Key': `m4-idempotency-${suffix}` })
@@ -670,6 +690,35 @@ describe('M4 address, checkout and COD orders', () => {
     expect(onlineQuote.status).toBe(409);
     expect(onlineQuote.body.details?.reason_code).toBe('ONLINE_PAYMENT_UNAVAILABLE');
     expect(await owner.order.count({ where: { memberId: fixture.memberId } })).toBe(before);
+  });
+
+  it('blocks checkout when a SKU lacks a trusted physical profile', async () => {
+    const address = await owner.address.findFirstOrThrow({ where: { memberId: fixture.memberId } });
+    const before = await owner.order.count({ where: { memberId: fixture.memberId } });
+    await owner.sku.update({
+      data: { heightMillimeters: null },
+      where: { id: fixture.skuId },
+    });
+    try {
+      const response = await api()
+        .post('/v1/checkout/quote')
+        .set(memberHeaders())
+        .send({
+          address_id: address.id,
+          coupon_code: null,
+          items: [{ quantity: 1, sku_code: skuCode }],
+          locale: 'vi',
+          payment_method: 'COD',
+        });
+      expect(response.status).toBe(409);
+      expect(response.body.details?.reason_code).toBe('SKU_PHYSICAL_PROFILE_INCOMPLETE');
+      expect(await owner.order.count({ where: { memberId: fixture.memberId } })).toBe(before);
+    } finally {
+      await owner.sku.update({
+        data: { heightMillimeters: 80 },
+        where: { id: fixture.skuId },
+      });
+    }
   });
 
   it('prevents concurrent orders from overselling the same store inventory', async () => {

@@ -1,0 +1,1 @@
+export const SHIPPING_PROVIDER = Symbol('SHIPPING_PROVIDER');

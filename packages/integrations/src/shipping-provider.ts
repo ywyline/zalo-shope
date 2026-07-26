@@ -23,6 +23,7 @@ export type ShippingParcel = Readonly<{
 }>;
 
 export type ShippingProviderFact = Readonly<{
+  clientOrderCode?: string;
   occurredAt?: Date;
   providerShipmentId: string;
   providerStatus: string;
@@ -34,6 +35,15 @@ export type ShippingCallbackHint = Readonly<{
   providerShipmentId?: string;
   providerStatus?: string;
   shopId?: string;
+}>;
+
+export type ShippingQuoteFees = Readonly<{
+  baseFeeVnd: number;
+  codFeeVnd: number;
+  insuranceFeeVnd: number;
+  otherFeeVnd: number;
+  remoteFeeVnd: number;
+  totalFeeVnd: number;
 }>;
 
 export interface ShippingProvider {
@@ -54,19 +64,22 @@ export interface ShippingProvider {
     serviceCode: string;
     storeId: string;
   }): Promise<
-    Readonly<{
-      amountVnd: number;
-      estimatedDeliveryAt?: Date;
-      expiresAt: Date;
-      providerQuoteId?: string;
-      serviceCode: string;
-    }>
+    ShippingQuoteFees &
+      Readonly<{
+        estimatedDeliveryAt?: Date;
+        expiresAt: Date;
+        providerQuoteId?: string;
+        providerServiceId?: number;
+        providerServiceTypeId?: number;
+        serviceCode: string;
+      }>
   >;
 
   createShipment(input: {
     clientOrderCode: string;
     codAmountVnd: number;
     destination: ShippingAddress;
+    inspectionPolicy: 'NO_INSPECTION' | 'ALLOW_INSPECTION_NO_TRY_ON';
     items: readonly Readonly<{ name: string; quantity: number; skuCode: string }>[];
     operationId: string;
     origin: ShippingAddress;

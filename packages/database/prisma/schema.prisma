@@ -110,6 +110,7 @@ model Store {
   complianceRequirements        ComplianceRequirement[]
   pages                         Page[]
   warehouses                    Warehouse[]
+  warehouseFulfillmentProfiles  WarehouseFulfillmentProfile[]
   inventoryBalances             InventoryBalance[]
   inventoryOperations           InventoryOperation[]
   inventoryReservations         InventoryReservation[]
@@ -226,6 +227,7 @@ model AdminUser {
   promotionVersionsPublished PromotionVersion[]    @relation("PromotionVersionPublishedBy")
   promotionOperations        PromotionOperation[]
   deliveryPoliciesUpdated    StoreDeliveryPolicy[] @relation("DeliveryPolicyUpdatedBy")
+  warehouseProfilesUpdated   WarehouseFulfillmentProfile[] @relation("WarehouseFulfillmentProfileUpdatedBy")
   refundsRequested           Refund[]
 
   @@map("admin_users")
@@ -1095,11 +1097,42 @@ model Warehouse {
   balances         InventoryBalance[]
   reservationItems InventoryReservationItem[]
   shipments        Shipment[]
+  fulfillmentProfile WarehouseFulfillmentProfile?
 
   @@unique([storeId, id])
   @@unique([storeId, code])
   @@index([storeId, enabled, code])
   @@map("warehouses")
+}
+
+model WarehouseFulfillmentProfile {
+  storeId                  String   @map("store_id") @db.Uuid
+  warehouseId              String   @map("warehouse_id") @db.Uuid
+  contactNameCiphertext     String   @map("contact_name_ciphertext") @db.Text
+  phoneCiphertext           String   @map("phone_ciphertext") @db.Text
+  provinceCode              String   @map("province_code") @db.VarChar(32)
+  provinceName              String   @map("province_name") @db.VarChar(160)
+  districtCode              String   @map("district_code") @db.VarChar(32)
+  districtName              String   @map("district_name") @db.VarChar(160)
+  wardCode                  String   @map("ward_code") @db.VarChar(32)
+  wardName                  String   @map("ward_name") @db.VarChar(160)
+  detailCiphertext          String   @map("detail_ciphertext") @db.Text
+  enabled                   Boolean  @default(true)
+  version                   Int      @default(1)
+  updatedByAdminId          String   @map("updated_by_admin_id") @db.Uuid
+  createdAt                 DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store        Store              @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  warehouse    Warehouse          @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict)
+  provinceArea AdministrativeArea @relation("WarehouseProfileProvinceArea", fields: [storeId, provinceCode], references: [storeId, code], onDelete: Restrict, onUpdate: Cascade)
+  districtArea AdministrativeArea @relation("WarehouseProfileDistrictArea", fields: [storeId, districtCode], references: [storeId, code], onDelete: Restrict, onUpdate: Cascade)
+  wardArea     AdministrativeArea @relation("WarehouseProfileWardArea", fields: [storeId, wardCode], references: [storeId, code], onDelete: Restrict, onUpdate: Cascade)
+  updatedBy    AdminUser          @relation("WarehouseFulfillmentProfileUpdatedBy", fields: [updatedByAdminId], references: [id], onDelete: Restrict)
+
+  @@id([storeId, warehouseId])
+  @@index([storeId, enabled, warehouseId])
+  @@map("warehouse_fulfillment_profiles")
 }
 
 model WarehouseLocalization {
@@ -1555,6 +1588,9 @@ model AdministrativeArea {
   provinceAddresses Address[]            @relation("AddressProvinceArea")
   districtAddresses Address[]            @relation("AddressDistrictArea")
   wardAddresses     Address[]            @relation("AddressWardArea")
+  warehouseProfileProvinces WarehouseFulfillmentProfile[] @relation("WarehouseProfileProvinceArea")
+  warehouseProfileDistricts WarehouseFulfillmentProfile[] @relation("WarehouseProfileDistrictArea")
+  warehouseProfileWards     WarehouseFulfillmentProfile[] @relation("WarehouseProfileWardArea")
 
   @@unique([storeId, code])
   @@index([storeId, level, parentCode, enabled, code])
@@ -1669,6 +1705,10 @@ model OrderItem {
   couponDiscountVnd BigInt   @default(0) @map("coupon_discount_vnd")
   orderDiscountVnd  BigInt   @default(0) @map("order_discount_vnd")
   payableVnd        BigInt   @map("payable_vnd")
+  weightGrams       Int?     @map("weight_grams")
+  lengthMillimeters Int?     @map("length_millimeters")
+  widthMillimeters  Int?     @map("width_millimeters")
+  heightMillimeters Int?     @map("height_millimeters")
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   store         Store          @relation(fields: [storeId], references: [id], onDelete: Restrict)

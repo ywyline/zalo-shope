@@ -1,6 +1,6 @@
 # P0 分阶段开发计划
 
-> 状态：已批准，M0 已完成，M1 实施完成但验收有保留；M2.1-M2.8.4、M3.1-M3.7、M4 与 M5.1-M5.4 已完成自动化收口；M5.5 仓库自动化范围已收口，外部验收仍阻塞
+> 状态：已批准，M0 已完成，M1 实施完成但验收有保留；M2.1-M2.8.4、M3.1-M3.7、M4 与 M5.1-M5.4 已完成自动化收口；M5.5-M5.6 仓库自动化范围已收口，外部验收仍阻塞
 >
 > 版本：0.4
 >
@@ -49,6 +49,8 @@ M5.3 完成记录（2026-07-25）：已实现商城事务内版本化 outbox、`
 M5.4 完成记录（2026-07-26）：已实现 ONLINE 原子下单、首个/重试支付尝试、异步 launch、确定性 test-only provider、统一支付事实命令、支付成功一次性库存消费、取消/过期协调和迟到成功复核。完整证据见 `docs/reports/m5.4-completion-report.md`；真实 Checkout 尚未据此验收。
 
 M5.5 进度记录（2026-07-26）：仓库内 Zalo Checkout/ZaloPay 适配器、商城渠道/secret resolver、provider-order 绑定、原始 body webhook、callback/inbox 去重和定时丢回调补偿 worker 已实现；HTTP/PostgreSQL 测试覆盖有效期内补偿成功一次性扣库存、迟到成功复核、pending 有限重试和商城隔离。真实 merchant credentials、HTTPS callback、Zalo sandbox 查单/丢回调演练和 Testing 真机仍为 `BLOCKED/NOT_RUN`，因此 M5.5 与 M5 不标记完成；详见 `docs/reports/m5.5-progress-report.md`。
+
+M5.6 进度记录（2026-07-26）：仓库内 GHN 适配器、商城渠道/secret resolver、仓库履约资料、订单物理快照、可靠建单/取消/查单、未签名 webhook hint、短期面单代理和双端三语轨迹工作台已实现；报价费用分解、成功 operation 单调性、状态推进、ShopId 碰撞与商城隔离已补强，310 项单元、155 项集成、20 项 E2E 和 23 迁移演练全部通过。真实 GHN ShopId/Token、测试仓库/订单、面单/webhook/COD 与 Zalo 宿主均为 `BLOCKED/NOT_RUN`，因此 M5.6 与 M5 不标记完成；详见 `docs/reports/m5.6-progress-report.md`。
 
 ## 1. 总体范围
 

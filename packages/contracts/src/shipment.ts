@@ -5,6 +5,7 @@ const uuidSchema = z.string().uuid();
 
 export const shipmentStatusSchema = z.enum(SHIPMENT_STATUSES);
 export const shipmentIdParamsSchema = z.object({ shipmentId: uuidSchema }).strict();
+export const shippingStoreQuerySchema = z.object({ store_id: uuidSchema }).strict();
 
 export const shippingQuoteRequestSchema = z
   .object({
@@ -15,6 +16,7 @@ export const shippingQuoteRequestSchema = z
 
 export const shipmentCreateRequestSchema = z
   .object({
+    confirmation_code: z.literal('CREATE_SHIPMENT'),
     expected_order_version: z.number().int().positive(),
     inspection_policy: z.enum(['NO_INSPECTION', 'ALLOW_INSPECTION_NO_TRY_ON']),
     reason: z.string().trim().min(10).max(500),
@@ -24,6 +26,7 @@ export const shipmentCreateRequestSchema = z
 
 export const shipmentOperationRequestSchema = z
   .object({
+    confirmation_code: z.enum(['CANCEL_SHIPMENT', 'SYNC_SHIPMENT']),
     expected_version: z.number().int().positive(),
     reason: z.string().trim().min(10).max(500),
   })

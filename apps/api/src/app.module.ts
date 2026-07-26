@@ -8,12 +8,14 @@ import { parseRuntimeConfig, type RuntimeConfig } from '@zalo-shop/config';
 import { createRuntimePrismaClient } from '@zalo-shop/database';
 import {
   ConfiguredPaymentProviderResolver,
+  ConfiguredShippingProviderResolver,
   DeterministicZaloTestProvider,
   EnvironmentSecretReferenceResolver,
   S3MediaStorageProvider,
   ZaloOpenApiIdentityProvider,
   type ZaloIdentityProvider,
   type PaymentProviderResolver,
+  type ShippingProviderResolver,
 } from '@zalo-shop/integrations';
 import { createHttpLogger, createLogger } from '@zalo-shop/logger';
 import { checkInfrastructure } from '@zalo-shop/platform';
@@ -77,6 +79,14 @@ import {
   PaymentWebhookRateLimiter,
   PaymentWebhookService,
 } from './payments/payment-webhook.service';
+import { ShippingWebhookController } from './shipping/shipping-webhook.controller';
+import {
+  ShippingWebhookRateLimiter,
+  ShippingWebhookService,
+} from './shipping/shipping-webhook.service';
+import { ShippingController } from './shipping/shipping.controller';
+import { ShippingService } from './shipping/shipping.service';
+import { SHIPPING_PROVIDER } from './shipping/shipping.tokens';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -124,6 +134,15 @@ function createPaymentProviderResolver(config: RuntimeConfig): PaymentProviderRe
   });
 }
 
+function createShippingProviderResolver(config: RuntimeConfig): ShippingProviderResolver {
+  return new ConfiguredShippingProviderResolver({
+    mode: config.SHIPPING_PROVIDER,
+    requestTimeoutMs: config.GHN_REQUEST_TIMEOUT_MS,
+    responseLimitBytes: config.GHN_RESPONSE_LIMIT_BYTES,
+    secretResolver: new EnvironmentSecretReferenceResolver(),
+  });
+}
+
 @Module({
   controllers: [
     HealthController,
@@ -152,6 +171,8 @@ function createPaymentProviderResolver(config: RuntimeConfig): PaymentProviderRe
     DeliveryAdminController,
     PaymentsController,
     PaymentWebhookController,
+    ShippingWebhookController,
+    ShippingController,
   ],
   providers: [
     AdminService,
@@ -174,6 +195,9 @@ function createPaymentProviderResolver(config: RuntimeConfig): PaymentProviderRe
     PaymentsService,
     PaymentWebhookRateLimiter,
     PaymentWebhookService,
+    ShippingWebhookRateLimiter,
+    ShippingWebhookService,
+    ShippingService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
       provide: DATABASE_CLIENT,
@@ -190,6 +214,10 @@ function createPaymentProviderResolver(config: RuntimeConfig): PaymentProviderRe
     {
       provide: PAYMENT_PROVIDER,
       useFactory: () => createPaymentProviderResolver(runtimeConfig),
+    },
+    {
+      provide: SHIPPING_PROVIDER,
+      useFactory: () => createShippingProviderResolver(runtimeConfig),
     },
     {
       provide: INFRASTRUCTURE_CHECKER,

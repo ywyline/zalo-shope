@@ -395,13 +395,17 @@ async function seedStore(store: StoreFixture): Promise<void> {
     await database.sku.create({
       data: {
         code: input.code,
+        heightMillimeters: 80,
         id: input.id,
+        lengthMillimeters: 180,
         marketPriceVnd: input.salePriceVnd + 70_000,
         optionCombinationHash: createHash('sha256').update(combinationKey).digest('hex'),
         optionCombinationKey: combinationKey,
         productId: input.productId,
         salePriceVnd: input.salePriceVnd,
         storeId: store.id,
+        weightGrams: 250,
+        widthMillimeters: 120,
       },
     });
     await database.skuOptionValue.create({

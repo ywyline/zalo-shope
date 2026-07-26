@@ -8,11 +8,31 @@ type Warehouse = {
   code: string;
   created_at: string;
   enabled: boolean;
+  fulfillment_profile:
+    | { configured: false }
+    | {
+        configured: true;
+        district_code: string;
+        district_name: string;
+        enabled: boolean;
+        province_code: string;
+        province_name: string;
+        updated_at: string;
+        version: number;
+        ward_code: string;
+        ward_name: string;
+      };
   id: string;
   is_default_fulfillment: boolean;
   localizations: Array<{ locale: Locale; name: string }>;
   updated_at: string;
   version: number;
+};
+type AdministrativeArea = {
+  code: string;
+  level: 'DISTRICT' | 'PROVINCE' | 'WARD';
+  name: string;
+  parent_code: string | null;
 };
 type Balance = {
   available: number;
@@ -53,16 +73,25 @@ const copy = {
     available: 'Có thể bán',
     cancel: 'Hủy',
     code: 'Mã kho',
+    confirmation: 'Nhập FULFILLMENT để xác nhận',
+    contactName: 'Người liên hệ lấy hàng',
     conflict: 'Dữ liệu đã thay đổi. Tải lại rồi thử lại.',
     create: 'Tạo kho',
     default: 'Kho mặc định',
     delta: 'Thay đổi',
     disabled: 'Đã tắt',
+    district: 'Quận / huyện',
+    detail: 'Địa chỉ lấy hàng chi tiết',
     empty: 'Không có dữ liệu phù hợp.',
     enabled: 'Đang hoạt động',
     error: 'Không thể tải hoặc lưu dữ liệu kho.',
     executeHint: 'Chỉ tệp không lỗi mới được áp dụng nguyên tử. Nhập IMPORT để xác nhận.',
     file: 'Tệp CSV / XLSX',
+    fulfillment: 'Thông tin lấy hàng',
+    fulfillmentConfigured: 'Đã cấu hình',
+    fulfillmentMissing: 'Chưa cấu hình',
+    fulfillmentHint:
+      'Thông tin liên hệ và địa chỉ được mã hóa. Khi cập nhật, hãy nhập lại đầy đủ các trường nhạy cảm.',
     import: 'Nhập tồn đầu kỳ',
     importColumns: 'Cột: warehouse_code, sku_code, quantity, note',
     inStock: 'Còn hàng',
@@ -78,13 +107,19 @@ const copy = {
     note: 'Ghi chú không chứa dữ liệu nhạy cảm',
     onHand: 'Tồn thực tế',
     out: 'Hết hàng',
+    phone: 'Số điện thoại lấy hàng',
+    profileEnabled: 'Cho phép dùng để tạo vận đơn',
+    province: 'Tỉnh / thành phố',
     reason: 'Lý do',
     reserved: 'Đã giữ',
     retry: 'Thử lại',
     search: 'Tìm mã SKU…',
+    selectArea: 'Chọn khu vực',
+    saveProfile: 'Lưu thông tin lấy hàng',
     stock: 'Số dư tồn kho',
     success: 'Thao tác tồn kho đã hoàn tất.',
     validate: 'Kiểm tra tệp',
+    ward: 'Phường / xã',
     warehouses: 'Kho hàng',
   },
   zh: {
@@ -95,16 +130,24 @@ const copy = {
     available: '可售',
     cancel: '取消',
     code: '仓库编码',
+    confirmation: '输入 FULFILLMENT 确认',
+    contactName: '揽收联系人',
     conflict: '数据已经变化，请刷新后重试。',
     create: '创建仓库',
     default: '默认履约仓',
     delta: '调整差量',
     disabled: '已停用',
+    district: '区 / 县',
+    detail: '详细揽收地址',
     empty: '没有符合条件的数据。',
     enabled: '启用',
     error: '库存数据加载或保存失败。',
     executeHint: '只有零错误文件才会原子执行；输入 IMPORT 二次确认。',
     file: 'CSV / XLSX 文件',
+    fulfillment: '仓库履约资料',
+    fulfillmentConfigured: '已配置',
+    fulfillmentMissing: '未配置',
+    fulfillmentHint: '联系人、电话和详细地址将加密保存；更新时需重新填写全部敏感字段。',
     import: '初始库存导入',
     importColumns: '列：warehouse_code、sku_code、quantity、note',
     inStock: '有库存',
@@ -120,13 +163,19 @@ const copy = {
     note: '备注（不得包含敏感信息）',
     onHand: '实际库存',
     out: '零库存',
+    phone: '揽收电话',
+    profileEnabled: '允许用于创建运单',
+    province: '省 / 市',
     reason: '原因',
     reserved: '锁定',
     retry: '重试',
     search: '搜索 SKU 编码…',
+    selectArea: '选择行政区',
+    saveProfile: '保存履约资料',
     stock: '库存余额',
     success: '库存操作已安全完成。',
     validate: '校验文件',
+    ward: '坊 / 社',
     warehouses: '仓库',
   },
   en: {
@@ -137,16 +186,25 @@ const copy = {
     available: 'Available',
     cancel: 'Cancel',
     code: 'Warehouse code',
+    confirmation: 'Type FULFILLMENT to confirm',
+    contactName: 'Pickup contact',
     conflict: 'The data changed. Reload before trying again.',
     create: 'Create warehouse',
     default: 'Default fulfillment',
     delta: 'Quantity delta',
     disabled: 'Disabled',
+    district: 'District',
+    detail: 'Detailed pickup address',
     empty: 'No matching inventory data.',
     enabled: 'Enabled',
     error: 'Inventory data could not be loaded or saved.',
     executeHint: 'Only an error-free file is applied atomically. Type IMPORT to confirm.',
     file: 'CSV / XLSX file',
+    fulfillment: 'Fulfillment profile',
+    fulfillmentConfigured: 'Configured',
+    fulfillmentMissing: 'Not configured',
+    fulfillmentHint:
+      'Contact details and the street address are encrypted. Re-enter every sensitive field when updating.',
     import: 'Initial stock import',
     importColumns: 'Columns: warehouse_code, sku_code, quantity, note',
     inStock: 'In stock',
@@ -162,13 +220,19 @@ const copy = {
     note: 'Note without sensitive data',
     onHand: 'On hand',
     out: 'Out of stock',
+    phone: 'Pickup phone',
+    profileEnabled: 'Allow shipment creation',
+    province: 'Province / city',
     reason: 'Reason',
     reserved: 'Reserved',
     retry: 'Retry',
     search: 'Search SKU code…',
+    selectArea: 'Select area',
+    saveProfile: 'Save fulfillment profile',
     stock: 'Inventory balances',
     success: 'Inventory operation completed safely.',
     validate: 'Validate file',
+    ward: 'Ward',
     warehouses: 'Warehouses',
   },
 } as const;
@@ -222,6 +286,13 @@ export function InventoryWorkbench({
   const [importReport, setImportReport] = useState<ImportReport>();
   const [importKey, setImportKey] = useState(crypto.randomUUID());
   const [importConfirmation, setImportConfirmation] = useState('');
+  const [profileWarehouse, setProfileWarehouse] = useState<Warehouse>();
+  const [provinces, setProvinces] = useState<AdministrativeArea[]>([]);
+  const [districts, setDistricts] = useState<AdministrativeArea[]>([]);
+  const [wards, setWards] = useState<AdministrativeArea[]>([]);
+  const [provinceCode, setProvinceCode] = useState('');
+  const [districtCode, setDistrictCode] = useState('');
+  const [wardCode, setWardCode] = useState('');
 
   const load = async (): Promise<void> => {
     setLoading(true);
@@ -308,6 +379,116 @@ export function InventoryWorkbench({
         headers: jsonHeaders(headers),
         method: 'PATCH',
       });
+      setNotice(t.success);
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'INTERNAL_ERROR');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadAreas = async (
+    level: AdministrativeArea['level'],
+    parentCode?: string,
+  ): Promise<AdministrativeArea[]> => {
+    const parameters = new URLSearchParams({ level, store_id: store.id });
+    if (parentCode) parameters.set('parent_code', parentCode);
+    return (
+      await request<{ items: AdministrativeArea[] }>(
+        `/v1/admin/inventory/administrative-areas?${parameters.toString()}`,
+        { headers: headers() },
+      )
+    ).items;
+  };
+
+  const openFulfillmentProfile = async (warehouse: Warehouse): Promise<void> => {
+    const current = warehouse.fulfillment_profile;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const nextProvinces = await loadAreas('PROVINCE');
+      setProvinces(nextProvinces);
+      setProfileWarehouse(warehouse);
+      if (current.configured) {
+        const [nextDistricts, nextWards] = await Promise.all([
+          loadAreas('DISTRICT', current.province_code),
+          loadAreas('WARD', current.district_code),
+        ]);
+        setProvinceCode(current.province_code);
+        setDistrictCode(current.district_code);
+        setWardCode(current.ward_code);
+        setDistricts(nextDistricts);
+        setWards(nextWards);
+      } else {
+        setProvinceCode('');
+        setDistrictCode('');
+        setWardCode('');
+        setDistricts([]);
+        setWards([]);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'INTERNAL_ERROR');
+      setProfileWarehouse(undefined);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectProvince = async (code: string): Promise<void> => {
+    setProvinceCode(code);
+    setDistrictCode('');
+    setWardCode('');
+    setDistricts([]);
+    setWards([]);
+    if (!code) return;
+    try {
+      setDistricts(await loadAreas('DISTRICT', code));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'INTERNAL_ERROR');
+    }
+  };
+
+  const selectDistrict = async (code: string): Promise<void> => {
+    setDistrictCode(code);
+    setWardCode('');
+    setWards([]);
+    if (!code) return;
+    try {
+      setWards(await loadAreas('WARD', code));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'INTERNAL_ERROR');
+    }
+  };
+
+  const saveFulfillmentProfile = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (!profileWarehouse || !provinceCode || !districtCode || !wardCode) return;
+    const form = new FormData(event.currentTarget);
+    setBusy(true);
+    setError(undefined);
+    try {
+      await request(
+        `/v1/admin/inventory/warehouses/${profileWarehouse.id}/fulfillment-profile?${query}`,
+        {
+          body: JSON.stringify({
+            confirmation_code: formText(form, 'confirmation_code'),
+            contact_name: formText(form, 'contact_name'),
+            detail: formText(form, 'detail'),
+            district_code: districtCode,
+            enabled: form.get('enabled') === 'on',
+            expected_profile_version: profileWarehouse.fulfillment_profile.configured
+              ? profileWarehouse.fulfillment_profile.version
+              : 0,
+            phone: formText(form, 'phone'),
+            province_code: provinceCode,
+            ward_code: wardCode,
+          }),
+          headers: jsonHeaders(headers),
+          method: 'PUT',
+        },
+      );
+      setProfileWarehouse(undefined);
       setNotice(t.success);
       await load();
     } catch (cause) {
@@ -541,6 +722,26 @@ export function InventoryWorkbench({
                   <span className="warehouse-code">{warehouse.code}</span>
                   <h3>{localizedName(warehouse, locale)}</h3>
                   <p>{warehouse.enabled ? t.enabled : t.disabled}</p>
+                  <p
+                    className={
+                      warehouse.fulfillment_profile.configured
+                        ? 'fulfillment-profile-state configured'
+                        : 'fulfillment-profile-state'
+                    }
+                  >
+                    <strong>
+                      {warehouse.fulfillment_profile.configured
+                        ? t.fulfillmentConfigured
+                        : t.fulfillmentMissing}
+                    </strong>
+                    {warehouse.fulfillment_profile.configured && (
+                      <span>
+                        {warehouse.fulfillment_profile.ward_name},{' '}
+                        {warehouse.fulfillment_profile.district_name},{' '}
+                        {warehouse.fulfillment_profile.province_name}
+                      </span>
+                    )}
+                  </p>
                 </div>
                 <div className="warehouse-actions">
                   {warehouse.is_default_fulfillment ? (
@@ -567,6 +768,14 @@ export function InventoryWorkbench({
                       {warehouse.enabled ? t.disabled : t.enabled}
                     </button>
                   )}
+                  <button
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() => void openFulfillmentProfile(warehouse)}
+                    type="button"
+                  >
+                    {t.fulfillment}
+                  </button>
                 </div>
               </article>
             ))}
@@ -709,6 +918,117 @@ export function InventoryWorkbench({
               </button>
               <button className="primary" disabled={busy} type="submit">
                 {t.create}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {profileWarehouse && (
+        <div className="modal-backdrop" role="presentation">
+          <form
+            className="confirm-modal fulfillment-profile-dialog"
+            onSubmit={(event) => void saveFulfillmentProfile(event)}
+          >
+            <p className="eyebrow">{profileWarehouse.code}</p>
+            <h2>{t.fulfillment}</h2>
+            <p>{t.fulfillmentHint}</p>
+            <div className="fulfillment-region-fields">
+              <label>
+                {t.province}
+                <select
+                  onChange={(event) => void selectProvince(event.target.value)}
+                  required
+                  value={provinceCode}
+                >
+                  <option value="">{t.selectArea}</option>
+                  {provinces.map((area) => (
+                    <option key={area.code} value={area.code}>
+                      {area.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                {t.district}
+                <select
+                  disabled={!provinceCode}
+                  onChange={(event) => void selectDistrict(event.target.value)}
+                  required
+                  value={districtCode}
+                >
+                  <option value="">{t.selectArea}</option>
+                  {districts.map((area) => (
+                    <option key={area.code} value={area.code}>
+                      {area.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                {t.ward}
+                <select
+                  disabled={!districtCode}
+                  onChange={(event) => setWardCode(event.target.value)}
+                  required
+                  value={wardCode}
+                >
+                  <option value="">{t.selectArea}</option>
+                  {wards.map((area) => (
+                    <option key={area.code} value={area.code}>
+                      {area.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label>
+              {t.detail}
+              <textarea maxLength={500} minLength={3} name="detail" required rows={3} />
+            </label>
+            <div className="fulfillment-contact-fields">
+              <label>
+                {t.contactName}
+                <input maxLength={160} name="contact_name" required />
+              </label>
+              <label>
+                {t.phone}
+                <input
+                  autoComplete="tel"
+                  inputMode="tel"
+                  maxLength={24}
+                  minLength={9}
+                  name="phone"
+                  required
+                />
+              </label>
+            </div>
+            <label className="check-field">
+              <input
+                defaultChecked={
+                  !profileWarehouse.fulfillment_profile.configured ||
+                  profileWarehouse.fulfillment_profile.enabled
+                }
+                name="enabled"
+                type="checkbox"
+              />{' '}
+              {t.profileEnabled}
+            </label>
+            <label>
+              {t.confirmation}
+              <input autoComplete="off" name="confirmation_code" pattern="FULFILLMENT" required />
+            </label>
+            <div>
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() => setProfileWarehouse(undefined)}
+                type="button"
+              >
+                {t.cancel}
+              </button>
+              <button className="primary" disabled={busy} type="submit">
+                {t.saveProfile}
               </button>
             </div>
           </form>

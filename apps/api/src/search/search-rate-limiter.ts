@@ -19,7 +19,13 @@ export class SearchRateLimiter implements OnApplicationShutdown {
 
   public async assertAllowed(
     address: string,
-    scope: 'coupon-claim' | 'payment-callback' | 'payment-query' | 'pricing' | 'search' = 'search',
+    scope:
+      | 'coupon-claim'
+      | 'payment-callback'
+      | 'payment-query'
+      | 'pricing'
+      | 'search'
+      | 'shipping-callback' = 'search',
     storeId = 'global',
     subjectId?: string,
     policy?: Readonly<{ errorCode: string; maxRequests: number; windowSeconds: number }>,

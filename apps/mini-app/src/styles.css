@@ -2695,6 +2695,94 @@ button.commerce-state {
   color: color-mix(in srgb, var(--store-text) 55%, transparent);
 }
 
+.shipment-tracking {
+  display: grid;
+  gap: 14px;
+  padding-top: 18px;
+  border-top: 1px solid color-mix(in srgb, var(--store-text) 10%, transparent);
+}
+
+.shipment-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.shipment-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.shipment-heading h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.shipment-heading small,
+.shipment-event small,
+.shipment-event em {
+  color: color-mix(in srgb, var(--store-text) 55%, transparent);
+  font-size: 0.72rem;
+  font-style: normal;
+}
+
+.shipment-state {
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed color-mix(in srgb, var(--store-text) 18%, transparent);
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--store-text) 68%, transparent);
+  background: transparent;
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: left;
+}
+
+.shipment-events {
+  display: grid;
+}
+
+.shipment-event {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 62px;
+}
+
+.shipment-event > span {
+  position: relative;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border: 2px solid color-mix(in srgb, var(--store-text) 30%, transparent);
+  border-radius: 50%;
+  background: var(--store-background);
+}
+
+.shipment-event:not(:last-child) > span::after {
+  position: absolute;
+  top: 10px;
+  left: 2px;
+  width: 1px;
+  height: 48px;
+  background: color-mix(in srgb, var(--store-text) 16%, transparent);
+  content: '';
+}
+
+.shipment-event.current > span {
+  border-color: var(--store-accent-strong);
+  background: var(--store-accent-strong);
+}
+
+.shipment-event p {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
 .cancel-order-panel {
   display: grid;
   gap: 12px;

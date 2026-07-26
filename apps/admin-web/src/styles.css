@@ -1638,6 +1638,26 @@ label {
   flex-direction: column;
 }
 
+.fulfillment-profile-state {
+  display: grid;
+  max-width: 300px;
+  gap: 3px;
+}
+
+.fulfillment-profile-state strong {
+  color: #9b4b41;
+  font-size: 0.7rem;
+}
+
+.fulfillment-profile-state.configured strong {
+  color: #2f6b50;
+}
+
+.fulfillment-profile-state span {
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
 .movement-list {
   display: grid;
   gap: 2px;
@@ -1759,6 +1779,54 @@ label {
   display: flex;
   gap: 10px;
   justify-content: flex-end;
+}
+
+.fulfillment-profile-dialog {
+  display: grid;
+  width: min(680px, calc(100vw - 28px));
+  max-height: calc(100vh - 28px);
+  overflow-y: auto;
+  gap: 13px;
+}
+
+.fulfillment-profile-dialog .eyebrow,
+.fulfillment-profile-dialog h2,
+.fulfillment-profile-dialog > p {
+  margin: 0;
+}
+
+.fulfillment-profile-dialog > p:not(.eyebrow) {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.fulfillment-profile-dialog > .fulfillment-region-fields,
+.fulfillment-profile-dialog > .fulfillment-contact-fields {
+  display: grid;
+  margin: 0;
+  align-items: start;
+  gap: 10px;
+}
+
+.fulfillment-profile-dialog > .fulfillment-region-fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.fulfillment-profile-dialog > .fulfillment-contact-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fulfillment-profile-dialog select,
+.fulfillment-profile-dialog input,
+.fulfillment-profile-dialog textarea {
+  width: 100%;
+}
+
+.fulfillment-profile-dialog > div:last-child {
+  display: flex;
+  margin-top: 8px;
+  justify-content: flex-end;
+  gap: 9px;
 }
 
 .promotion-workbench {
@@ -2336,6 +2404,269 @@ label {
   gap: 9px;
 }
 
+.admin-shipment {
+  display: grid;
+  margin: 24px 0;
+  padding: 22px 0;
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+  gap: 16px;
+}
+
+.admin-shipment-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.admin-shipment-heading .eyebrow {
+  margin: 0 0 5px;
+}
+
+.admin-shipment-heading h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.shipment-chip {
+  display: inline-flex;
+  min-height: 30px;
+  padding: 0 10px;
+  align-items: center;
+  border-radius: 999px;
+  color: #765b1c;
+  background: #fff2ca;
+  font-size: 0.68rem;
+  font-weight: 820;
+}
+
+.shipment-delivered,
+.shipment-cancelled,
+.shipment-returned {
+  color: #286349;
+  background: #e4f4ea;
+}
+
+.shipment-exception,
+.shipment-refused,
+.shipment-review_required {
+  color: #8b3f35;
+  background: #fff0ee;
+}
+
+.shipping-notice,
+.shipping-state {
+  margin: 0;
+  padding: 11px 13px;
+  border-radius: 8px;
+  color: #35654b;
+  background: #edf7f1;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.shipping-state {
+  width: 100%;
+  border: 0;
+  color: var(--color-text-muted);
+  background: #f7f4f1;
+  text-align: left;
+}
+
+.shipping-state.error {
+  color: var(--color-danger);
+  background: #fff0ee;
+}
+
+.shipping-create {
+  display: grid;
+  gap: 13px;
+}
+
+.shipping-create > p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+}
+
+.shipping-quote-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.shipping-quote-form input,
+.shipping-inspection select {
+  width: 100%;
+}
+
+.shipping-quote {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.shipping-quote > div {
+  display: grid;
+  min-width: 0;
+  padding: 12px;
+  border-right: 1px solid var(--color-line);
+  gap: 5px;
+}
+
+.shipping-quote > div:last-of-type {
+  border-right: 0;
+}
+
+.shipping-quote span,
+.shipment-facts dt {
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+}
+
+.shipping-quote strong,
+.shipment-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.76rem;
+}
+
+.shipping-quote > p {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 9px 12px;
+  color: var(--color-danger);
+  background: #fff0ee;
+  font-size: 0.7rem;
+}
+
+.shipping-quote.expired strong {
+  color: var(--color-text-muted);
+}
+
+.shipping-inspection {
+  max-width: 360px;
+}
+
+.shipping-create > .primary {
+  justify-self: start;
+}
+
+.shipment-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--color-line);
+  border-left: 1px solid var(--color-line);
+}
+
+.shipment-facts > div {
+  min-width: 0;
+  padding: 12px;
+  border-right: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.shipment-facts dd {
+  margin-top: 5px;
+  font-weight: 740;
+}
+
+.shipment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.secondary.danger {
+  border-color: #e1b9b3;
+  color: var(--color-danger);
+}
+
+.label-link {
+  display: inline-flex;
+  min-height: 46px;
+  box-sizing: border-box;
+  align-items: center;
+  text-decoration: none;
+}
+
+.shipment-timeline {
+  display: grid;
+  padding-left: 4px;
+  gap: 0;
+}
+
+.shipment-timeline > div {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  min-height: 58px;
+  gap: 10px;
+}
+
+.shipment-timeline > div > span {
+  position: relative;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border: 2px solid #bcaaa1;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.shipment-timeline > div:not(:last-child) > span::after {
+  position: absolute;
+  top: 11px;
+  left: 3px;
+  width: 1px;
+  height: 42px;
+  background: var(--color-line);
+  content: '';
+}
+
+.shipment-timeline > div.current > span {
+  border-color: var(--color-brand);
+  background: var(--color-brand);
+}
+
+.shipment-timeline p {
+  display: grid;
+  margin: 0;
+  gap: 3px;
+}
+
+.shipment-timeline strong {
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.shipment-timeline em,
+.shipment-timeline small {
+  color: var(--color-text-muted);
+  font-size: 0.67rem;
+  font-style: normal;
+}
+
+.shipment-operation-dialog {
+  display: grid;
+  width: min(520px, calc(100vw - 28px));
+  gap: 14px;
+}
+
+.shipment-operation-dialog .eyebrow,
+.shipment-operation-dialog h2 {
+  margin: 0;
+}
+
+.shipment-operation-dialog > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
 .admin-note-field {
   display: grid;
   margin-top: 10px;
@@ -2686,6 +3017,10 @@ label {
   .warehouse-actions {
     align-items: stretch;
   }
+  .fulfillment-profile-dialog > .fulfillment-region-fields,
+  .fulfillment-profile-dialog > .fulfillment-contact-fields {
+    grid-template-columns: 1fr;
+  }
   .movement-list article {
     grid-template-columns: auto 1fr;
   }
@@ -2786,6 +3121,30 @@ label {
   .admin-order-actions,
   .admin-order-actions button,
   .delivery-form > button {
+    width: 100%;
+  }
+  .admin-shipment-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .shipment-chip {
+    align-self: flex-start;
+  }
+  .shipping-quote-form,
+  .shipping-quote,
+  .shipment-facts {
+    grid-template-columns: 1fr;
+  }
+  .shipping-quote > div {
+    border-right: 0;
+    border-bottom: 1px solid var(--color-line);
+  }
+  .shipping-quote > div:last-of-type {
+    border-bottom: 0;
+  }
+  .shipping-create > .primary,
+  .shipment-actions > *,
+  .shipping-quote-form button {
     width: 100%;
   }
   .catalog-dialog {

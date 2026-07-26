@@ -114,6 +114,10 @@ const runtimeConfigSchema = z
     PAYMENT_PROVIDER: z.enum(['disabled', 'test', 'zalo-checkout']).default('disabled'),
     PAYMENT_RECONCILIATION_ENABLED: disabledBooleanFromString,
     PAYMENT_TEST_PROVIDER_SECRET: optionalStrongSecret,
+    SHIPPING_PROVIDER: z.enum(['disabled', 'ghn']).default('disabled'),
+    GHN_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(500).max(10_000).default(5_000),
+    GHN_RESPONSE_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(262_144).default(131_072),
+    GHN_CALLBACK_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(10).max(10_000).default(120),
     ZALO_CHECKOUT_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(500).max(10_000).default(5_000),
     ZALO_CHECKOUT_RESPONSE_LIMIT_BYTES: z.coerce
       .number()
@@ -216,6 +220,16 @@ const runtimeConfigSchema = z
       context.addIssue({
         code: 'custom',
         message: 'must cover the payment provider timeout plus a 5000ms commit margin',
+        path: ['OUTBOX_WORKER_LEASE_MS'],
+      });
+    }
+    if (
+      config.SHIPPING_PROVIDER !== 'disabled' &&
+      config.OUTBOX_WORKER_LEASE_MS < config.GHN_REQUEST_TIMEOUT_MS + 5_000
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'must cover the GHN timeout plus a 5000ms commit margin',
         path: ['OUTBOX_WORKER_LEASE_MS'],
       });
     }

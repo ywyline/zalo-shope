@@ -6,9 +6,11 @@ import type { Locale } from './catalog-api';
 import {
   cancelOrder,
   getOrder,
+  getOrderShipment,
   listOrders,
   type OrderDetail,
   type OrderSummary,
+  type Shipment,
 } from './commerce-api';
 import { useMemberSession } from './member-session';
 
@@ -31,6 +33,39 @@ const statusKeys: Record<string, MessageKey> = {
 function status(locale: Locale, value: string): string {
   const key = statusKeys[value];
   return key ? message(locale, key) : value;
+}
+
+const shipmentStatusKeys: Record<string, MessageKey> = {
+  CANCELLED: 'shipment.status.cancelled',
+  CREATION_PENDING: 'shipment.status.creationPending',
+  DELIVERED: 'shipment.status.delivered',
+  EXCEPTION: 'shipment.status.exception',
+  IN_TRANSIT: 'shipment.status.inTransit',
+  OUT_FOR_DELIVERY: 'shipment.status.outForDelivery',
+  PENDING_PICKUP: 'shipment.status.pendingPickup',
+  REFUSED: 'shipment.status.refused',
+  RETURNED: 'shipment.status.returned',
+  RETURNING: 'shipment.status.returning',
+  REVIEW_REQUIRED: 'shipment.status.reviewRequired',
+};
+
+const trackingMessageKeys: Record<string, MessageKey> = {
+  'shipment.tracking.cancelled': 'shipment.tracking.cancelled',
+  'shipment.tracking.creation_pending': 'shipment.tracking.creation_pending',
+  'shipment.tracking.delivered': 'shipment.tracking.delivered',
+  'shipment.tracking.exception': 'shipment.tracking.exception',
+  'shipment.tracking.in_transit': 'shipment.tracking.in_transit',
+  'shipment.tracking.out_for_delivery': 'shipment.tracking.out_for_delivery',
+  'shipment.tracking.pending_pickup': 'shipment.tracking.pending_pickup',
+  'shipment.tracking.refused': 'shipment.tracking.refused',
+  'shipment.tracking.returned': 'shipment.tracking.returned',
+  'shipment.tracking.returning': 'shipment.tracking.returning',
+  'shipment.tracking.review_required': 'shipment.tracking.review_required',
+};
+
+function shipmentStatus(locale: Locale, value: string): string {
+  const key = shipmentStatusKeys[value];
+  return key ? message(locale, key) : message(locale, 'shipment.status.reviewRequired');
 }
 
 function OrderCard({ locale, order }: { locale: Locale; order: OrderSummary }): JSX.Element {
@@ -104,16 +139,26 @@ export function OrderDetailView({ locale }: { locale: Locale }): JSX.Element {
   const session = useMemberSession();
   const [order, setOrder] = useState<OrderDetail>();
   const [state, setState] = useState<'error' | 'loading' | 'ready'>('loading');
+  const [shipment, setShipment] = useState<Shipment | null>(null);
+  const [shipmentState, setShipmentState] = useState<'error' | 'loading' | 'ready'>('loading');
   const [reason, setReason] = useState('');
   const [cancelling, setCancelling] = useState(false);
   const load = useCallback(async (): Promise<void> => {
     if (!session.accessToken || !orderId) return;
     setState('loading');
+    setShipmentState('loading');
     try {
       setOrder(await getOrder(session.accessToken, orderId));
       setState('ready');
+      try {
+        setShipment((await getOrderShipment(session.accessToken, orderId)).shipment);
+        setShipmentState('ready');
+      } catch {
+        setShipmentState('error');
+      }
     } catch {
       setState('error');
+      setShipmentState('error');
     }
   }, [orderId, session.accessToken]);
   useEffect(() => void load(), [load]);
@@ -180,6 +225,80 @@ export function OrderDetailView({ locale }: { locale: Locale }): JSX.Element {
             </p>
           </div>
         ))}
+      </section>
+      <section className="shipment-tracking" aria-live="polite">
+        <div className="shipment-heading">
+          <div>
+            <h2>{message(locale, 'shipment.title')}</h2>
+            {shipment && (
+              <small>
+                {message(locale, 'shipment.publicNumber')} · {shipment.public_number}
+              </small>
+            )}
+          </div>
+          {shipment && (
+            <span className={`order-status status-${shipment.status.toLowerCase()}`}>
+              {shipmentStatus(locale, shipment.status)}
+            </span>
+          )}
+        </div>
+        {shipmentState === 'loading' && (
+          <p className="shipment-state">{message(locale, 'shipment.loading')}</p>
+        )}
+        {shipmentState === 'error' && (
+          <button className="shipment-state" onClick={() => void load()} type="button">
+            {message(locale, 'shipment.error')} · {message(locale, 'shipment.retry')}
+          </button>
+        )}
+        {shipmentState === 'ready' && !shipment && (
+          <p className="shipment-state">{message(locale, 'shipment.empty')}</p>
+        )}
+        {shipmentState === 'ready' && shipment && (
+          <div className="shipment-events">
+            {shipment.tracking_events.length === 0 ? (
+              <div className="shipment-event current">
+                <span />
+                <p>
+                  <strong>{shipmentStatus(locale, shipment.status)}</strong>
+                  <small>
+                    {new Intl.DateTimeFormat(
+                      locale === 'zh' ? 'zh-CN' : locale === 'en' ? 'en-US' : 'vi-VN',
+                      { dateStyle: 'medium', timeStyle: 'short' },
+                    ).format(new Date(shipment.updated_at))}
+                  </small>
+                </p>
+              </div>
+            ) : (
+              shipment.tracking_events.map((event, index) => {
+                const key = trackingMessageKeys[event.message_key];
+                return (
+                  <div
+                    className={
+                      index === shipment.tracking_events.length - 1
+                        ? 'shipment-event current'
+                        : 'shipment-event'
+                    }
+                    key={`${event.occurred_at}-${event.status}`}
+                  >
+                    <span />
+                    <p>
+                      <strong>
+                        {key ? message(locale, key) : shipmentStatus(locale, event.status)}
+                      </strong>
+                      {event.location_masked && <em>{event.location_masked}</em>}
+                      <small>
+                        {new Intl.DateTimeFormat(
+                          locale === 'zh' ? 'zh-CN' : locale === 'en' ? 'en-US' : 'vi-VN',
+                          { dateStyle: 'medium', timeStyle: 'short' },
+                        ).format(new Date(event.occurred_at))}
+                      </small>
+                    </p>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
       </section>
       {order.status === 'PENDING_CONFIRMATION' && (
         <section className="cancel-order-panel">

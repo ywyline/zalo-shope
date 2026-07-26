@@ -1,8 +1,8 @@
 # M5 支付、退款、物流与可靠消息数据字典
 
-> 状态：M5.1 契约已冻结；M5.2-M5.4 数据、可靠消息与 test-only 在线支付核心已实施
+> 状态：M5.1 契约已冻结；M5.2-M5.6 数据、可靠消息、支付与 GHN 仓库自动化已实施，真实供应商验收未完成
 >
-> 日期：2026-07-25
+> 日期：2026-07-26
 >
 > 供应商：ZaloPay（通过 Zalo Checkout）、GHN；两个商城独立渠道配置
 
@@ -210,6 +210,19 @@ succeeded_at/failed_at/review_required_at/timestamps`。同支付行锁计算可
 
 ## 6. 物流聚合
 
+### 6.0 `warehouse_fulfillment_profiles` 与订单物理快照
+
+`warehouse_fulfillment_profiles` 以 `(store_id,warehouse_id)` 为主键，保存联系人、电话、详细地址
+密文，服务端解析的省/区/坊 code 与名称、启用状态、版本、更新管理员和时间戳。仓库、三级行政区
+均通过同商城复合外键绑定，表强制 RLS；普通仓库读取只返回是否配置、地区、启用状态和版本，
+不回显联系人、电话、详细地址密文或原文。创建/替换资料需要 `store.inventory.manage`、近期 MFA、
+expected version、输入式确认并写脱敏审计。
+
+`order_items` 增加 `weight_grams/length_millimeters/width_millimeters/height_millimeters` 四项可空
+历史快照。M5.6 后的新订单在服务端从 SKU 复制完整正整数物理属性，任一缺失即以
+`SKU_PHYSICAL_PROFILE_INCOMPLETE` 阻断结算；旧订单保持空值且不得用当前可变 SKU 或管理员请求
+伪造回填。建单时重量按行重量乘数量求和，尺寸按当前单包裹保守规则生成不可变 parcel snapshot。
+
 ### 6.1 `shipping_quotes`
 
 保存 `id/store_id/order_id/channel_id/request_hash/service_code/provider_service_id/
@@ -217,7 +230,10 @@ provider_service_type_id/base_fee_vnd/insurance_fee_vnd/cod_fee_vnd/remote_fee_v
 other_fee_vnd/total_fee_vnd/estimated_delivery_at/provider_quote_ref/source/expires_at/created_at`。
 
 - 地址、仓库、重量/尺寸、COD 和服务从服务端事实计算 request hash；请求体不能提交金额。
-- GHN 响应费用逐项使用整数 VND，`total_fee_vnd` 与可解释分解校验；未知负数/小数拒绝。
+- GHN 响应费用逐项使用整数 VND：`service_fee` 为基础费，保险费与 COD 费独立保存，揽收/派送
+  偏远地区费合并为 `remote_fee_vnd`，其余已知附加费合并为 `other_fee_vnd`。`total_fee_vnd`
+  必须等于五项非负安全整数之和；显式 `null`、负数、小数、无法表达的 coupon 折扣或总额不一致
+  均失败关闭，不把总额冒充基础费。
 - 结算采用的 quote/source/过期时间写入 M4 订单快照。过期后下单必须重新报价。
 
 ### 6.2 `shipments` 与 `shipment_items`
@@ -270,6 +286,10 @@ completed_at/version/timestamps`。
   idempotency key 固定绑定支付尝试。首次可用时间为供应商接受后最多 2 分钟，并尽量保留支付
   到期前 30 秒的处理余量；pending 以 5 分钟为上限延迟重试，最多 8 次，成功/失败/复核终态后
   完成消息。
+- M5.6 的 `shipment.create.requested.v1`、`shipment.cancel.requested.v1` 与
+  `shipment.query.requested.v1` payload 只含 `store_id/shipment_id/operation_id/version`。worker
+  在事务内读取商城、渠道、地址/包裹和命令事实，事务外调用 GHN，再以新事务应用经过商城、
+  ShopId、client order code、供应商单号和状态核对的权威事实；未签名 webhook 只能追加查询任务。
 - 死信重放不修改商城、聚合、事件、幂等键或 payload；只在商城任务重试权限、对应领域写权限、
   近期 MFA、二次确认、原因和 expected version 全部满足时重置调度字段。重放前后计数、错误类别
   与版本写入 append-only `audit_logs`，审计不复制消息 payload。
@@ -316,6 +336,12 @@ REJECTED/DEAD_LETTER` 的开始、完成和错误字段组合由数据库约束�
 - M5.3 新增前向迁移 `20260725110000_m53_reliable_message_guards`，不新增表或供应商事实，只把
   outbox payload 商城身份、租约/终态字段组合和 inbox 状态时间/错误组合提升为数据库约束。
   该迁移的 down 只允许没有 outbox/inbox 事实的 local/test scratch；已有事实环境继续向前修复。
+- M5.5 新增 `20260726120000_m55_payment_callback_channel_resolver`，只提供按公开 App/method
+  唯一定位支付回调商城的受限解析函数；已有 callback 事实时拒绝 down。
+- M5.6 新增 `20260726130000_m56_shipping_fulfillment_facts`：创建仓库履约资料、订单行可空物理
+  快照、复合外键、强制 RLS、运行角色最小权限和按 GHN ShopId 唯一定位未签名提示的受限函数。
+  迁移不回填旧订单、不创建仓库资料/渠道/运单；有物理快照、履约资料、GHN secret reference、
+  运单、operation 或轨迹事实时，down 以 SQLSTATE `55000` 拒绝。
 - local/test seed 只登记权限，不创建持久化支付/物流渠道或任何业务事实。集成测试仅在回滚事务
   中创建禁用、非秘密测试渠道，避免把虚构商户配置误认为可用 sandbox。
 - fresh deploy、M2-to-current、重复 deploy、生产运行角色权限、RLS、指纹和索引均需自动化

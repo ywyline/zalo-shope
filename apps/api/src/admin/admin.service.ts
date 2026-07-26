@@ -354,6 +354,30 @@ export class AdminService {
     return crossStoreContext;
   }
 
+  public async authorizeSensitive(
+    headers: AdminHeaders,
+    storeId: string,
+    requiredPermission: string,
+    maxMfaAgeMs = 10 * 60 * 1_000,
+  ): Promise<StoreContext> {
+    const principal = await this.auth.authenticateAccessToken(headers.accessToken);
+    if (principal.actorType !== 'admin') throw new ForbiddenException('Access denied');
+    const session = await this.database.adminSession.findUnique({
+      select: { expiresAt: true, mfaVerifiedAt: true, revokedAt: true },
+      where: { id: principal.sessionId },
+    });
+    const now = Date.now();
+    if (
+      !session ||
+      session.revokedAt !== null ||
+      session.expiresAt.getTime() <= now ||
+      session.mfaVerifiedAt.getTime() < now - maxMfaAgeMs
+    ) {
+      throw new ForbiddenException('Recent MFA verification is required');
+    }
+    return this.authorize(headers, storeId, requiredPermission);
+  }
+
   private async getPlatformPermissions(adminId: string): Promise<string[]> {
     return (
       await this.database.adminPlatformRole.findMany({

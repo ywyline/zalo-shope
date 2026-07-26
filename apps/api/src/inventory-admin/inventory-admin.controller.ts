@@ -10,6 +10,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   Res,
   UnauthorizedException,
@@ -18,6 +19,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import {
+  administrativeAreaQuerySchema,
   createWarehouseSchema,
   inventoryAdjustmentSchema,
   inventoryBalanceListQuerySchema,
@@ -26,6 +28,7 @@ import {
   inventoryOperationKeySchema,
   updateWarehouseSchema,
   uuidSchema,
+  warehouseFulfillmentProfileSchema,
   warehouseListQuerySchema,
 } from '@zalo-shop/contracts';
 import type { z } from 'zod';
@@ -74,6 +77,28 @@ export class InventoryAdminController {
     @Inject(InventoryAdminService) private readonly inventory: InventoryAdminService,
   ) {}
 
+  @Get('administrative-areas')
+  public listAdministrativeAreas(
+    @Query() query: unknown,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+  ) {
+    const value = query as Record<string, unknown>;
+    return this.inventory.listAdministrativeAreas(
+      context(
+        authorization,
+        storeCode,
+        accessReason,
+        typeof value.store_id === 'string' ? value.store_id : undefined,
+      ),
+      parse(administrativeAreaQuerySchema, {
+        level: value.level,
+        ...(value.parent_code === undefined ? {} : { parent_code: value.parent_code }),
+      }),
+    );
+  }
+
   @Get('warehouses')
   public listWarehouses(
     @Query('store_id') storeId: string | undefined,
@@ -119,6 +144,22 @@ export class InventoryAdminController {
       context(authorization, storeCode, accessReason, storeId),
       parse(uuidSchema, warehouseId),
       parse(updateWarehouseSchema, body),
+    );
+  }
+
+  @Put('warehouses/:warehouseId/fulfillment-profile')
+  public updateWarehouseFulfillmentProfile(
+    @Param('warehouseId') warehouseId: string,
+    @Query('store_id') storeId: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @Body() body: unknown,
+  ) {
+    return this.inventory.updateWarehouseFulfillmentProfile(
+      context(authorization, storeCode, accessReason, storeId),
+      parse(uuidSchema, warehouseId),
+      parse(warehouseFulfillmentProfileSchema, body),
     );
   }
 

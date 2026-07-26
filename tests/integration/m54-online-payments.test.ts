@@ -288,12 +288,16 @@ describe('M5.4 online payment core and test adapter', () => {
     await owner.sku.create({
       data: {
         code: skuCode,
+        heightMillimeters: 80,
         id: fixture.skuId,
+        lengthMillimeters: 180,
         optionCombinationHash: 'b'.repeat(64),
         optionCombinationKey: `m54=${suffix}`,
         productId: fixture.productId,
         salePriceVnd: 120_000,
         storeId: BEAUTY_STORE_ID,
+        weightGrams: 250,
+        widthMillimeters: 120,
       },
     });
     await owner.inventoryBalance.create({

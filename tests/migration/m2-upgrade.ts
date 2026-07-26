@@ -49,6 +49,7 @@ const M5_MIGRATIONS = [
   '20260725103000_m52_payment_amount_and_permissions_guard',
   '20260725110000_m53_reliable_message_guards',
   '20260726120000_m55_payment_callback_channel_resolver',
+  '20260726130000_m56_shipping_fulfillment_facts',
 ] as const;
 
 type MigrationRecord = {
@@ -513,6 +514,16 @@ async function run(): Promise<void> {
         SELECT set_config('app.store_id', 'f2000000-0000-4000-8000-000000000001', true)
       `;
       await transaction.$executeRaw`
+        INSERT INTO store_shipping_channels (
+          store_id, provider_environment, provider_code, shop_id, token_secret_ref,
+          secret_fingerprint, key_version, status, origin_allowlist_key, updated_at
+        ) VALUES (
+          'f2000000-0000-4000-8000-000000000001', 'SANDBOX', 'GHN',
+          'm56-down-guard-shop', 'test://m56/down-guard/token',
+          ${'e'.repeat(64)}, 'test-v1', 'DISABLED', 'GHN_SANDBOX', now()
+        )
+      `;
+      await transaction.$executeRaw`
         INSERT INTO store_zalo_apps (
           store_id, environment, mini_app_id, enabled, created_at, updated_at
         ) VALUES (
@@ -549,6 +560,18 @@ async function run(): Promise<void> {
         'db',
         'execute',
         '--file',
+        join(MIGRATIONS_ROOT, '20260726130000_m56_shipping_fulfillment_facts', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M5.6 fulfillment-fact rollback is unsafe after business facts exist',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
         join(MIGRATIONS_ROOT, '20260726120000_m55_payment_callback_channel_resolver', 'down.sql'),
         '--schema',
         fullSchemaPath,
@@ -569,7 +592,7 @@ async function run(): Promise<void> {
       'M5 permission rollback is unsafe after channel or business facts exist',
     );
     console.log(
-      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, M5 down/forward repair and rollback guard`,
+      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, M5 down/forward repair and rollback guards`,
     );
   } catch (error) {
     primaryError = asError(error);

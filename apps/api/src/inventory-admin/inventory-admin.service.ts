@@ -6,24 +6,32 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type {
+  AdministrativeAreaQuery,
   CreateWarehouseInput,
   InventoryAdjustmentInput,
   InventoryBalanceListQuery,
   InventoryImportQuery,
   InventoryMovementListQuery,
   UpdateWarehouseInput,
+  WarehouseFulfillmentProfileInput,
   WarehouseListQuery,
 } from '@zalo-shop/contracts';
+import type { RuntimeConfig } from '@zalo-shop/config';
 import {
   adjustInventory,
   inventoryRequestHash,
   InventoryPrimitiveError,
   type PrismaClient,
+  type StoreTransaction,
   withStoreTransaction,
 } from '@zalo-shop/database';
+import { normalizeAddressFields } from '@zalo-shop/domain';
+import { normalizeSupportedPhone } from '@zalo-shop/i18n';
+import { encryptSensitive } from '@zalo-shop/security';
 
 import { AdminService, type AdminHeaders } from '../admin/admin.service';
 import { DATABASE_CLIENT } from '../auth/auth.tokens';
+import { RUNTIME_CONFIG } from '../health.controller';
 import { ProductImportFileError } from '../catalog-admin/product-import';
 import {
   INVENTORY_IMPORT_MAX_BYTES,
@@ -77,6 +85,17 @@ function warehouseView(warehouse: {
   enabled: boolean;
   id: string;
   isDefaultFulfillment: boolean;
+  fulfillmentProfile?: null | {
+    districtCode: string;
+    districtName: string;
+    enabled: boolean;
+    provinceCode: string;
+    provinceName: string;
+    updatedAt: Date;
+    version: number;
+    wardCode: string;
+    wardName: string;
+  };
   localizations: Array<{ locale: string; name: string }>;
   updatedAt: Date;
   version: number;
@@ -87,12 +106,40 @@ function warehouseView(warehouse: {
     enabled: warehouse.enabled,
     id: warehouse.id,
     is_default_fulfillment: warehouse.isDefaultFulfillment,
+    fulfillment_profile: warehouse.fulfillmentProfile
+      ? fulfillmentProfileView(warehouse.fulfillmentProfile)
+      : { configured: false },
     localizations: warehouse.localizations.map((item) => ({
       locale: item.locale,
       name: item.name,
     })),
     updated_at: warehouse.updatedAt.toISOString(),
     version: warehouse.version,
+  };
+}
+
+function fulfillmentProfileView(profile: {
+  districtCode: string;
+  districtName: string;
+  enabled: boolean;
+  provinceCode: string;
+  provinceName: string;
+  updatedAt: Date;
+  version: number;
+  wardCode: string;
+  wardName: string;
+}) {
+  return {
+    configured: true,
+    district_code: profile.districtCode,
+    district_name: profile.districtName,
+    enabled: profile.enabled,
+    province_code: profile.provinceCode,
+    province_name: profile.provinceName,
+    updated_at: profile.updatedAt.toISOString(),
+    version: profile.version,
+    ward_code: profile.wardCode,
+    ward_name: profile.wardName,
   };
 }
 
@@ -163,7 +210,37 @@ export class InventoryAdminService {
   public constructor(
     @Inject(DATABASE_CLIENT) private readonly database: PrismaClient,
     @Inject(AdminService) private readonly admin: AdminService,
+    @Inject(RUNTIME_CONFIG) private readonly config: RuntimeConfig,
   ) {}
+
+  public async listAdministrativeAreas(request: InventoryContext, query: AdministrativeAreaQuery) {
+    const context = await this.admin.authorize(
+      request.headers,
+      request.storeId,
+      'store.inventory.read',
+    );
+    return withStoreTransaction(this.database, context, async (transaction) => {
+      const rows = await transaction.administrativeArea.findMany({
+        orderBy: [{ name: 'asc' }, { code: 'asc' }],
+        select: { code: true, level: true, name: true, parentCode: true, sourceVersion: true },
+        where: {
+          enabled: true,
+          level: query.level,
+          parentCode: query.parent_code ?? null,
+          storeId: request.storeId,
+        },
+      });
+      return {
+        items: rows.map((row) => ({
+          code: row.code,
+          level: row.level,
+          name: row.name,
+          parent_code: row.parentCode,
+          source_version: row.sourceVersion,
+        })),
+      };
+    });
+  }
 
   public async listWarehouses(request: InventoryContext, query: WarehouseListQuery) {
     const context = await this.admin.authorize(
@@ -174,7 +251,10 @@ export class InventoryAdminService {
     return withStoreTransaction(this.database, context, async (transaction) => {
       const rows = await transaction.warehouse.findMany({
         ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
-        include: { localizations: { orderBy: { locale: 'asc' } } },
+        include: {
+          fulfillmentProfile: true,
+          localizations: { orderBy: { locale: 'asc' } },
+        },
         orderBy: [{ code: 'asc' }, { id: 'asc' }],
         take: query.limit + 1,
         where: { storeId: request.storeId },
@@ -369,6 +449,111 @@ export class InventoryAdminService {
       if (isUniqueConflict(error)) throw new ConflictException('Default warehouse conflict');
       throw error;
     });
+  }
+
+  public async updateWarehouseFulfillmentProfile(
+    request: InventoryContext,
+    warehouseId: string,
+    input: WarehouseFulfillmentProfileInput,
+  ) {
+    const context = await this.admin.authorizeSensitive(
+      request.headers,
+      request.storeId,
+      'store.inventory.manage',
+    );
+    const address = normalizeAddressFields({
+      detail: input.detail,
+      districtCode: input.district_code,
+      provinceCode: input.province_code,
+      wardCode: input.ward_code,
+    });
+    let phone: string;
+    try {
+      phone = normalizeSupportedPhone(input.phone);
+    } catch {
+      throw new BadRequestException('PHONE_INVALID');
+    }
+    return withStoreTransaction(this.database, context, async (transaction) => {
+      const warehouse = await transaction.warehouse.findUnique({
+        where: { storeId_id: { id: warehouseId, storeId: request.storeId } },
+      });
+      if (!warehouse) throw new NotFoundException('Warehouse not found');
+      const current = await transaction.warehouseFulfillmentProfile.findUnique({
+        where: { storeId_warehouseId: { storeId: request.storeId, warehouseId } },
+      });
+      if ((current?.version ?? 0) !== input.expected_profile_version) {
+        throw new ConflictException('FULFILLMENT_PROFILE_VERSION_CONFLICT');
+      }
+      const region = await this.resolveAdministrativeAddress(transaction, request.storeId, address);
+      const data = {
+        contactNameCiphertext: encryptSensitive(input.contact_name, this.config.PII_ENCRYPTION_KEY),
+        detailCiphertext: encryptSensitive(address.detail, this.config.PII_ENCRYPTION_KEY),
+        districtCode: address.districtCode,
+        districtName: region.district.name,
+        enabled: input.enabled,
+        phoneCiphertext: encryptSensitive(phone, this.config.PII_ENCRYPTION_KEY),
+        provinceCode: address.provinceCode,
+        provinceName: region.province.name,
+        updatedByAdminId: context.actor.id,
+        wardCode: address.wardCode,
+        wardName: region.ward.name,
+      };
+      if (current) {
+        const updated = await transaction.warehouseFulfillmentProfile.updateMany({
+          data: { ...data, version: { increment: 1 } },
+          where: { storeId: request.storeId, version: current.version, warehouseId },
+        });
+        if (updated.count !== 1) {
+          throw new ConflictException('FULFILLMENT_PROFILE_VERSION_CONFLICT');
+        }
+      } else {
+        await transaction.warehouseFulfillmentProfile.create({
+          data: { ...data, storeId: request.storeId, warehouseId },
+        });
+      }
+      const after = await transaction.warehouseFulfillmentProfile.findUniqueOrThrow({
+        where: { storeId_warehouseId: { storeId: request.storeId, warehouseId } },
+      });
+      await this.admin.writeAudit(transaction, context, {
+        action: current
+          ? 'inventory.warehouse.fulfillment_profile.updated'
+          : 'inventory.warehouse.fulfillment_profile.created',
+        after: fulfillmentProfileView(after),
+        ...(current ? { before: fulfillmentProfileView(current) } : {}),
+        targetId: warehouseId,
+        targetType: 'warehouse_fulfillment_profile',
+      });
+      return fulfillmentProfileView(after);
+    });
+  }
+
+  private async resolveAdministrativeAddress(
+    transaction: StoreTransaction,
+    storeId: string,
+    input: { districtCode: string; provinceCode: string; wardCode: string },
+  ) {
+    const areas = await transaction.administrativeArea.findMany({
+      where: {
+        code: { in: [input.provinceCode, input.districtCode, input.wardCode] },
+        enabled: true,
+        storeId,
+      },
+    });
+    const byCode = new Map(areas.map((area) => [area.code, area]));
+    const province = byCode.get(input.provinceCode);
+    const district = byCode.get(input.districtCode);
+    const ward = byCode.get(input.wardCode);
+    if (
+      province?.level !== 'PROVINCE' ||
+      province.parentCode !== null ||
+      district?.level !== 'DISTRICT' ||
+      district.parentCode !== province.code ||
+      ward?.level !== 'WARD' ||
+      ward.parentCode !== district.code
+    ) {
+      throw new BadRequestException('FULFILLMENT_REGION_INVALID');
+    }
+    return { district, province, ward };
   }
 
   public async listBalances(request: InventoryContext, query: InventoryBalanceListQuery) {

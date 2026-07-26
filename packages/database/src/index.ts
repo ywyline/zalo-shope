@@ -72,5 +72,7 @@ export * from './inventory-primitives';
 export * from './order-primitives';
 export * from './payment-primitives';
 export * from './payment-callback-primitives';
+export * from './shipping-primitives';
+export * from './shipping-callback-primitives';
 export * from './search-projection';
 export * from './reliable-messaging';

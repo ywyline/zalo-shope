@@ -277,6 +277,7 @@ export class CheckoutService {
       },
       storeId: member.storeId,
     });
+    await this.assertSkuPhysicalProfiles(transaction, member.storeId, request.items);
     const blocking = merchandise.lines.some((line) => line.issues.length > 0);
     if (blocking)
       throw new ConflictException(
@@ -639,6 +640,7 @@ export class CheckoutService {
       const product = sku.products;
       const productName = this.localized(product.product_localizations, request.locale, 'name');
       const brandName = this.localized(product.brands.brand_localizations, request.locale, 'name');
+      const physical = this.requireSkuPhysicalProfile(sku);
       await transaction.orderItem.create({
         data: {
           brandId: product.brandId,
@@ -646,6 +648,8 @@ export class CheckoutService {
           categoryId: product.mainCategoryId,
           couponDiscountVnd: BigInt(this.lineDiscount(line, 'COUPON')),
           itemDiscountVnd: BigInt(this.lineDiscount(line, 'ITEM')),
+          heightMillimeters: physical.heightMillimeters,
+          lengthMillimeters: physical.lengthMillimeters,
           orderDiscountVnd: BigInt(this.lineDiscount(line, 'ORDER')),
           optionSnapshot: sku.sku_option_values,
           orderId: order.id,
@@ -658,6 +662,8 @@ export class CheckoutService {
           storeId: member.storeId,
           subtotalVnd: BigInt(line.base_subtotal_vnd),
           unitPriceVnd: BigInt(line.base_unit_price_vnd),
+          weightGrams: physical.weightGrams,
+          widthMillimeters: physical.widthMillimeters,
         },
       });
     }
@@ -705,6 +711,56 @@ export class CheckoutService {
       },
     });
     return order;
+  }
+
+  private async assertSkuPhysicalProfiles(
+    transaction: StoreTransaction,
+    storeId: string,
+    items: CheckoutQuoteRequest['items'],
+  ): Promise<void> {
+    const skus = await transaction.sku.findMany({
+      select: {
+        code: true,
+        heightMillimeters: true,
+        lengthMillimeters: true,
+        weightGrams: true,
+        widthMillimeters: true,
+      },
+      where: { code: { in: items.map((item) => item.sku_code) }, storeId },
+    });
+    if (skus.length !== items.length) throw new ConflictException('SKU_NOT_FOUND');
+    for (const sku of skus) this.requireSkuPhysicalProfile(sku);
+  }
+
+  private requireSkuPhysicalProfile(input: {
+    heightMillimeters: number | null;
+    lengthMillimeters: number | null;
+    weightGrams: number | null;
+    widthMillimeters: number | null;
+  }): {
+    heightMillimeters: number;
+    lengthMillimeters: number;
+    weightGrams: number;
+    widthMillimeters: number;
+  } {
+    if (
+      input.heightMillimeters === null ||
+      input.lengthMillimeters === null ||
+      input.weightGrams === null ||
+      input.widthMillimeters === null ||
+      input.heightMillimeters <= 0 ||
+      input.lengthMillimeters <= 0 ||
+      input.weightGrams <= 0 ||
+      input.widthMillimeters <= 0
+    ) {
+      throw new ConflictException('SKU_PHYSICAL_PROFILE_INCOMPLETE');
+    }
+    return {
+      heightMillimeters: input.heightMillimeters,
+      lengthMillimeters: input.lengthMillimeters,
+      weightGrams: input.weightGrams,
+      widthMillimeters: input.widthMillimeters,
+    };
   }
 
   private discountByBucket(quote: {

@@ -1,7 +1,7 @@
 import { ProviderIntegrationError } from './provider-contract';
 import type { SecretReferenceResolver } from './zalo-checkout-payment-provider';
 
-const ZALO_CHECKOUT_ENV_REFERENCE = /^env:(ZALO_CHECKOUT_[A-Z0-9_]{1,96})$/u;
+const INTEGRATION_ENV_REFERENCE = /^env:((?:ZALO_CHECKOUT|GHN)_[A-Z0-9_]{1,96})$/u;
 
 export class EnvironmentSecretReferenceResolver implements SecretReferenceResolver {
   public constructor(
@@ -10,7 +10,7 @@ export class EnvironmentSecretReferenceResolver implements SecretReferenceResolv
 
   public async resolve(reference: string): Promise<string> {
     await Promise.resolve();
-    const match = ZALO_CHECKOUT_ENV_REFERENCE.exec(reference);
+    const match = INTEGRATION_ENV_REFERENCE.exec(reference);
     if (!match) {
       throw new ProviderIntegrationError('CONFIGURATION', false, 'Secret reference is not allowed');
     }

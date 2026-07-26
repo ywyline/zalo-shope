@@ -150,8 +150,9 @@ docs/
   只重置调度字段并追加不含 payload 的审计。Inbox 由供应商、渠道、环境和外部事件键的数据库
   唯一约束承担并发去重，摘要不一致稳定拒绝。
 - worker handler 以 `event_type + event_version` 注册，并至少兼容当前和上一事件版本。M5.3 仅在
-  `NODE_ENV=test` 注册无外部调用的探针处理器。M5.4 新增 `payment.create.requested.v1` handler，
-  只连接确定性 test-only 支付适配器；适配器在非 test 环境构造硬失败，尚无真实支付/物流 handler。
+  `NODE_ENV=test` 注册无外部调用的探针处理器。M5.4 新增 `payment.create.requested.v1` handler；
+  M5.5 增加真实 Zalo Checkout 查询补偿；M5.6 增加 GHN 建单、取消和权威查单 handler。供应商
+  handler 均在数据库事务外发起网络请求，渠道默认禁用且缺少真实配置时明确失败。
 
 ### M5.4 已实施支付事务边界
 
@@ -183,6 +184,24 @@ docs/
   outbox，成功/失败/未知/迟到结果只经 `applyPaymentProviderFact` 推进；有限尝试耗尽后死信。
 - 真实商户凭据、HTTPS callback/trusted proxy、Zalo sandbox 查单/丢回调演练和 Zalo Testing
   真机仍未验收。生产保持默认禁用，不据此标记 M5.5 或 M5 完成。
+
+### M5.6 已实施 GHN 物流事务边界
+
+- Checkout 在创建 COD/ONLINE 订单前要求 SKU 重量和长宽高完整，并把四项正整数复制到不可变
+  订单行快照；既有订单不从当前 SKU 回填，缺失可信物理事实时拒绝建单。
+- 仓库履约资料以商城/仓库复合主键保存，联系人、电话和详细地址加密；管理端只读取配置完整性、
+  地区、启用状态和版本。更新要求库存管理权限、近期 MFA、expected version、输入式确认和审计。
+- 报价与建单只从服务端加载订单地址、订单行、默认仓库、渠道、服务和 COD 金额。建单短事务创建
+  `CREATION_PENDING`、全量 shipment items、operation 和 outbox；GHN 成功只推进
+  `PENDING_PICKUP`，不等于订单已经发货。
+- `shipment.create/cancel/query.requested.v1` handler 在事务外调用按商城解析的 GHN provider；
+  响应必须匹配 ShopId、稳定 `client_order_code` 和供应商单号。主动查单才可通过内部状态映射推进
+  一次 `SHIP/DELIVER`；拒收、退回、异常、未知或倒退状态保守进入人工处理。
+- provider 报价按基础、保险、COD、偏远与其他已知附加费保存并校验总额恒等式；成功的物流
+  operation 为单调终态，outbox 重放在再次调用供应商前短路，迟到错误不能覆盖既有成功事实。
+- GHN webhook 永远保存为 `UNVERIFIED_HINT` 并仅调度主动查单。面单通过 60 秒内部 JWT 代理，
+  上游只允许固定 GHN HTTPS origin/path、禁止 redirect、限制 PDF 类型和 8 MiB，不向浏览器返回
+  Token URL。真实 GHN sandbox、两个商城 ShopId/Token、测试仓库和 Zalo 宿主仍未验收。
 
 ### M4 已实施事务边界
 
@@ -225,7 +244,7 @@ docs/
 
 ### 物流
 
-定义 `ShippingProvider` 端口：报价、创建/取消运单、面单、轨迹、COD 金额与对账。M5 已批准首家供应商为 GHN，两个商城使用独立 ShopId/Token secret reference。2026-07-24 核验的 GHN webhook 官方文档未声明签名，因此回调只作为同步提示；内部状态必须由对应商城凭据的主动 Order Info 查询确认。其他供应商不在 M5 范围，不创建声称可用的适配器。
+定义 `ShippingProvider` 端口：报价、创建/取消运单、面单、轨迹、COD 金额与对账。M5 已批准首家供应商为 GHN，两个商城使用独立 ShopId/Token secret reference。M5.6 已实现固定 sandbox/production origin、严格 DTO、超时/大小/redirect 门禁、商城渠道解析和可靠命令；生产不允许自由 URL 或 test fallback。2026-07-24 核验的 GHN webhook 官方文档未声明签名，因此回调只作为同步提示；内部状态必须由对应商城凭据的主动 Order Info 查询确认。其他供应商不在 M5 范围，不创建声称可用的适配器。
 
 ## 9. 部署与恢复
 

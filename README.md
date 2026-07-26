@@ -2,9 +2,9 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5 已加入按商城解析的 Zalo Checkout 适配器、官方 MAC/查单契约、provider-order 绑定和原始 body webhook 接缝。真实商户凭据、HTTPS 回调、Zalo sandbox 和真机证据仍未验收，不能标记整个 M5 完成。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5 已加入按商城解析的 Zalo Checkout 适配器、官方 MAC/查单契约、provider-order 绑定和原始 body webhook 接缝；M5.6 已加入 GHN 适配器、可信仓库/订单物理事实、可靠运单命令、面单代理及三语轨迹工作台。真实商户/物流凭据、HTTPS 回调、Zalo/GHN sandbox 和真机证据仍未验收，不能标记整个 M5 完成。
 
-Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。M4 浏览器验收使用真实本地 API、PostgreSQL 和 Zalo 测试桥，不能替代 Zalo 宿主真机。真实 staging S3/CDN、越南权威行政区主数据、近生产规模性能、两个商城的 Zalo Checkout/ZaloPay 与 GHN sandbox 配置/密钥/回调条件、生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。阶段证据见 `docs/reports/m4-completion-report.md`、`docs/reports/m5.1-completion-report.md`、`docs/reports/m5.2-completion-report.md` 与 `docs/reports/m5.3-completion-report.md`。
+Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。M4 浏览器验收使用真实本地 API、PostgreSQL 和 Zalo 测试桥，不能替代 Zalo 宿主真机。真实 staging S3/CDN、越南权威行政区主数据、近生产规模性能、两个商城的 Zalo Checkout/ZaloPay 与 GHN sandbox 配置/密钥/回调条件、生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。阶段证据见 `docs/reports/m4-completion-report.md`、`docs/reports/m5.1-completion-report.md`、`docs/reports/m5.2-completion-report.md`、`docs/reports/m5.3-completion-report.md`、`docs/reports/m5.5-progress-report.md` 与 `docs/reports/m5.6-progress-report.md`。
 
 ## 应用与包
 
@@ -184,6 +184,19 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
 - `PAYMENT_RECONCILIATION_ENABLED=true` 会为已绑定尝试创建商城隔离的有限重试查单任务；成功、回调竞态、持续 pending、上游超时、迟到成功和死信均复用可靠 outbox 与统一支付事实命令，不由 worker 直接写订单或库存。
 - 本阶段没有真实密钥、回调域名、sandbox 或 Zalo Testing 真机证据；这些项目在 `docs/plans/m5.5-implementation-plan.md` 和后续报告中必须标记 `BLOCKED/NOT_RUN`。
 
+## M5.6 GHN 物流适配器与履约事实
+
+- `SHIPPING_PROVIDER=ghn` 只选择按商城 `store_shipping_channels` 解析的 GHN 适配器；development
+  和 production 默认 `disabled`，非测试环境没有固定成功或 test fallback。
+- 新订单必须从服务端 SKU 保存重量及长宽高快照；缺项时结算明确失败。建单继续重载订单地址、
+  全量订单行、默认仓库履约资料、服务、COD 与渠道，客户端不能提交金额、地址、重量或供应商状态。
+- 仓库履约资料中的联系人、电话和详细地址加密，管理端不回显原文；更新要求近期 MFA、版本、
+  输入式确认和审计。管理端可报价、创建/取消运单、同步轨迹并获取 60 秒内部面单代理。
+- GHN 未签名 webhook 只创建主动查单提示；只有核对商城/ShopId/运单后的权威 Order Info 可以推进
+  运单和订单。买家与管理端均使用内部状态和三语 message key，不直接展示供应商状态文案。
+- 本阶段没有真实 GHN ShopId/Token、测试仓库/订单、面单/webhook/COD 或 Zalo 宿主证据；这些
+  项目保持 `BLOCKED/NOT_RUN`，仓库自动化不能替代供应商 sandbox 验收。
+
 ## 环境与密钥
 
 - `.env.example` 和 `.env.test.example` 只包含本地开发占位凭据。
@@ -194,6 +207,11 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
 - 日志默认遮盖认证、Cookie 和 Zalo Token 请求头。
 - `ZALO_IDENTITY_PROVIDER=test` 只允许 `NODE_ENV=test`；生产环境会拒绝启动该 provider。
 - `PAYMENT_PROVIDER=test` 同样只允许 `NODE_ENV=test` 且需要专用测试密钥；development/production 默认并应保持 `disabled`。真实适配器从商城 `private_key_secret_ref` 解析部署密钥，`env:ZALO_CHECKOUT_*` 只是受限的本地/部署 resolver 示例，不是把密钥写入仓库。
+- `SHIPPING_PROVIDER=ghn` 需要数据库中的商城独立 ShopId、固定环境、origin allowlist key 和
+  `env:GHN_*` secret reference；Token 不写数据库值、日志、审计或前端。默认 `disabled`。
+- `GHN_REQUEST_TIMEOUT_MS`、`GHN_RESPONSE_LIMIT_BYTES` 和
+  `GHN_CALLBACK_RATE_LIMIT_PER_MINUTE` 控制 GHN 网络与未签名提示门禁；非生产固定 sandbox，
+  production 固定 production，不接受自由 origin。
 - `ZALO_CHECKOUT_REQUEST_TIMEOUT_MS`、`ZALO_CHECKOUT_RESPONSE_LIMIT_BYTES`、`ZALO_CHECKOUT_CALLBACK_IP_ALLOWLIST` 和 `ZALO_CHECKOUT_CALLBACK_RATE_LIMIT_PER_MINUTE` 控制查单/回调安全门禁；生产 IP 列表需按官方回调 IP 与受信代理实际配置复核。
 - 真实 Zalo 登录使用 `ZALO_IDENTITY_PROVIDER=open-api`，并要求服务端配置 `ZALO_APP_ID`、`ZALO_MINI_APP_ID` 和 `ZALO_APP_SECRET`。App Secret 只能写入被 Git 忽略的本地环境或部署密钥，禁止写入 `VITE_*`、前端代码、终端输出和版本库。
 - `ZALO_OPEN_API_TIMEOUT_MS` 控制 Graph API 短超时；`ZALO_TOKEN_METADATA_TTL_SECONDS` 只是官方响应未给出过期时间时的保守元数据，不替代每次敏感操作的上游实时校验。

@@ -89,6 +89,20 @@ export type OrderDetail = OrderSummary & {
   }>;
 };
 
+export type Shipment = {
+  created_at: string;
+  delivered_at: string | null;
+  public_number: string;
+  status: string;
+  tracking_events: Array<{
+    location_masked: string | null;
+    message_key: string;
+    occurred_at: string;
+    status: string;
+  }>;
+  updated_at: string;
+};
+
 type Options = {
   accessToken: string;
   body?: unknown;
@@ -212,6 +226,13 @@ export function getOrder(accessToken: string, orderId: string, signal?: AbortSig
     accessToken,
     signal,
   });
+}
+
+export function getOrderShipment(accessToken: string, orderId: string, signal?: AbortSignal) {
+  return request<{ shipment: Shipment | null }>(
+    `/v1/orders/${encodeURIComponent(orderId)}/shipment`,
+    { accessToken, signal },
+  );
 }
 
 export function cancelOrder(accessToken: string, orderId: string, reason: string) {

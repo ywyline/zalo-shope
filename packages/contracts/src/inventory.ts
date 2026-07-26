@@ -64,6 +64,20 @@ export const warehouseListQuerySchema = z
   })
   .strict();
 
+export const warehouseFulfillmentProfileSchema = z
+  .object({
+    confirmation_code: z.literal('FULFILLMENT'),
+    contact_name: z.string().trim().min(1).max(160),
+    detail: z.string().trim().min(3).max(500),
+    district_code: z.string().trim().min(1).max(32),
+    enabled: z.boolean().default(true),
+    expected_profile_version: z.number().int().min(0),
+    phone: z.string().trim().min(9).max(24),
+    province_code: z.string().trim().min(1).max(32),
+    ward_code: z.string().trim().min(1).max(32),
+  })
+  .strict();
+
 export const updateWarehouseSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -144,4 +158,5 @@ export type InventoryBalanceListQuery = z.infer<typeof inventoryBalanceListQuery
 export type InventoryImportQuery = z.infer<typeof inventoryImportQuerySchema>;
 export type InventoryMovementListQuery = z.infer<typeof inventoryMovementListQuerySchema>;
 export type UpdateWarehouseInput = z.infer<typeof updateWarehouseSchema>;
+export type WarehouseFulfillmentProfileInput = z.infer<typeof warehouseFulfillmentProfileSchema>;
 export type WarehouseListQuery = z.infer<typeof warehouseListQuerySchema>;

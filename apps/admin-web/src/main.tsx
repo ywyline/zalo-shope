@@ -560,6 +560,7 @@ function AdminApp(): JSX.Element {
         )}
         {tab === 'orders' && store && (
           <OrderWorkbench
+            apiUrl={(path) => `${API_BASE}${path}`}
             headers={() => authenticatedHeaders(store)}
             key={store.id}
             locale={locale}
