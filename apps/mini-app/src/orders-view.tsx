@@ -49,6 +49,20 @@ const shipmentStatusKeys: Record<string, MessageKey> = {
   REVIEW_REQUIRED: 'shipment.status.reviewRequired',
 };
 
+const refundStatusKeys: Record<string, MessageKey> = {
+  CANCELLED: 'refund.status.cancelled',
+  FAILED: 'refund.status.failed',
+  PROCESSING: 'refund.status.processing',
+  REQUESTED: 'refund.status.requested',
+  REVIEW_REQUIRED: 'refund.status.reviewRequired',
+  SUCCEEDED: 'refund.status.succeeded',
+};
+
+function refundStatus(locale: Locale, value: string): string {
+  const key = refundStatusKeys[value];
+  return key ? message(locale, key) : message(locale, 'refund.status.reviewRequired');
+}
+
 const trackingMessageKeys: Record<string, MessageKey> = {
   'shipment.tracking.cancelled': 'shipment.tracking.cancelled',
   'shipment.tracking.creation_pending': 'shipment.tracking.creation_pending',
@@ -225,6 +239,36 @@ export function OrderDetailView({ locale }: { locale: Locale }): JSX.Element {
             </p>
           </div>
         ))}
+      </section>
+      <section className="refund-status-panel" aria-live="polite">
+        <h2>{message(locale, 'refund.title')}</h2>
+        {order.refunds.length === 0 ? (
+          <p className="refund-empty">{message(locale, 'refund.empty')}</p>
+        ) : (
+          <div className="refund-list">
+            {order.refunds.map((refund) => (
+              <article className="refund-row" key={refund.public_number}>
+                <div>
+                  <small>{message(locale, 'refund.number')}</small>
+                  <strong>{refund.public_number}</strong>
+                </div>
+                <div>
+                  <small>{message(locale, 'refund.amount')}</small>
+                  <strong>{formatVnd(refund.amount_vnd, locale)}</strong>
+                </div>
+                <span className={`order-status status-${refund.status.toLowerCase()}`}>
+                  {refundStatus(locale, refund.status)}
+                </span>
+                <time dateTime={refund.updated_at}>
+                  {new Intl.DateTimeFormat(
+                    locale === 'zh' ? 'zh-CN' : locale === 'en' ? 'en-US' : 'vi-VN',
+                    { dateStyle: 'medium', timeStyle: 'short' },
+                  ).format(new Date(refund.updated_at))}
+                </time>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
       <section className="shipment-tracking" aria-live="polite">
         <div className="shipment-heading">

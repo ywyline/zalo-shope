@@ -376,8 +376,34 @@ test('authenticated buyer creates an address, places one idempotent COD order an
   expect(orderResponses.every(({ status }) => status === 201)).toBe(true);
   const orderId = orderResponses[0]!.id;
 
+  await page.route(`**/v1/orders/${orderId}`, async (route) => {
+    const response = await route.fetch();
+    const detail = (await response.json()) as Record<string, unknown>;
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        ...detail,
+        refunds: [
+          {
+            amount_vnd: 25_000,
+            public_number: 'RFD-BROWSER-0001',
+            requested_at: '2026-07-26T09:00:00.000Z',
+            status: 'SUCCEEDED',
+            updated_at: '2026-07-26T10:00:00.000Z',
+          },
+        ],
+      },
+      status: response.status(),
+    });
+  });
+
   await page.getByRole('link', { name: 'Xem đơn hàng' }).click();
   await expect(page.locator('.page-intro .order-status')).toHaveText('Chờ xác nhận');
+  const refundPanel = page.locator('.refund-status-panel');
+  await expect(refundPanel.getByRole('heading', { name: 'Hoàn tiền' })).toBeVisible();
+  await expect(refundPanel).toContainText('RFD-BROWSER-0001');
+  await expect(refundPanel).toContainText('Đã hoàn tiền');
+  await expect(refundPanel).not.toContainText('provider');
   await expect(page.locator('.shipment-tracking')).toContainText('Đơn hàng chưa có vận đơn.');
   await page.route(`**/v1/orders/${orderId}/shipment`, async (route) => {
     await route.fulfill({
@@ -414,9 +440,13 @@ test('authenticated buyer creates an address, places one idempotent COD order an
   await expect(tracking).toContainText('Đã hủy vận đơn');
   await expect(tracking).toContainText('Vận đơn đã được hủy.');
   await page.getByRole('button', { name: 'ZH', exact: true }).click();
+  await expect(refundPanel.getByRole('heading', { name: '退款进度' })).toBeVisible();
+  await expect(refundPanel).toContainText('退款成功');
   await expect(tracking.getByRole('heading', { name: '物流跟踪' })).toBeVisible();
   await expect(tracking).toContainText('运单已取消。');
   await page.getByRole('button', { name: 'EN', exact: true }).click();
+  await expect(refundPanel.getByRole('heading', { name: 'Refunds' })).toBeVisible();
+  await expect(refundPanel).toContainText('Refunded');
   await expect(tracking.getByRole('heading', { name: 'Shipment tracking' })).toBeVisible();
   await expect(tracking).toContainText('The shipment was cancelled.');
   await page.getByRole('button', { name: 'VI', exact: true }).click();

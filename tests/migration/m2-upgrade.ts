@@ -50,6 +50,7 @@ const M5_MIGRATIONS = [
   '20260725110000_m53_reliable_message_guards',
   '20260726120000_m55_payment_callback_channel_resolver',
   '20260726130000_m56_shipping_fulfillment_facts',
+  '20260727001000_m57_refund_review_capacity_guard',
 ] as const;
 
 type MigrationRecord = {
@@ -554,7 +555,87 @@ async function run(): Promise<void> {
           ${'b'.repeat(64)}, 'VERIFIED', 'AUTHENTICATED_FACT', ${'c'.repeat(64)}
         )
       `;
+
+      const refundGuardAdmin = await transaction.adminUser.create({
+        data: {
+          displayName: 'M5.7 rollback guard admin',
+          email: 'm57-rollback-guard@example.test',
+          emailNormalized: 'm57-rollback-guard@example.test',
+          id: 'f2030000-0000-4000-8000-000000000001',
+          passwordHash: 'test-fixture-not-used',
+        },
+      });
+      const refundGuardOrder = await transaction.order.create({
+        data: {
+          baseSubtotalVnd: 100_000,
+          couponDiscountVnd: 0,
+          currency: 'VND',
+          itemDiscountVnd: 0,
+          memberId: 'f2020000-0000-4000-8000-000000000001',
+          orderDiscountVnd: 0,
+          orderNumber: 'M57-ROLLBACK-GUARD',
+          payableVnd: 100_000,
+          paymentMethod: 'ONLINE',
+          paymentStatus: 'SUCCEEDED',
+          quoteHash: createHash('sha256').update('m57-rollback-guard-quote').digest('hex'),
+          remoteSurchargeVnd: 0,
+          shippingDiscountVnd: 0,
+          shippingFeeVnd: 0,
+          status: 'PENDING_FULFILLMENT',
+          storeId: 'f2000000-0000-4000-8000-000000000001',
+        },
+      });
+      const refundGuardChannel = await transaction.storePaymentChannel.findFirstOrThrow({
+        where: { checkoutAppId: 'm52-down-guard-app' },
+      });
+      const refundGuardPayment = await transaction.paymentAttempt.create({
+        data: {
+          amountVnd: 100_000,
+          attemptSequence: 1,
+          channelId: refundGuardChannel.id,
+          correlationId: 'm57-rollback-guard-payment',
+          createIdempotencyKeyHash: createHash('sha256')
+            .update('m57-rollback-guard-payment-key')
+            .digest('hex'),
+          expiresAt: new Date('2026-07-27T01:00:00.000Z'),
+          orderId: refundGuardOrder.id,
+          providerOrderId: 'm57-rollback-guard-order',
+          providerTransactionId: 'm57-rollback-guard-transaction',
+          publicPaymentNumber: 'PAY-M57-ROLLBACK-GUARD',
+          status: 'SUCCEEDED',
+          storeId: 'f2000000-0000-4000-8000-000000000001',
+          succeededAt: new Date('2026-07-27T00:00:00.000Z'),
+        },
+      });
+      await transaction.refund.create({
+        data: {
+          amountVnd: 80_000,
+          idempotencyKeyHash: createHash('sha256')
+            .update('m57-rollback-guard-refund-key')
+            .digest('hex'),
+          orderId: refundGuardOrder.id,
+          paymentAttemptId: refundGuardPayment.id,
+          publicRefundNumber: 'RFD-M57-ROLLBACK-GUARD',
+          reason: 'Ambiguous refund must block unsafe guard rollback',
+          reviewRequiredAt: new Date('2026-07-27T00:05:00.000Z'),
+          requestedBy: refundGuardAdmin.id,
+          status: 'REVIEW_REQUIRED',
+          storeId: 'f2000000-0000-4000-8000-000000000001',
+        },
+      });
     });
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260727001000_m57_refund_review_capacity_guard', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M5.7 refund review-capacity rollback is unsafe after review facts exist',
+    );
     runPrismaExpectFailure(
       [
         'db',

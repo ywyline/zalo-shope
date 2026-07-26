@@ -2,9 +2,9 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5 已加入按商城解析的 Zalo Checkout 适配器、官方 MAC/查单契约、provider-order 绑定和原始 body webhook 接缝；M5.6 已加入 GHN 适配器、可信仓库/订单物理事实、可靠运单命令、面单代理及三语轨迹工作台。真实商户/物流凭据、HTTPS 回调、Zalo/GHN sandbox 和真机证据仍未验收，不能标记整个 M5 完成。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5 已加入按商城解析的 Zalo Checkout 适配器、官方 MAC/查单契约、provider-order 绑定和原始 body webhook 接缝；M5.6 已加入 GHN 适配器、可信仓库/订单物理事实、可靠运单命令、面单代理及三语轨迹工作台；M5.7 已加入退款创建/查询、支付状态投影、逐笔权威查单、本地异常任务和双端三语退款状态。真实商户/物流凭据、HTTPS 回调、Zalo/GHN sandbox、商户结算文件、GHN COD 回款和真机证据仍未验收，不能标记 M5.5-M5.7、整个 M5 或 P0 完成。
 
-Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。M4 浏览器验收使用真实本地 API、PostgreSQL 和 Zalo 测试桥，不能替代 Zalo 宿主真机。真实 staging S3/CDN、越南权威行政区主数据、近生产规模性能、两个商城的 Zalo Checkout/ZaloPay 与 GHN sandbox 配置/密钥/回调条件、生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。阶段证据见 `docs/reports/m4-completion-report.md`、`docs/reports/m5.1-completion-report.md`、`docs/reports/m5.2-completion-report.md`、`docs/reports/m5.3-completion-report.md`、`docs/reports/m5.5-progress-report.md` 与 `docs/reports/m5.6-progress-report.md`。
+Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。M4 浏览器验收使用真实本地 API、PostgreSQL 和 Zalo 测试桥，不能替代 Zalo 宿主真机。真实 staging S3/CDN、越南权威行政区主数据、近生产规模性能、两个商城的 Zalo Checkout/ZaloPay 与 GHN sandbox 配置/密钥/回调条件、生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。阶段证据见 `docs/reports/m4-completion-report.md`、`docs/reports/m5.1-completion-report.md`、`docs/reports/m5.2-completion-report.md`、`docs/reports/m5.3-completion-report.md`、`docs/reports/m5.4-completion-report.md`、`docs/reports/m5.5-progress-report.md`、`docs/reports/m5.6-progress-report.md` 与 `docs/reports/m5.7-progress-report.md`。
 
 ## 应用与包
 
@@ -196,6 +196,20 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   运单和订单。买家与管理端均使用内部状态和三语 message key，不直接展示供应商状态文案。
 - 本阶段没有真实 GHN ShopId/Token、测试仓库/订单、面单/webhook/COD 或 Zalo 宿主证据；这些
   项目保持 `BLOCKED/NOT_RUN`，仓库自动化不能替代供应商 sandbox 验收。
+
+## M5.7 退款、逐笔查单与异常工作台
+
+- 具备当前商城权限、近期 MFA 和输入式二次确认的管理员，可针对成功的 ONLINE 支付创建整数
+  VND 的部分或全额退款；服务端锁定支付及退款事实并重算可退款余额，不信任前端金额。
+- Zalo Checkout 退款创建与查询使用官方固定 HTTPS 端点和 MAC。由于官方创建接口没有供应商
+  幂等键，创建命令最多外呼一次；网络结果不确定时进入人工复核，不自动重试并产生重复退款。
+- 人工复核中的不确定退款继续占用可退款容量；应用和数据库 guard 双重阻止新退款导致超额。
+- 退款成功只投影订单支付状态为部分或全部退款，不改变履约、运单或库存。买家订单详情只显示
+  退款公开编号、金额、标准状态和时间，不暴露管理员原因、供应商编号或上游响应。
+- 管理端提供商城隔离的支付、退款、主动查询、延迟重试和 dead-letter 任务视图；危险重试要求
+  对应领域权限、近期 MFA、原因、版本、幂等键和固定确认码，并保留审计记录。
+- 当前对账只覆盖逐笔权威查询、本地异常与死信视图，不代表商户日结完成。真实两商城退款、
+  商户结算文件/手续费、GHN COD 回款和 Zalo 宿主验收保持 `BLOCKED/NOT_RUN`，不进入 M6。
 
 ## 环境与密钥
 

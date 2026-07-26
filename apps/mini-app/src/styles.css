@@ -2376,6 +2376,7 @@ button.commerce-state {
 .checkout-section,
 .checkout-summary,
 .order-timeline,
+.refund-status-panel,
 .cancel-order-panel {
   padding: 18px;
   border: 1px solid color-mix(in srgb, var(--store-text) 9%, transparent);
@@ -2518,7 +2519,8 @@ button.commerce-state {
 }
 
 .checkout-section h2,
-.order-timeline h2 {
+.order-timeline h2,
+.refund-status-panel h2 {
   margin: 0;
   font-size: 1rem;
 }
@@ -2693,6 +2695,78 @@ button.commerce-state {
 
 .order-timeline small {
   color: color-mix(in srgb, var(--store-text) 55%, transparent);
+}
+
+.refund-status-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.refund-empty {
+  margin: 0;
+  color: color-mix(in srgb, var(--store-text) 62%, transparent);
+  font-size: 0.78rem;
+}
+
+.refund-list {
+  display: grid;
+}
+
+.refund-row {
+  display: grid;
+  min-width: 0;
+  padding: 12px 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px 14px;
+  border-top: 1px solid color-mix(in srgb, var(--store-text) 8%, transparent);
+}
+
+.refund-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.refund-row:last-child {
+  padding-bottom: 0;
+}
+
+.refund-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.refund-row > div:first-child {
+  grid-column: 1;
+}
+
+.refund-row > div:nth-child(2) {
+  grid-column: 2;
+  grid-row: 1;
+  text-align: right;
+}
+
+.refund-row small,
+.refund-row time {
+  color: color-mix(in srgb, var(--store-text) 55%, transparent);
+  font-size: 0.68rem;
+}
+
+.refund-row strong {
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+}
+
+.refund-row > .order-status {
+  width: fit-content;
+  grid-column: 1;
+}
+
+.refund-row time {
+  grid-column: 2;
+  align-self: center;
+  text-align: right;
 }
 
 .shipment-tracking {

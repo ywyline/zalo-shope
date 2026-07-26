@@ -87,6 +87,8 @@ import {
 import { ShippingController } from './shipping/shipping.controller';
 import { ShippingService } from './shipping/shipping.service';
 import { SHIPPING_PROVIDER } from './shipping/shipping.tokens';
+import { PaymentsAdminController } from './payments-admin/payments-admin.controller';
+import { PaymentsAdminService } from './payments-admin/payments-admin.service';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -173,6 +175,7 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     PaymentWebhookController,
     ShippingWebhookController,
     ShippingController,
+    PaymentsAdminController,
   ],
   providers: [
     AdminService,
@@ -198,6 +201,7 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     ShippingWebhookRateLimiter,
     ShippingWebhookService,
     ShippingService,
+    PaymentsAdminService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
       provide: DATABASE_CLIENT,

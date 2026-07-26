@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-import type { PaymentProviderStatus } from './payment-provider';
+import type { PaymentProviderStatus, RefundProviderStatus } from './payment-provider';
 import {
   type PaymentProvider,
   type PaymentProviderFact,
@@ -17,6 +17,7 @@ type TestPaymentProviderOptions = Readonly<{
     Pick<PaymentProviderFact, 'amountVnd' | 'attemptId' | 'currency' | 'orderId' | 'storeId'>
   >;
   nodeEnvironment?: string;
+  refundStatus?: RefundProviderStatus;
   secret: string;
   status?: PaymentProviderStatus;
 }>;
@@ -60,6 +61,7 @@ export class DeterministicPaymentTestProvider implements PaymentProvider {
   public readonly code = 'ZALO_CHECKOUT_ZALOPAY';
   public readonly environment = 'SANDBOX' as const;
   readonly #status: PaymentProviderStatus;
+  readonly #refundStatus: RefundProviderStatus;
 
   public constructor(private readonly options: TestPaymentProviderOptions) {
     if ((options.nodeEnvironment ?? process.env.NODE_ENV) !== 'test') {
@@ -73,6 +75,7 @@ export class DeterministicPaymentTestProvider implements PaymentProvider {
       throw new ProviderIntegrationError('CONFIGURATION', false);
     }
     this.#status = options.status ?? 'PENDING';
+    this.#refundStatus = options.refundStatus ?? 'PENDING';
   }
 
   public async createPayment(input: {
@@ -179,12 +182,59 @@ export class DeterministicPaymentTestProvider implements PaymentProvider {
     };
   }
 
-  public createRefund(): Promise<RefundProviderFact> {
-    throw new ProviderIntegrationError('CONFIGURATION', false, 'Refunds are outside M5.4');
+  public async createRefund(
+    input: Parameters<PaymentProvider['createRefund']>[0],
+  ): Promise<RefundProviderFact> {
+    await Promise.resolve();
+    if (
+      !Number.isSafeInteger(input.amountVnd) ||
+      input.amountVnd <= 0 ||
+      !input.description ||
+      !input.paymentProviderTransactionId ||
+      !input.publicRefundNumber
+    ) {
+      throw new ProviderIntegrationError('INVALID_REQUEST', false);
+    }
+    const storeId = compactUuid(input.storeId);
+    const refundId = compactUuid(input.refundId);
+    const data = `${storeId}.${refundId}.${String(input.amountVnd)}`;
+    return {
+      amountVnd: input.amountVnd,
+      providerRefundId: `r.${data}.${this.digest(data).slice(0, 20)}`,
+      providerStatus: `TEST_REFUND_${this.#refundStatus}`,
+      status: this.#refundStatus,
+    };
   }
 
-  public queryRefund(): Promise<RefundProviderFact> {
-    throw new ProviderIntegrationError('CONFIGURATION', false, 'Refunds are outside M5.4');
+  public async queryRefund(
+    input: Parameters<PaymentProvider['queryRefund']>[0],
+  ): Promise<RefundProviderFact> {
+    await Promise.resolve();
+    const parts = input.providerRefundId.split('.');
+    if (parts.length !== 5 || parts[0] !== 'r') {
+      throw new ProviderIntegrationError('INVALID_RESPONSE', false);
+    }
+    const [, storeId, refundId, amountText, signature] = parts;
+    const data = `${storeId}.${refundId}.${amountText}`;
+    if (!this.equal(signature!, this.digest(data).slice(0, 20))) {
+      throw new ProviderIntegrationError('AUTHENTICATION', false);
+    }
+    const amountVnd = Number(amountText);
+    if (
+      expandedUuid(storeId!) !== input.storeId ||
+      !UUID_HEX_PATTERN.test(refundId!) ||
+      !Number.isSafeInteger(amountVnd) ||
+      amountVnd <= 0 ||
+      amountVnd !== input.amountVnd
+    ) {
+      throw new ProviderIntegrationError('REJECTED', false);
+    }
+    return {
+      amountVnd,
+      providerRefundId: input.providerRefundId,
+      providerStatus: `TEST_REFUND_${this.#refundStatus}`,
+      status: this.#refundStatus,
+    };
   }
 
   private assertCreateInput(input: Parameters<PaymentProvider['createPayment']>[0]): void {

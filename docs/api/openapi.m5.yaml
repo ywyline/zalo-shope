@@ -1,11 +1,13 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M5 Payment, Refund, Shipping and Integration API
-  version: 0.5.6-partial
+  version: 0.5.7-automation
   description: >-
     M5.5 已实施在线订单、支付尝试、异步 launch、provider-order 绑定、本人查询/重试、
     Zalo Checkout 主动查单和验签 webhook；M5.6 已实施 GHN 报价、运单命令、面单代理、
-    权威轨迹查询和未签名 webhook hint。退款/对账路径仍为 M5.7 目标草案。
+    权威轨迹查询和未签名 webhook hint。M5.7 已实施商城隔离的支付/退款列表、部分或全额
+    退款命令、支付与退款主动查询、脱敏集成任务列表及受审 dead-letter 重放。真实商户退款、
+    结算文件、GHN COD 回款和 Zalo 宿主验收仍为 BLOCKED/NOT_RUN。
     本文与 openapi.m1-m4.yaml 共同描述增量 API。
     支付采用 ZaloPay through Zalo Checkout，物流采用 GHN，两个商城使用独立渠道配置。
     客户端 Checkout/PaymentDone、供应商回调和 GHN webhook 均不能直接修改金额、库存或状态。
@@ -318,6 +320,9 @@ paths:
         - $ref: '#/components/parameters/StoreIdQuery'
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - name: order_id
+          in: query
+          schema: { type: string, format: uuid }
         - name: payment_id
           in: query
           schema: { type: string, format: uuid }
@@ -627,7 +632,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ProviderQueryRequest' }
+            schema: { $ref: '#/components/schemas/IntegrationJobRetryRequest' }
       responses:
         '202':
           description: 已追加重试命令
@@ -837,10 +842,19 @@ components:
     RefundCreateRequest:
       type: object
       additionalProperties: false
-      required: [amount_vnd, expected_payment_version, reason]
+      required: [amount_vnd, confirmation_code, expected_payment_version, reason]
       properties:
         amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        confirmation_code: { type: string, const: CREATE_REFUND }
         expected_payment_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    IntegrationJobRetryRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: RETRY_DEAD_LETTER }
+        expected_version: { type: integer, minimum: 1 }
         reason: { type: string, minLength: 10, maxLength: 500 }
     RefundStatus:
       type: string
@@ -848,7 +862,19 @@ components:
     Refund:
       type: object
       additionalProperties: false
-      required: [id, public_number, payment_id, amount_vnd, currency, status, version, requested_at]
+      required:
+        [
+          id,
+          public_number,
+          payment_id,
+          amount_vnd,
+          currency,
+          status,
+          reason,
+          version,
+          requested_at,
+          updated_at,
+        ]
       properties:
         id: { type: string, format: uuid }
         public_number: { type: string }
@@ -860,7 +886,7 @@ components:
         reason: { type: string }
         version: { type: integer, minimum: 1 }
         requested_at: { type: string, format: date-time }
-        updated_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: string, format: date-time }
     RefundPage:
       type: object
       additionalProperties: false

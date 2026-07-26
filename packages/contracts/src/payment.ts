@@ -17,10 +17,12 @@ export const paymentProviderOrderBindRequestSchema = z
   .strict();
 
 export const paymentIdParamsSchema = z.object({ paymentId: uuidSchema }).strict();
+export const paymentAdminStoreQuerySchema = z.object({ store_id: uuidSchema }).strict();
 export const paymentProviderOrderParamsSchema = z
   .object({ orderId: uuidSchema, paymentId: uuidSchema })
   .strict();
 export const refundIdParamsSchema = z.object({ refundId: uuidSchema }).strict();
+export const integrationJobIdParamsSchema = z.object({ jobId: uuidSchema }).strict();
 
 export const paymentListQuerySchema = z
   .object({
@@ -44,6 +46,7 @@ export const refundListQuerySchema = z
 export const refundCreateRequestSchema = z
   .object({
     amount_vnd: vndAmountSchema,
+    confirmation_code: z.literal('CREATE_REFUND'),
     expected_payment_version: z.number().int().positive(),
     reason: z.string().trim().min(10).max(500),
   })
@@ -58,8 +61,17 @@ export const providerQueryRequestSchema = z
 
 export const integrationJobRetryRequestSchema = z
   .object({
+    confirmation_code: z.literal('RETRY_DEAD_LETTER'),
     expected_version: z.number().int().positive(),
     reason: z.string().trim().min(10).max(500),
+  })
+  .strict();
+
+export const integrationJobListQuerySchema = z
+  .object({
+    cursor: uuidSchema.optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    status: z.enum(['PENDING', 'PROCESSING', 'SUCCEEDED', 'RETRY_WAIT', 'DEAD_LETTER']).optional(),
   })
   .strict();
 

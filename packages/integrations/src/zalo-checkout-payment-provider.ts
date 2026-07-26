@@ -2,9 +2,13 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 import {
   buildZaloCheckoutCallbackMacData,
+  buildZaloCheckoutCreateRefundMacData,
   buildZaloCheckoutCreateOrderMacData,
+  buildZaloCheckoutQueryRefundMacData,
   canonicalizeZaloCheckoutOverallMacFields,
+  mapZaloCheckoutCreateRefundResult,
   mapZaloCheckoutPaymentResult,
+  mapZaloCheckoutRefundStatusResult,
   zaloPayCheckoutMethod,
   zaloPayCheckoutMethodJson,
 } from './zalo-checkout-contract';
@@ -18,6 +22,9 @@ import type { PaymentProvider, PaymentProviderFact, RefundProviderFact } from '.
 export const ZALO_CHECKOUT_PAYMENT_PROVIDER_CODE = 'ZALO_CHECKOUT_ZALOPAY';
 export const ZALO_CHECKOUT_STATUS_ENDPOINT =
   'https://payment-mini.zalo.me/api/transaction/get-status';
+export const ZALO_CHECKOUT_REFUND_CREATE_ENDPOINT =
+  'https://payment-mini.zalo.me/api/refund/create';
+export const ZALO_CHECKOUT_REFUND_STATUS_ENDPOINT = 'https://payment-mini.zalo.me/api/refund';
 export const ZALO_CHECKOUT_CALLBACK_MAX_BYTES = 128 * 1_024;
 
 export type ZaloCheckoutCallbackRoute = Readonly<{
@@ -40,6 +47,8 @@ export type ZaloCheckoutPaymentProviderOptions = Readonly<{
   requestTimeoutMs?: number;
   storeId: string;
   statusEndpoint?: string;
+  refundCreateEndpoint?: string;
+  refundStatusEndpoint?: string;
   allowedStatusOrigins?: readonly string[];
 }>;
 
@@ -242,6 +251,8 @@ export class ZaloCheckoutPaymentProvider implements PaymentProvider {
   readonly #responseLimitBytes: number;
   readonly #requestTimeoutMs: number;
   readonly #statusEndpoint: URL;
+  readonly #refundCreateEndpoint: URL;
+  readonly #refundStatusEndpoint: URL;
   readonly #allowedStatusOrigins: ReadonlySet<string>;
 
   public constructor(private readonly options: ZaloCheckoutPaymentProviderOptions) {
@@ -276,6 +287,12 @@ export class ZaloCheckoutPaymentProvider implements PaymentProvider {
     }
     try {
       this.#statusEndpoint = new URL(options.statusEndpoint ?? ZALO_CHECKOUT_STATUS_ENDPOINT);
+      this.#refundCreateEndpoint = new URL(
+        options.refundCreateEndpoint ?? ZALO_CHECKOUT_REFUND_CREATE_ENDPOINT,
+      );
+      this.#refundStatusEndpoint = new URL(
+        options.refundStatusEndpoint ?? ZALO_CHECKOUT_REFUND_STATUS_ENDPOINT,
+      );
     } catch {
       throw new ProviderIntegrationError(
         'CONFIGURATION',
@@ -303,7 +320,11 @@ export class ZaloCheckoutPaymentProvider implements PaymentProvider {
         );
       }
     }
-    if (this.#statusEndpoint.protocol !== 'https:' || !allowed.has(this.#statusEndpoint.origin)) {
+    if (
+      [this.#statusEndpoint, this.#refundCreateEndpoint, this.#refundStatusEndpoint].some(
+        (endpoint) => endpoint.protocol !== 'https:' || !allowed.has(endpoint.origin),
+      )
+    ) {
       throw new ProviderIntegrationError(
         'CONFIGURATION',
         false,
@@ -451,20 +472,85 @@ export class ZaloCheckoutPaymentProvider implements PaymentProvider {
     };
   }
 
-  public createRefund(): Promise<RefundProviderFact> {
-    throw new ProviderIntegrationError(
-      'CONFIGURATION',
+  public async createRefund(
+    input: Parameters<PaymentProvider['createRefund']>[0],
+  ): Promise<RefundProviderFact> {
+    this.assertRefundInput(input);
+    const privateKey = await this.privateKey();
+    const macData = buildZaloCheckoutCreateRefundMacData({
+      amountVnd: input.amountVnd,
+      appId: this.options.appId,
+      description: input.description,
+      privateKey,
+      transactionId: input.paymentProviderTransactionId,
+    });
+    const body = await this.requestRefund(
+      this.#refundCreateEndpoint,
+      {
+        body: JSON.stringify({
+          amount: input.amountVnd,
+          appId: this.options.appId,
+          description: input.description,
+          mac: createHmac('sha256', privateKey).update(macData, 'utf8').digest('hex'),
+          transId: input.paymentProviderTransactionId,
+        }),
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        method: 'POST',
+      },
       false,
-      'Zalo Checkout refunds are not enabled in M5.5',
     );
+    const returnCode = safeInteger(body.returnCode, 'returnCode');
+    const status = mapZaloCheckoutCreateRefundResult(returnCode);
+    const providerRefundId =
+      body.refundId === undefined ? undefined : nonEmptyString(body.refundId, 'refundId', 160);
+    if (status !== 'FAILED' && !providerRefundId) {
+      throw new ProviderIntegrationError(
+        'INVALID_RESPONSE',
+        false,
+        'Accepted refund has no refund id',
+      );
+    }
+    return {
+      amountVnd: input.amountVnd,
+      ...(providerRefundId ? { providerRefundId } : {}),
+      providerStatus: `ZALO_CHECKOUT_${returnCode}`,
+      status,
+    };
   }
 
-  public queryRefund(): Promise<RefundProviderFact> {
-    throw new ProviderIntegrationError(
-      'CONFIGURATION',
-      false,
-      'Zalo Checkout refunds are not enabled in M5.5',
+  public async queryRefund(
+    input: Parameters<PaymentProvider['queryRefund']>[0],
+  ): Promise<RefundProviderFact> {
+    if (
+      input.storeId !== this.options.storeId ||
+      !Number.isSafeInteger(input.amountVnd) ||
+      input.amountVnd <= 0 ||
+      !input.providerRefundId ||
+      input.providerRefundId.length > 160
+    ) {
+      throw new ProviderIntegrationError('INVALID_REQUEST', false, 'Refund query is invalid');
+    }
+    const privateKey = await this.privateKey();
+    const macData = buildZaloCheckoutQueryRefundMacData({
+      appId: this.options.appId,
+      privateKey,
+      refundId: input.providerRefundId,
+    });
+    const url = new URL(this.#refundStatusEndpoint.href);
+    url.searchParams.set('appId', this.options.appId);
+    url.searchParams.set('refundId', input.providerRefundId);
+    url.searchParams.set(
+      'mac',
+      createHmac('sha256', privateKey).update(macData, 'utf8').digest('hex'),
     );
+    const body = await this.requestRefund(url, { method: 'GET' }, true);
+    const returnCode = safeInteger(body.returnCode, 'returnCode');
+    return {
+      amountVnd: input.amountVnd,
+      providerRefundId: input.providerRefundId,
+      providerStatus: `ZALO_CHECKOUT_${returnCode}`,
+      status: mapZaloCheckoutRefundStatusResult(returnCode),
+    };
   }
 
   private async privateKey(): Promise<string> {
@@ -558,6 +644,64 @@ export class ZaloCheckoutPaymentProvider implements PaymentProvider {
         ? {}
         : { transTime: safeInteger(body.transTime, 'transTime') }),
     };
+  }
+
+  private async requestRefund(
+    url: URL,
+    init: Pick<RequestInit, 'body' | 'headers' | 'method'>,
+    safeToRetry: boolean,
+  ): Promise<Record<string, unknown>> {
+    if (!this.#allowedStatusOrigins.has(url.origin) || url.protocol !== 'https:') {
+      throw new ProviderIntegrationError(
+        'CONFIGURATION',
+        false,
+        'Zalo Checkout refund origin is invalid',
+      );
+    }
+    let response: Response;
+    try {
+      response = await this.#fetch(url, {
+        ...init,
+        headers: { accept: 'application/json', ...init.headers },
+        redirect: 'error',
+        signal: AbortSignal.timeout(this.#requestTimeoutMs),
+      });
+    } catch (error) {
+      const timedOut =
+        error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+      throw new ProviderIntegrationError(
+        timedOut ? 'TIMEOUT' : 'UPSTREAM_UNAVAILABLE',
+        safeToRetry,
+        'Zalo Checkout refund request failed',
+      );
+    }
+    const contentLength = Number(response.headers.get('content-length') ?? 0);
+    if (Number.isFinite(contentLength) && contentLength > this.#responseLimitBytes) {
+      throw new ProviderIntegrationError(
+        'INVALID_RESPONSE',
+        safeToRetry,
+        'Zalo Checkout refund response is too large',
+      );
+    }
+    const text = await readResponseText(response, this.#responseLimitBytes);
+    if (response.status === 429) {
+      throw new ProviderIntegrationError('RATE_LIMITED', safeToRetry, 'Zalo Checkout rate limit');
+    }
+    if (!response.ok) {
+      throw new ProviderIntegrationError(
+        response.status >= 500 ? 'UPSTREAM_UNAVAILABLE' : 'REJECTED',
+        safeToRetry && response.status >= 500,
+        'Zalo Checkout refund request was rejected',
+      );
+    }
+    if (!response.headers.get('content-type')?.toLowerCase().startsWith('application/json')) {
+      throw new ProviderIntegrationError(
+        'INVALID_RESPONSE',
+        safeToRetry,
+        'Zalo Checkout refund response content type is invalid',
+      );
+    }
+    return parseJson(text);
   }
 
   private parseOrderStatus(response: OrderStatusResponse, providerOrderId: string): CallbackData {
@@ -664,6 +808,22 @@ export class ZaloCheckoutPaymentProvider implements PaymentProvider {
         false,
         'Zalo Checkout create input is invalid',
       );
+    }
+  }
+
+  private assertRefundInput(input: Parameters<PaymentProvider['createRefund']>[0]): void {
+    if (
+      input.storeId !== this.options.storeId ||
+      !Number.isSafeInteger(input.amountVnd) ||
+      input.amountVnd <= 0 ||
+      !input.description ||
+      input.description.length > 500 ||
+      !input.paymentProviderTransactionId ||
+      input.paymentProviderTransactionId.length > 160 ||
+      !input.publicRefundNumber ||
+      !input.refundId
+    ) {
+      throw new ProviderIntegrationError('INVALID_REQUEST', false, 'Refund input is invalid');
     }
   }
 }

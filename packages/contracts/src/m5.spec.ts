@@ -22,6 +22,7 @@ describe('M5 strict payment DTOs', () => {
     expect(
       refundCreateRequestSchema.parse({
         amount_vnd: 100_000,
+        confirmation_code: 'CREATE_REFUND',
         expected_payment_version: 2,
         reason: 'Customer-approved partial refund',
       }),
@@ -29,6 +30,7 @@ describe('M5 strict payment DTOs', () => {
     expect(() =>
       refundCreateRequestSchema.parse({
         amount_vnd: 100_000.5,
+        confirmation_code: 'CREATE_REFUND',
         expected_payment_version: 2,
         reason: 'Customer-approved partial refund',
       }),
@@ -36,6 +38,7 @@ describe('M5 strict payment DTOs', () => {
     expect(() =>
       refundCreateRequestSchema.parse({
         amount_vnd: 100_000,
+        confirmation_code: 'CREATE_REFUND',
         expected_payment_version: 2,
         provider_refund_id: 'client-controlled',
         reason: 'Customer-approved partial refund',

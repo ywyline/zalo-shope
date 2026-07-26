@@ -2413,6 +2413,194 @@ label {
   gap: 16px;
 }
 
+.admin-finance {
+  display: grid;
+  margin: 24px 0;
+  padding: 22px 0;
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+  gap: 16px;
+}
+
+.finance-empty {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.payment-attempts,
+.admin-refund-list,
+.integration-job-list {
+  display: grid;
+}
+
+.payment-attempt {
+  display: grid;
+  padding: 18px 0;
+  border-top: 1px solid var(--color-line);
+  gap: 13px;
+}
+
+.payment-attempt:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.payment-attempt:last-child {
+  padding-bottom: 0;
+}
+
+.payment-attempt > header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.payment-attempt > header > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.payment-attempt > header small,
+.admin-refund-row small,
+.integration-job-list small {
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+}
+
+.payment-attempt > header strong,
+.admin-refund-row strong,
+.integration-job-list strong {
+  overflow-wrap: anywhere;
+  font-size: 0.76rem;
+}
+
+.finance-chip {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 28px;
+  padding: 0 9px;
+  flex: 0 0 auto;
+  align-items: center;
+  border-radius: 999px;
+  color: #765b1c;
+  background: #fff2ca;
+  font-size: 0.64rem;
+  font-weight: 820;
+}
+
+.finance-succeeded,
+.finance-cancelled {
+  color: #286349;
+  background: #e4f4ea;
+}
+
+.finance-failed,
+.finance-review_required,
+.finance-dead_letter {
+  color: #8b3f35;
+  background: #fff0ee;
+}
+
+.finance-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--color-line);
+  border-left: 1px solid var(--color-line);
+}
+
+.finance-facts > div {
+  padding: 10px 12px;
+  border-right: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.finance-facts dt {
+  color: var(--color-text-muted);
+  font-size: 0.65rem;
+}
+
+.finance-facts dd {
+  margin: 4px 0 0;
+  font-size: 0.77rem;
+  font-weight: 760;
+}
+
+.finance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-refund-list {
+  border-top: 1px solid var(--color-line);
+}
+
+.admin-refund-row {
+  display: grid;
+  min-width: 0;
+  padding: 11px 0;
+  grid-template-columns: minmax(150px, 1fr) auto auto auto;
+  align-items: center;
+  border-bottom: 1px solid var(--color-line);
+  gap: 10px;
+}
+
+.admin-refund-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.admin-refund-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.admin-refund-row > .secondary {
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+.integration-job-panel {
+  display: grid;
+  padding-top: 22px;
+  border-top: 1px solid var(--color-line);
+  gap: 14px;
+}
+
+.integration-job-panel .section-heading h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.integration-job-list > article {
+  display: grid;
+  min-width: 0;
+  padding: 12px 0;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(150px, 0.8fr) auto;
+  align-items: center;
+  border-top: 1px solid var(--color-line);
+  gap: 12px;
+}
+
+.integration-job-list > article > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.integration-job-list code {
+  overflow-wrap: anywhere;
+  color: var(--color-text-muted);
+  font-size: 0.67rem;
+}
+
 .admin-shipment-heading {
   display: flex;
   align-items: flex-start;
@@ -3145,6 +3333,19 @@ label {
   .shipping-create > .primary,
   .shipment-actions > *,
   .shipping-quote-form button {
+    width: 100%;
+  }
+  .finance-facts,
+  .admin-refund-row,
+  .integration-job-list > article {
+    grid-template-columns: 1fr;
+  }
+  .admin-refund-row {
+    align-items: start;
+  }
+  .finance-actions > *,
+  .admin-refund-row > .secondary,
+  .integration-job-list > article > .secondary {
     width: 100%;
   }
   .catalog-dialog {

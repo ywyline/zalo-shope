@@ -26,7 +26,7 @@ export type PaymentProviderFact = Readonly<{
 export type RefundProviderFact = Readonly<{
   amountVnd: number;
   occurredAt?: Date;
-  providerRefundId: string;
+  providerRefundId?: string;
   providerStatus: string;
   status: RefundProviderStatus;
 }>;
@@ -90,7 +90,11 @@ export interface PaymentProvider {
     storeId: string;
   }): Promise<RefundProviderFact>;
 
-  queryRefund(input: { providerRefundId: string; storeId: string }): Promise<RefundProviderFact>;
+  queryRefund(input: {
+    amountVnd: number;
+    providerRefundId: string;
+    storeId: string;
+  }): Promise<RefundProviderFact>;
 
   listSettlementRecords?(input: {
     businessDate: string;

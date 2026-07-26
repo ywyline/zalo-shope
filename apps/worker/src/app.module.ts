@@ -19,6 +19,10 @@ import { ReliableOutboxService } from './reliable-messaging/reliable-outbox.serv
 import { TestOnlyOutboxHandler } from './reliable-messaging/test-only-outbox-handler';
 import { PaymentCreateRequestedHandler } from './payments/payment-create-requested.handler';
 import { PaymentReconciliationRequestedHandler } from './payments/payment-reconciliation-requested.handler';
+import {
+  RefundCreateRequestedHandler,
+  RefundQueryRequestedHandler,
+} from './payments/refund-requested.handlers';
 import { ShipmentCreateRequestedHandler } from './shipments/shipment-create-requested.handler';
 import { ShipmentProviderOperationHandler } from './shipments/shipment-provider-operation.handler';
 import { SHIPMENT_CANCEL_EVENT_TYPE, SHIPMENT_QUERY_EVENT_TYPE } from '@zalo-shop/database';
@@ -95,6 +99,8 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
                 config.PAYMENT_RECONCILIATION_ENABLED,
               ),
               new PaymentReconciliationRequestedHandler(database, paymentProviderResolver),
+              new RefundCreateRequestedHandler(database, paymentProviderResolver),
+              new RefundQueryRequestedHandler(database, paymentProviderResolver),
             ]),
         ...(config.SHIPPING_PROVIDER === 'disabled'
           ? []

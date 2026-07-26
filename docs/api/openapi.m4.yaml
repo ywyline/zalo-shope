@@ -1,12 +1,13 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M4 Address, Checkout, Order and COD API
-  version: 0.4.0
+  version: 0.4.0-m5.7-read-extension
   description: >-
     M4 已实施增量契约；与 openapi.m1.yaml、openapi.m2.yaml 和 openapi.m3.yaml
     共同组成当前 API。商城只从受信 X-Store-Code、认证主体和管理员授权解析；
-    买家请求不接受 store_id、价格、折扣、库存或订单状态。M4 仅启用 COD，ONLINE
-    下单稳定拒绝，不代表真实支付或物流已接入。
+    买家请求不接受 store_id、价格、折扣、库存或订单状态。M5 在保持 M4 路径兼容的基础上
+    扩展 ONLINE 支付、物流和本人订单退款只读投影；退款只返回公开编号、整数金额、标准状态
+    与时间，不返回管理员原因或供应商引用。
 servers:
   - url: http://localhost:3000
 tags:
@@ -942,14 +943,29 @@ components:
       allOf:
         - $ref: '#/components/schemas/OrderSummary'
         - type: object
-          required: [address, cancellation_reason, snapshots, transitions]
+          required: [address, cancellation_reason, refunds, snapshots, transitions]
           properties:
             address:
               oneOf: [{ $ref: '#/components/schemas/OrderAddress' }, { type: 'null' }]
             cancellation_reason: { oneOf: [{ type: string }, { type: 'null' }] }
+            refunds:
+              type: array
+              items: { $ref: '#/components/schemas/MemberRefundSummary' }
             snapshots: { type: array, items: { $ref: '#/components/schemas/SnapshotSummary' } }
             transitions: { type: array, items: { $ref: '#/components/schemas/OrderTransition' } }
       unevaluatedProperties: false
+    MemberRefundSummary:
+      type: object
+      additionalProperties: false
+      required: [public_number, amount_vnd, status, requested_at, updated_at]
+      properties:
+        public_number: { type: string }
+        amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        status:
+          type: string
+          enum: [REQUESTED, PROCESSING, SUCCEEDED, FAILED, CANCELLED, REVIEW_REQUIRED]
+        requested_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
     AdminOrderDetail:
       allOf:
         - $ref: '#/components/schemas/OrderDetail'

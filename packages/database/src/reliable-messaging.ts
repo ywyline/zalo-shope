@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { IntegrationEnvironment, Prisma } from '@prisma/client';
 import {
@@ -13,6 +13,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const EVENT_TYPE_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$/u;
 const AGGREGATE_TYPE_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/u;
 const ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{1,39}$/u;
+const IDEMPOTENCY_KEY_PATTERN = /^[!-~]{16,128}$/u;
 const PAYLOAD_LIMIT_BYTES = 16 * 1_024;
 const MAX_PAYLOAD_DEPTH = 10;
 const FORBIDDEN_PAYLOAD_KEY =
@@ -22,6 +23,10 @@ const REPLAY_CONFIRMATION = 'RETRY_DEAD_LETTER';
 const REPLAY_PERMISSION = 'store.integration-jobs.retry';
 const MFA_FRESHNESS_MS = 5 * 60_000;
 const MFA_FUTURE_SKEW_MS = 60_000;
+
+function digest(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
 
 function normalizedPayloadKey(key: string): string {
   return key
@@ -584,6 +589,7 @@ export async function replayDeadLetterOutboxMessage(
   input: Readonly<{
     confirmation: string;
     expectedVersion: number;
+    idempotencyKey?: string;
     messageId: string;
     mfaVerifiedAt: Date;
     now?: Date;
@@ -612,11 +618,28 @@ export async function replayDeadLetterOutboxMessage(
   }
   if (
     !UUID_PATTERN.test(input.messageId) ||
+    (input.idempotencyKey !== undefined && !IDEMPOTENCY_KEY_PATTERN.test(input.idempotencyKey)) ||
     !Number.isSafeInteger(input.expectedVersion) ||
     input.expectedVersion < 1
   ) {
     throw new ReliableMessagingError('OUTBOX_INPUT_INVALID');
   }
+  const replayIdempotencyKeyHash =
+    input.idempotencyKey === undefined
+      ? undefined
+      : digest(`${context.storeId}\u0000${input.messageId}\u0000${input.idempotencyKey}`);
+  const replayRequestHash = replayIdempotencyKeyHash
+    ? digest(
+        [
+          context.storeId,
+          context.actor.id,
+          input.messageId,
+          String(input.expectedVersion),
+          input.confirmation,
+          reason,
+        ].join('\u0000'),
+      )
+    : undefined;
 
   return withStoreTransaction(client, context, async (transaction) => {
     const locked = await transaction.$queryRaw<OutboxRow[]>`
@@ -628,7 +651,7 @@ export async function replayDeadLetterOutboxMessage(
       FOR UPDATE
     `;
     const current = locked[0];
-    if (!current || current.status !== 'DEAD_LETTER' || current.version !== input.expectedVersion) {
+    if (!current) {
       throw new ReliableMessagingError('OUTBOX_STATE_CONFLICT');
     }
     const domainPermission = replayDomainPermission(current.event_type);
@@ -652,6 +675,28 @@ export async function replayDeadLetterOutboxMessage(
       throw new ReliableMessagingError('OUTBOX_REPLAY_PERMISSION_DENIED');
     }
 
+    if (current.status !== 'DEAD_LETTER' || current.version !== input.expectedVersion) {
+      if (!replayIdempotencyKeyHash || !replayRequestHash) {
+        throw new ReliableMessagingError('OUTBOX_STATE_CONFLICT');
+      }
+      const priorReplays = await transaction.$queryRaw<Array<{ request_hash: string | null }>>`
+        SELECT after_data ->> 'replay_request_hash' AS request_hash
+        FROM audit_logs
+        WHERE store_id = ${context.storeId}::uuid
+          AND action = 'integration.outbox.dead_letter.replayed'
+          AND target_type = 'outbox_message'
+          AND target_id = ${current.id}
+          AND after_data ->> 'replay_idempotency_key_hash' = ${replayIdempotencyKeyHash}
+        LIMIT 1
+      `;
+      const priorReplay = priorReplays[0];
+      if (!priorReplay) throw new ReliableMessagingError('OUTBOX_STATE_CONFLICT');
+      if (priorReplay.request_hash !== replayRequestHash) {
+        throw new ReliableMessagingError('OUTBOX_IDEMPOTENCY_CONFLICT');
+      }
+      return outboxRecord(current);
+    }
+
     await transaction.auditLog.create({
       data: {
         action: 'integration.outbox.dead_letter.replayed',
@@ -660,6 +705,12 @@ export async function replayDeadLetterOutboxMessage(
         afterData: {
           attempt_count: 0,
           available_at: now.toISOString(),
+          ...(replayIdempotencyKeyHash
+            ? {
+                replay_idempotency_key_hash: replayIdempotencyKeyHash,
+                replay_request_hash: replayRequestHash,
+              }
+            : {}),
           status: 'PENDING',
           version: current.version + 1,
         },

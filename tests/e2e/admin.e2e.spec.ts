@@ -664,3 +664,245 @@ test('promotion workbench creates and publishes a localized STORE rule with a li
   expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
   expect(browserErrors).toEqual([]);
 });
+
+test('order workbench schedules audited refunds, provider queries and dead-letter retries in three languages', async ({
+  page,
+}) => {
+  const browserErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+
+  const orderId = '28420000-0000-4000-8000-000000000001';
+  const paymentId = '28420000-0000-4000-8000-000000000002';
+  const refundId = '28420000-0000-4000-8000-000000000003';
+  const jobId = '28420000-0000-4000-8000-000000000004';
+  const order = {
+    created_at: '2026-07-26T08:00:00.000Z',
+    id: orderId,
+    items: [],
+    order_number: 'ORD-M57-BROWSER',
+    payable_vnd: 120_000,
+    payment_method: 'ONLINE',
+    payment_status: 'SUCCEEDED',
+    status: 'PENDING_FULFILLMENT',
+    version: 3,
+  };
+  let refundRequest: Record<string, unknown> | undefined;
+  let refundQueryRequest: Record<string, unknown> | undefined;
+  let retryRequest: Record<string, unknown> | undefined;
+  const idempotencyKeys: string[] = [];
+
+  await page.route('**/v1/admin/orders?*', async (route) => {
+    await route.fulfill({ contentType: 'application/json', json: { items: [order] }, status: 200 });
+  });
+  await page.route(`**/v1/admin/orders/${orderId}?*`, async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        ...order,
+        address: null,
+        cancellation_reason: null,
+        note: '',
+        refunds: [],
+        snapshots: [],
+        tags: [],
+        transitions: [
+          {
+            created_at: '2026-07-26T08:00:00.000Z',
+            event: 'CREATE',
+            from_status: null,
+            reason: null,
+            to_status: 'PENDING_FULFILLMENT',
+          },
+        ],
+      },
+      status: 200,
+    });
+  });
+  await page.route(`**/v1/admin/orders/${orderId}/shipment?*`, async (route) => {
+    await route.fulfill({ contentType: 'application/json', json: { shipment: null }, status: 200 });
+  });
+  await page.route('**/v1/admin/payments?*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        items: [
+          {
+            amount_vnd: 120_000,
+            created_at: '2026-07-26T08:02:00.000Z',
+            currency: 'VND',
+            expires_at: '2026-07-26T08:12:00.000Z',
+            id: paymentId,
+            launch_ready: true,
+            order_id: orderId,
+            payment_number: 'PAY-M57-BROWSER',
+            provider_reference_masked: 'za******01',
+            status: 'SUCCEEDED',
+            transitions: [],
+            version: 4,
+          },
+        ],
+        next_cursor: null,
+      },
+      status: 200,
+    });
+  });
+  await page.route('**/v1/admin/refunds?*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        items: [
+          {
+            amount_vnd: 50_000,
+            currency: 'VND',
+            id: refundId,
+            payment_id: paymentId,
+            provider_refund_reference_masked: 'zr******01',
+            public_number: 'RFD-M57-BROWSER',
+            reason: 'Browser fixture operator-approved refund',
+            requested_at: '2026-07-26T08:05:00.000Z',
+            status: 'PROCESSING',
+            transitions: [],
+            updated_at: '2026-07-26T08:06:00.000Z',
+            version: 2,
+          },
+        ],
+        next_cursor: null,
+      },
+      status: 200,
+    });
+  });
+  await page.route('**/v1/admin/integration-jobs?*', async (route) => {
+    const deadLetter = new URL(route.request().url()).searchParams.get('status') === 'DEAD_LETTER';
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        items: deadLetter
+          ? [
+              {
+                attempt_count: 1,
+                created_at: '2026-07-26T08:07:00.000Z',
+                id: jobId,
+                last_error_code: 'REFUND_PROVIDER_TIMEOUT',
+                next_attempt_at: null,
+                operation: 'refund.query.requested',
+                status: 'DEAD_LETTER',
+                version: 5,
+              },
+            ]
+          : [],
+        next_cursor: null,
+      },
+      status: 200,
+    });
+  });
+  await page.route(`**/v1/admin/payments/${paymentId}/refunds?*`, async (route) => {
+    refundRequest = route.request().postDataJSON() as Record<string, unknown>;
+    idempotencyKeys.push(route.request().headers()['idempotency-key'] ?? '');
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        amount_vnd: refundRequest.amount_vnd,
+        currency: 'VND',
+        id: randomUUID(),
+        payment_id: paymentId,
+        public_number: 'RFD-M57-NEW',
+        reason: refundRequest.reason,
+        requested_at: '2026-07-26T08:10:00.000Z',
+        status: 'REQUESTED',
+        updated_at: '2026-07-26T08:10:00.000Z',
+        version: 1,
+      },
+      status: 202,
+    });
+  });
+  await page.route(`**/v1/admin/refunds/${refundId}/query?*`, async (route) => {
+    refundQueryRequest = route.request().postDataJSON() as Record<string, unknown>;
+    idempotencyKeys.push(route.request().headers()['idempotency-key'] ?? '');
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        attempt_count: 0,
+        created_at: '2026-07-26T08:11:00.000Z',
+        id: randomUUID(),
+        last_error_code: null,
+        next_attempt_at: '2026-07-26T08:11:00.000Z',
+        operation: 'refund.query.requested',
+        status: 'PENDING',
+        version: 1,
+      },
+      status: 202,
+    });
+  });
+  await page.route(`**/v1/admin/integration-jobs/${jobId}/retry?*`, async (route) => {
+    retryRequest = route.request().postDataJSON() as Record<string, unknown>;
+    idempotencyKeys.push(route.request().headers()['idempotency-key'] ?? '');
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        attempt_count: 0,
+        created_at: '2026-07-26T08:07:00.000Z',
+        id: jobId,
+        last_error_code: null,
+        next_attempt_at: '2026-07-26T08:12:00.000Z',
+        operation: 'refund.query.requested',
+        status: 'PENDING',
+        version: 6,
+      },
+      status: 202,
+    });
+  });
+
+  await signIn(page);
+  await page.getByRole('button', { name: 'Orders & COD' }).click();
+  await expect(page.getByRole('heading', { name: 'Orders & shipping' })).toBeVisible();
+  await page.getByRole('button', { name: /ORD-M57-BROWSER/ }).click();
+  await expect(page.getByText('PAY-M57-BROWSER', { exact: true })).toBeVisible();
+  await expect(page.locator('.admin-finance')).toContainText('70.000 ₫');
+  await expect(page.locator('.integration-job-panel')).toContainText('REFUND_PROVIDER_TIMEOUT');
+
+  await page.getByRole('button', { name: 'Create refund' }).click();
+  let form = page.locator('form.shipment-operation-dialog');
+  await form.getByLabel(/Refund amount/).fill('30000');
+  await form.getByLabel(/CREATE_REFUND/).fill('CREATE_REFUND');
+  await form.getByRole('button', { name: 'Confirm action' }).click();
+  await expect(page.locator('.admin-finance')).toContainText('The financial request was recorded');
+  expect(refundRequest).toMatchObject({
+    amount_vnd: 30_000,
+    confirmation_code: 'CREATE_REFUND',
+    expected_payment_version: 4,
+  });
+  expect(refundRequest).not.toHaveProperty('provider_refund_id');
+
+  await page.getByRole('button', { name: 'Query refund' }).click();
+  form = page.locator('form.shipment-operation-dialog');
+  await form.getByRole('button', { name: 'Confirm action' }).click();
+  expect(refundQueryRequest).toMatchObject({ expected_version: 2 });
+
+  await page.getByRole('button', { name: 'Retry dead letter' }).click();
+  form = page.locator('form.shipment-operation-dialog');
+  await form.getByLabel(/RETRY_DEAD_LETTER/).fill('RETRY_DEAD_LETTER');
+  await form.getByRole('button', { name: 'Confirm action' }).click();
+  expect(retryRequest).toMatchObject({
+    confirmation_code: 'RETRY_DEAD_LETTER',
+    expected_version: 5,
+  });
+  expect(idempotencyKeys).toHaveLength(3);
+  expect(idempotencyKeys.every((key) => /^[0-9a-f-]{36}$/u.test(key))).toBe(true);
+
+  const language = page.getByLabel('Language');
+  await language.selectOption('zh');
+  await expect(page.getByRole('heading', { name: '支付与退款' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '需关注的集成任务' })).toBeVisible();
+  await language.selectOption('vi');
+  await expect(page.getByRole('heading', { name: 'Thanh toán & hoàn tiền' })).toBeVisible();
+  await language.selectOption('en');
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+  expect(browserErrors).toEqual([]);
+});

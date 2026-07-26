@@ -4,10 +4,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   buildZaloCheckoutCallbackMacData,
+  buildZaloCheckoutCreateRefundMacData,
   buildZaloCheckoutCreateOrderMacData,
   canonicalizeZaloCheckoutOverallMacFields,
   ProviderIntegrationError,
   ZALO_CHECKOUT_STATUS_ENDPOINT,
+  ZALO_CHECKOUT_REFUND_CREATE_ENDPOINT,
+  ZALO_CHECKOUT_REFUND_STATUS_ENDPOINT,
   ZaloCheckoutPaymentProvider,
 } from './index';
 
@@ -18,6 +21,7 @@ const orderId = '32000000-0000-4000-8000-000000000001';
 const attemptId = '31000000-0000-4000-8000-000000000001';
 const providerOrderId = 'zalo-checkout-order-1';
 const now = 1_800_000_000_000;
+const refundId = '33000000-0000-4000-8000-000000000001';
 
 function provider(
   options: Partial<ConstructorParameters<typeof ZaloCheckoutPaymentProvider>[0]> = {},
@@ -218,6 +222,104 @@ describe('Zalo Checkout payment provider', () => {
       storeId,
     });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('creates a partial refund with the official MAC and normalizes a processing response', async () => {
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(
+        input instanceof URL ? input.href : typeof input === 'string' ? input : input.url,
+      );
+      expect(url.href).toBe(ZALO_CHECKOUT_REFUND_CREATE_ENDPOINT);
+      expect(init?.method).toBe('POST');
+      if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body');
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        amount: 40_000,
+        appId,
+        description: 'Customer approved partial refund',
+        transId: 'zalopay-transaction-1',
+      });
+      expect(body.mac).toBe(
+        createHmac('sha256', privateKey)
+          .update(
+            buildZaloCheckoutCreateRefundMacData({
+              amountVnd: 40_000,
+              appId,
+              description: 'Customer approved partial refund',
+              privateKey,
+              transactionId: 'zalopay-transaction-1',
+            }),
+          )
+          .digest('hex'),
+      );
+      expect(JSON.stringify(body)).not.toContain(privateKey);
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ refundId: 'zalo-refund-1', returnCode: 2, returnMessage: 'Processing' }),
+          { headers: { 'content-type': 'application/json' }, status: 200 },
+        ),
+      );
+    });
+    await expect(
+      provider({ fetch: fetchMock }).createRefund({
+        amountVnd: 40_000,
+        description: 'Customer approved partial refund',
+        paymentProviderTransactionId: 'zalopay-transaction-1',
+        publicRefundNumber: 'RFD-1',
+        refundId,
+        storeId,
+      }),
+    ).resolves.toEqual({
+      amountVnd: 40_000,
+      providerRefundId: 'zalo-refund-1',
+      providerStatus: 'ZALO_CHECKOUT_2',
+      status: 'PENDING',
+    });
+  });
+
+  it('queries a refund through the fixed endpoint without exposing the private key', async () => {
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(
+        input instanceof URL ? input.href : typeof input === 'string' ? input : input.url,
+      );
+      expect(url.origin + url.pathname).toBe(ZALO_CHECKOUT_REFUND_STATUS_ENDPOINT);
+      expect(url.searchParams.get('appId')).toBe(appId);
+      expect(url.searchParams.get('refundId')).toBe('zalo-refund-1');
+      expect(url.searchParams.get('mac')).toMatch(/^[0-9a-f]{64}$/u);
+      expect(url.href).not.toContain(privateKey);
+      expect(init?.method).toBe('GET');
+      return Promise.resolve(
+        new Response(JSON.stringify({ returnCode: 1, returnMessage: 'Refunded' }), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      );
+    });
+    await expect(
+      provider({ fetch: fetchMock }).queryRefund({
+        amountVnd: 40_000,
+        providerRefundId: 'zalo-refund-1',
+        storeId,
+      }),
+    ).resolves.toEqual({
+      amountVnd: 40_000,
+      providerRefundId: 'zalo-refund-1',
+      providerStatus: 'ZALO_CHECKOUT_1',
+      status: 'SUCCEEDED',
+    });
+  });
+
+  it('does not classify an ambiguous create-refund network failure as automatically retryable', async () => {
+    await expect(
+      provider({ fetch: vi.fn().mockRejectedValue(new Error('connection reset')) }).createRefund({
+        amountVnd: 40_000,
+        description: 'Customer approved partial refund',
+        paymentProviderTransactionId: 'zalopay-transaction-1',
+        publicRefundNumber: 'RFD-1',
+        refundId,
+        storeId,
+      }),
+    ).rejects.toMatchObject({ code: 'UPSTREAM_UNAVAILABLE', retryable: false });
   });
 
   it('rejects a successful query response without a provider transaction id', async () => {

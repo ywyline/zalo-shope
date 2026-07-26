@@ -1,6 +1,6 @@
 # M5 支付、退款、物流与可靠消息数据字典
 
-> 状态：M5.1 契约已冻结；M5.2-M5.6 数据、可靠消息、支付与 GHN 仓库自动化已实施，真实供应商验收未完成
+> 状态：M5.1 契约已冻结；M5.2-M5.7 数据、可靠消息、支付、退款与 GHN 仓库自动化已实施，真实供应商验收未完成
 >
 > 日期：2026-07-26
 >
@@ -208,6 +208,18 @@ succeeded_at/failed_at/review_required_at/timestamps`。同支付行锁计算可
 `refund_transitions` 结构同支付转换且只追加。失败可由新的受审幂等命令重试，不能覆盖或删除
 首次退款事实。
 
+M5.7 运行时创建退款时先锁定订单、成功支付尝试和既有退款事实，重算
+`REQUESTED + PROCESSING + SUCCEEDED + REVIEW_REQUIRED` 占用金额；人工复核表示供应商结果
+仍可能成功，在受审解决前不得释放容量。退款、初始转换、脱敏审计和
+`refund.create.requested.v1` outbox 在同一 Serializable 事务提交。商城/支付范围的
+`Idempotency-Key` 只保存 SHA-256，重复同键同金额/原因返回首次事实，异参冲突。
+
+Zalo Checkout 官方退款创建接口未提供可传递的供应商幂等键，因此 create outbox 的
+`max_attempts=1`。超时、断连、无效/不一致响应等“可能已受理”结果进入 `REVIEW_REQUIRED`，
+禁止自动再次创建供应商退款且继续占用可退款容量；只有已取得 `provider_refund_id` 的
+`PROCESSING` 事实才允许通过
+`refund.query.requested.v1` 有限主动查询。成功事实单调，迟到失败或供应商引用碰撞不能覆盖。
+
 ## 6. 物流聚合
 
 ### 6.0 `warehouse_fulfillment_profiles` 与订单物理快照
@@ -290,6 +302,9 @@ completed_at/version/timestamps`。
   `shipment.query.requested.v1` payload 只含 `store_id/shipment_id/operation_id/version`。worker
   在事务内读取商城、渠道、地址/包裹和命令事实，事务外调用 GHN，再以新事务应用经过商城、
   ShopId、client order code、供应商单号和状态核对的权威事实；未签名 webhook 只能追加查询任务。
+- M5.7 的 `refund.create.requested.v1` payload 只含 `store_id/refund_id` 且最多领取一次；
+  `refund.query.requested.v1` 只查询已有供应商退款引用，处理中结果按 5 分钟延迟、最多 8 次
+  收敛。provider 网络调用均在数据库事务外，结果通过锁定支付与退款行的统一事实命令落库。
 - 死信重放不修改商城、聚合、事件、幂等键或 payload；只在商城任务重试权限、对应领域写权限、
   近期 MFA、二次确认、原因和 expected version 全部满足时重置调度字段。重放前后计数、错误类别
   与版本写入 append-only `audit_logs`，审计不复制消息 payload。
@@ -313,6 +328,10 @@ REJECTED/DEAD_LETTER` 的开始、完成和错误字段组合由数据库约束�
 - M4 checkout idempotency 请求 hash 包含 `payment_method=ONLINE`，同键跨 COD/ONLINE 冲突。
 - M4 过期 worker 在关闭在线订单前锁定订单/活动支付尝试；与回调/查单成功争用同一锁顺序，
   避免成功与释放库存同时提交。
+- M5.7 订单详情向本人和授权管理员追加 `refunds` 只读数组。买家只获得公开退款号、整数 VND
+  金额、标准状态和请求/更新时间；不返回管理员原因、requested_by、provider refund ID、
+  provider status、secret reference 或上游响应。查询先按认证 `member_id` 锁定订单关系，不能
+  通过同商城任意退款 ID 横向读取。
 
 ## 9. RLS、最小权限与审计
 
@@ -342,6 +361,9 @@ REJECTED/DEAD_LETTER` 的开始、完成和错误字段组合由数据库约束�
   快照、复合外键、强制 RLS、运行角色最小权限和按 GHN ShopId 唯一定位未签名提示的受限函数。
   迁移不回填旧订单、不创建仓库资料/渠道/运单；有物理快照、履约资料、GHN secret reference、
   运单、operation 或轨迹事实时，down 以 SQLSTATE `55000` 拒绝。
+- M5.7 新增 `20260727001000_m57_refund_review_capacity_guard`，不新增表或字段，只将
+  `REVIEW_REQUIRED` 纳入应用与数据库退款容量占用，防止供应商结果不确定时重复退款；存在人工
+  复核退款事实时，down 以 SQLSTATE `55000` 拒绝。
 - local/test seed 只登记权限，不创建持久化支付/物流渠道或任何业务事实。集成测试仅在回滚事务
   中创建禁用、非秘密测试渠道，避免把虚构商户配置误认为可用 sandbox。
 - fresh deploy、M2-to-current、重复 deploy、生产运行角色权限、RLS、指纹和索引均需自动化

@@ -80,6 +80,13 @@ export type OrderDetail = OrderSummary & {
     'created_at' | 'id' | 'is_default' | 'label' | 'status' | 'updated_at' | 'version'
   > | null;
   cancellation_reason: string | null;
+  refunds: Array<{
+    amount_vnd: number;
+    public_number: string;
+    requested_at: string;
+    status: string;
+    updated_at: string;
+  }>;
   transitions: Array<{
     created_at: string;
     event: string;

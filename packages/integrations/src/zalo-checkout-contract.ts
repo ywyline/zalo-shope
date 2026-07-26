@@ -62,6 +62,37 @@ export function buildZaloCheckoutCallbackMacData(input: {
   ].join('&');
 }
 
+export function buildZaloCheckoutCreateRefundMacData(input: {
+  amountVnd: number;
+  appId: string;
+  description: string;
+  privateKey: string;
+  transactionId: string;
+}): string {
+  if (!Number.isSafeInteger(input.amountVnd) || input.amountVnd <= 0) {
+    throw new RangeError('amountVnd must be a positive safe integer');
+  }
+  return [
+    `appId=${requireNonEmpty(input.appId, 'appId')}`,
+    `transId=${requireNonEmpty(input.transactionId, 'transactionId')}`,
+    `amount=${input.amountVnd}`,
+    `description=${input.description}`,
+    `privateKey=${requireNonEmpty(input.privateKey, 'privateKey')}`,
+  ].join('&');
+}
+
+export function buildZaloCheckoutQueryRefundMacData(input: {
+  appId: string;
+  privateKey: string;
+  refundId: string;
+}): string {
+  return [
+    `appId=${requireNonEmpty(input.appId, 'appId')}`,
+    `refundId=${requireNonEmpty(input.refundId, 'refundId')}`,
+    `privateKey=${requireNonEmpty(input.privateKey, 'privateKey')}`,
+  ].join('&');
+}
+
 export function canonicalizeZaloCheckoutOverallMacFields(
   fields: Readonly<Record<string, unknown>>,
 ): string {
