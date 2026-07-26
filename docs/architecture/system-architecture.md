@@ -150,7 +150,22 @@ docs/
   只重置调度字段并追加不含 payload 的审计。Inbox 由供应商、渠道、环境和外部事件键的数据库
   唯一约束承担并发去重，摘要不一致稳定拒绝。
 - worker handler 以 `event_type + event_version` 注册，并至少兼容当前和上一事件版本。M5.3 仅在
-  `NODE_ENV=test` 注册无外部调用的探针处理器；非 test 构造硬失败，尚无真实支付/物流 handler。
+  `NODE_ENV=test` 注册无外部调用的探针处理器。M5.4 新增 `payment.create.requested.v1` handler，
+  只连接确定性 test-only 支付适配器；适配器在非 test 环境构造硬失败，尚无真实支付/物流 handler。
+
+### M5.4 已实施支付事务边界
+
+- `ONLINE` 下单复用 M4 Serializable 事务，原子创建 `PENDING_PAYMENT` 订单、库存预留、首个
+  `CREATED` 支付尝试、初始转换和 `payment.create.requested.v1` outbox；渠道默认不存在/禁用，
+  只有测试中显式启用的商城独立 sandbox fixture 可进入该路径。
+- worker 在事务内读取商城绑定支付/订单事实，结束事务后调用 `PaymentProvider.createPayment`，
+  再校验 attempt/order/store/amount/expiry/extradata 并只保存 launch/nonce hash、供应商幂等引用和
+  显式转换。崩溃重试继续使用同一内部尝试 ID，不跨数据库事务调用供应商。
+- 主动查单和未来回调共用 `applyPaymentProviderFact`。匹配成功在一个事务内把支付尝试推进成功、
+  消费预留一次并记录订单 `PENDING_PAYMENT -> CONFIRMED -> PENDING_FULFILLMENT` 两条转换；重复
+  成功无第二次库存动作。金额/商城/订单/attempt 篡改、未知状态和迟到成功进入人工复核。
+- 单次失败不关闭订单；支付窗口内允许幂等创建新尝试且同订单最多一个活动尝试。取消/到期按
+  订单后支付尝试的统一锁顺序终止活动尝试并释放预留，迟到成功不能复活终态订单。
 
 ### M4 已实施事务边界
 

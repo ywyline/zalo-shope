@@ -12,12 +12,15 @@ export type RefundProviderStatus = 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'UNKNOWN
 
 export type PaymentProviderFact = Readonly<{
   amountVnd: number;
+  attemptId: string;
   currency: 'VND';
   occurredAt?: Date;
+  orderId: string;
   providerOrderId: string;
   providerStatus: string;
   providerTransactionId?: string;
   status: PaymentProviderStatus;
+  storeId: string;
 }>;
 
 export type RefundProviderFact = Readonly<{
@@ -62,7 +65,13 @@ export interface PaymentProvider {
     orderId: string;
     publicOrderNumber: string;
     storeId: string;
-  }): Promise<Readonly<{ launchAction: PaymentLaunchAction }>>;
+  }): Promise<
+    Readonly<{
+      launchAction: PaymentLaunchAction;
+      providerOrderId?: string;
+      providerStatus?: string;
+    }>
+  >;
 
   queryPayment(input: { providerOrderId: string; storeId: string }): Promise<PaymentProviderFact>;
 

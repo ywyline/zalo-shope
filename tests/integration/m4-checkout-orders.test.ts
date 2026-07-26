@@ -616,7 +616,7 @@ describe('M4 address, checkout and COD orders', () => {
     expect(changed.status).toBe(409);
   });
 
-  it('rejects client amount fields, stale quote facts and ONLINE order creation without side effects', async () => {
+  it('rejects client amount fields, stale quote facts and unavailable ONLINE checkout without side effects', async () => {
     const address = await owner.address.findFirstOrThrow({ where: { memberId: fixture.memberId } });
     const before = await owner.order.count({ where: { memberId: fixture.memberId } });
     const tamperedQuote = await api()
@@ -667,20 +667,8 @@ describe('M4 address, checkout and COD orders', () => {
         locale: 'vi',
         payment_method: 'ONLINE',
       });
-    expect(onlineQuote.status).toBe(201);
-    const online = await api()
-      .post('/v1/checkout/orders')
-      .set({ ...memberHeaders(), 'Idempotency-Key': `m4-online-${suffix}` })
-      .send({
-        address_id: address.id,
-        coupon_code: null,
-        items: [{ quantity: 1, sku_code: skuCode }],
-        locale: 'vi',
-        payment_method: 'ONLINE',
-        quote_hash: onlineQuote.body.quote_hash,
-      });
-    expect(online.status).toBe(409);
-    expect(online.body.details?.reason_code).toBe('COD_ONLY_IN_M4');
+    expect(onlineQuote.status).toBe(409);
+    expect(onlineQuote.body.details?.reason_code).toBe('ONLINE_PAYMENT_UNAVAILABLE');
     expect(await owner.order.count({ where: { memberId: fixture.memberId } })).toBe(before);
   });
 

@@ -1,9 +1,10 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M5 Payment, Refund, Shipping and Integration API
-  version: 0.5.0-draft
+  version: 0.5.4-partial
   description: >-
-    M5.1 已冻结、尚未实施的增量契约；与 openapi.m1-m4.yaml 共同描述目标 API。
+    M5.4 已实施在线订单、支付尝试、异步 launch、本人查询/重试和 test-only 主动查单；
+    其余路径仍为 M5.5-M5.7 目标草案。本文与 openapi.m1-m4.yaml 共同描述增量 API。
     支付采用 ZaloPay through Zalo Checkout，物流采用 GHN，两个商城使用独立渠道配置。
     客户端 Checkout/PaymentDone、供应商回调和 GHN webhook 均不能直接修改金额、库存或状态。
 servers:
@@ -37,7 +38,7 @@ paths:
             schema: { $ref: '#/components/schemas/OnlineCheckoutOrderRequest' }
       responses:
         '201':
-          description: 在线订单与短期 Zalo Checkout launch；供应商 orderId 尚未由 SDK 产生
+          description: 在线订单及首个内部支付尝试；launch 由 outbox worker 异步准备
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OnlineCheckoutOrderResult' }
@@ -64,10 +65,10 @@ paths:
               additionalProperties: false
       responses:
         '201':
-          description: 新尝试及短期 launch；同订单最多一个活动尝试
+          description: 新内部尝试；同订单最多一个活动尝试，launch 由 worker 异步准备
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/PaymentLaunch' }
+              schema: { $ref: '#/components/schemas/PaymentAttempt' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -102,7 +103,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
-  /v1/orders/{orderId}/payments/{paymentId}:
+  /v1/payments/{paymentId}:
     get:
       tags: [Member payments]
       summary: 查询本人订单的内部支付状态
@@ -110,7 +111,6 @@ paths:
       security: [{ StoreCode: [], MemberBearer: [] }]
       parameters:
         - $ref: '#/components/parameters/StoreCode'
-        - $ref: '#/components/parameters/OrderId'
         - $ref: '#/components/parameters/PaymentId'
       responses:
         '200':
@@ -120,6 +120,48 @@ paths:
               schema: { $ref: '#/components/schemas/PaymentAttempt' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/payments/{paymentId}/launch:
+    get:
+      tags: [Member payments]
+      summary: 获取 worker 已准备且完整性校验通过的短期 Checkout 动作
+      description: >-
+        M5.4 只可能由 NODE_ENV=test 的确定性适配器生成；非测试环境没有可构造的测试适配器。
+        返回 MAC 但不返回 Private Key、secret reference 或其他商城配置。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/PaymentId'
+      responses:
+        '200':
+          description: 当前本人支付尝试的短期 launch
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentLaunch' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
+  /v1/payments/{paymentId}/query:
+    post:
+      tags: [Member payments]
+      summary: 主动查询本人支付尝试并提交统一支付事实命令
+      description: >-
+        M5.4 仅调用确定性 test provider；SDK 客户端结果不作为支付成功事实。M5.5 将同一路径
+        接入真实 Zalo Checkout getOrderStatus 及限流/补偿策略。
+      security: [{ StoreCode: [], MemberBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/PaymentId'
+      responses:
+        '201':
+          description: 已查询并返回当前内部标准状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentAttempt' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/UpstreamUnavailable' }
   /v1/orders/{orderId}/shipment:
     get:
       tags: [Member shipping]
@@ -523,7 +565,7 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      schema: { type: string, minLength: 16, maxLength: 128 }
+      schema: { type: string, minLength: 16, maxLength: 128, pattern: '^[!-~]+$' }
     OrderId:
       name: orderId
       in: path
@@ -582,53 +624,49 @@ components:
     OnlineCheckoutOrderResult:
       type: object
       additionalProperties: false
-      required: [order_id, order_number, order_status, payment]
+      required:
+        [id, order_number, status, payment_method, payment_status, payable_vnd, payment_attempt_id]
       properties:
-        order_id: { type: string, format: uuid }
+        id: { type: string, format: uuid }
         order_number: { type: string }
-        order_status: { type: string, const: PENDING_PAYMENT }
-        payment: { $ref: '#/components/schemas/PaymentLaunch' }
+        status: { type: string, const: PENDING_PAYMENT }
+        payment_method: { type: string, const: ONLINE }
+        payment_status: { type: string, const: PENDING }
+        payable_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        payment_attempt_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
     PaymentLaunch:
       type: object
       additionalProperties: false
-      required: [payment, launch_token, action]
+      required: [payment_id, kind, expires_at, payload]
       properties:
-        payment: { $ref: '#/components/schemas/PaymentAttempt' }
-        launch_token:
-          type: string
-          minLength: 32
-          description: 短期、绑定 store/member/order/payment/amount/nonce；只在内存中使用
-        action:
+        payment_id: { type: string, format: uuid }
+        kind: { type: string, const: ZALO_CHECKOUT_CREATE_ORDER }
+        expires_at: { type: string, format: date-time }
+        payload:
           type: object
           additionalProperties: false
-          required: [kind, expires_at, payload]
+          required: [amount, desc, item, extradata, method, mac]
           properties:
-            kind: { type: string, const: ZALO_CHECKOUT_CREATE_ORDER }
-            expires_at: { type: string, format: date-time }
-            payload:
-              type: object
-              additionalProperties: false
-              required: [amount, desc, item, extradata, method, mac]
-              properties:
-                amount: { type: integer, minimum: 1, maximum: 9007199254740991 }
-                desc: { type: string, minLength: 1, maxLength: 256 }
-                item:
-                  type: array
-                  description: SDK 接收数组；服务端生成 MAC 时使用该数组的 JSON String
-                  items:
-                    type: object
-                    additionalProperties: false
-                    required: [id, amount]
-                    properties:
-                      id: { type: string, minLength: 1, maxLength: 128 }
-                      amount: { type: integer, minimum: 0, maximum: 9007199254740991 }
-                extradata: { type: string, description: 与 MAC 完全一致的 JSON String }
-                method:
-                  type: string
-                  enum:
-                    - '{"id":"ZALOPAY_SANDBOX","isCustom":false}'
-                    - '{"id":"ZALOPAY","isCustom":false}'
-                mac: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+            amount: { type: integer, minimum: 1, maximum: 9007199254740991 }
+            desc: { type: string, minLength: 1, maxLength: 256 }
+            item:
+              type: array
+              description: SDK 接收数组；服务端生成 MAC 时使用该数组的 JSON String
+              items:
+                type: object
+                additionalProperties: false
+                required: [id, amount]
+                properties:
+                  id: { type: string, minLength: 1, maxLength: 128 }
+                  amount: { type: integer, minimum: 0, maximum: 9007199254740991 }
+            extradata: { type: string, description: 与 MAC 完全一致的 JSON String }
+            method:
+              type: string
+              enum:
+                - '{"id":"ZALOPAY_SANDBOX","isCustom":false}'
+                - '{"id":"ZALOPAY","isCustom":false}'
+            mac: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
     ProviderOrderBindRequest:
       type: object
       additionalProperties: false
@@ -643,19 +681,41 @@ components:
       type: object
       additionalProperties: false
       required:
-        [id, public_number, order_id, amount_vnd, currency, status, version, expires_at, updated_at]
+        [
+          id,
+          payment_number,
+          order_id,
+          amount_vnd,
+          currency,
+          status,
+          version,
+          expires_at,
+          launch_ready,
+          transitions,
+          created_at,
+        ]
       properties:
         id: { type: string, format: uuid }
-        public_number: { type: string }
+        payment_number: { type: string }
         order_id: { type: string, format: uuid }
         amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
         currency: { type: string, const: VND }
         status: { $ref: '#/components/schemas/PaymentAttemptStatus' }
-        provider_order_reference_masked: { type: [string, 'null'] }
-        recovery_action: { type: string, enum: [WAIT, RETRY_ALLOWED, CONTACT_SUPPORT, NONE] }
+        launch_ready: { type: boolean }
+        transitions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [event, from_status, to_status, created_at]
+            properties:
+              event: { type: string }
+              from_status: { type: [string, 'null'] }
+              to_status: { $ref: '#/components/schemas/PaymentAttemptStatus' }
+              created_at: { type: string, format: date-time }
         version: { type: integer, minimum: 1 }
         expires_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
     PaymentPage:
       type: object
       additionalProperties: false

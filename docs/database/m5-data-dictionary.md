@@ -1,6 +1,6 @@
 # M5 支付、退款、物流与可靠消息数据字典
 
-> 状态：M5.1 契约已冻结；M5.2 数据库与权限基础已实施，运行时 API 尚未开放
+> 状态：M5.1 契约已冻结；M5.2-M5.4 数据、可靠消息与 test-only 在线支付核心已实施
 >
 > 日期：2026-07-25
 >
@@ -279,7 +279,8 @@ REJECTED/DEAD_LETTER` 的开始、完成和错误字段组合由数据库约束�
 - `order_payment_status` 向后兼容增加 `PARTIALLY_REFUNDED/FULLY_REFUNDED`；COD 语义不变。
 - `orders` 可增加成功支付尝试复合 FK/投影版本，但支付尝试仍是完整事实来源。
 - 在线订单创建继续使用 M4 同一原子边界，区别是初始订单 `PENDING_PAYMENT`、支付尝试
-  `CREATED` 和 `payment.launch.requested.v1` outbox 同事务写入。
+  `CREATED` 和 `payment.create.requested.v1` outbox 同事务写入。M5.4 没有新增表或迁移，直接
+  使用 M5.2 预置的金额复合外键、活动尝试唯一索引、RLS 和 append-only 转换事实。
 - M4 checkout idempotency 请求 hash 包含 `payment_method=ONLINE`，同键跨 COD/ONLINE 冲突。
 - M4 过期 worker 在关闭在线订单前锁定订单/活动支付尝试；与回调/查单成功争用同一锁顺序，
   避免成功与释放库存同时提交。

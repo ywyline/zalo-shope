@@ -7,10 +7,12 @@ import {
 import { parseRuntimeConfig, type RuntimeConfig } from '@zalo-shop/config';
 import { createRuntimePrismaClient } from '@zalo-shop/database';
 import {
+  DeterministicPaymentTestProvider,
   DeterministicZaloTestProvider,
   S3MediaStorageProvider,
   ZaloOpenApiIdentityProvider,
   type ZaloIdentityProvider,
+  type PaymentProvider,
 } from '@zalo-shop/integrations';
 import { createHttpLogger, createLogger } from '@zalo-shop/logger';
 import { checkInfrastructure } from '@zalo-shop/platform';
@@ -66,6 +68,9 @@ import { OrdersService } from './orders/orders.service';
 import { OrdersAdminController } from './orders-admin/orders-admin.controller';
 import { DeliveryAdminController } from './delivery-admin/delivery-admin.controller';
 import { DeliveryAdminService } from './delivery-admin/delivery-admin.service';
+import { PaymentsController } from './payments/payments.controller';
+import { PaymentsService } from './payments/payments.service';
+import { PAYMENT_PROVIDER } from './payments/payment.tokens';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -100,6 +105,14 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
   return new DisabledZaloIdentityProvider();
 }
 
+function createPaymentProvider(config: RuntimeConfig): PaymentProvider | null {
+  if (config.PAYMENT_PROVIDER !== 'test') return null;
+  return new DeterministicPaymentTestProvider({
+    nodeEnvironment: config.NODE_ENV,
+    secret: config.PAYMENT_TEST_PROVIDER_SECRET!,
+  });
+}
+
 @Module({
   controllers: [
     HealthController,
@@ -126,6 +139,7 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     OrdersController,
     OrdersAdminController,
     DeliveryAdminController,
+    PaymentsController,
   ],
   providers: [
     AdminService,
@@ -145,6 +159,7 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     CheckoutService,
     OrdersService,
     DeliveryAdminService,
+    PaymentsService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
       provide: DATABASE_CLIENT,
@@ -157,6 +172,10 @@ function createZaloProvider(config: RuntimeConfig): ZaloIdentityProvider {
     {
       provide: MEDIA_STORAGE_PROVIDER,
       useFactory: () => new S3MediaStorageProvider(runtimeConfig),
+    },
+    {
+      provide: PAYMENT_PROVIDER,
+      useFactory: () => createPaymentProvider(runtimeConfig),
     },
     {
       provide: INFRASTRUCTURE_CHECKER,

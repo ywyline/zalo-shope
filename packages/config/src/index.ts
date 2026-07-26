@@ -15,6 +15,11 @@ const optionalSecret = z.preprocess(
   z.string().min(8).optional(),
 );
 
+const optionalStrongSecret = z.preprocess(
+  (value) => (typeof value === 'string' && value === '' ? undefined : value),
+  z.string().min(32).optional(),
+);
+
 const productionPlaceholderValues = {
   AUTH_JWT_SECRET: [
     'local_jwt_secret_replace_before_shared_deployment',
@@ -100,6 +105,8 @@ const runtimeConfigSchema = z
       .min(1_000)
       .max(3_600_000)
       .default(300_000),
+    PAYMENT_PROVIDER: z.enum(['disabled', 'test']).default('disabled'),
+    PAYMENT_TEST_PROVIDER_SECRET: optionalStrongSecret,
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
       .default('info'),
@@ -134,6 +141,20 @@ const runtimeConfigSchema = z
         code: 'custom',
         message: 'must be greater than or equal to OUTBOX_WORKER_RETRY_BASE_DELAY_MS',
         path: ['OUTBOX_WORKER_RETRY_MAX_DELAY_MS'],
+      });
+    }
+    if (config.PAYMENT_PROVIDER === 'test' && !config.PAYMENT_TEST_PROVIDER_SECRET) {
+      context.addIssue({
+        code: 'custom',
+        message: 'is required for the test provider',
+        path: ['PAYMENT_TEST_PROVIDER_SECRET'],
+      });
+    }
+    if (config.PAYMENT_PROVIDER === 'test' && config.NODE_ENV !== 'test') {
+      context.addIssue({
+        code: 'custom',
+        message: 'test provider is allowed only when NODE_ENV=test',
+        path: ['PAYMENT_PROVIDER'],
       });
     }
     if (config.NODE_ENV === 'production') {

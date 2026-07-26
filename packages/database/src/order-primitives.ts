@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { transitionOrderStatus, type StoreContext } from '@zalo-shop/domain';
 
 import { withStoreTransaction } from './index';
+import { terminateActivePaymentAttemptsInTransaction } from './payment-primitives';
 
 type ReconciliationRow = {
   id: string;
@@ -76,10 +77,19 @@ export function reconcileReservationBackedOrders(
         continue;
       }
       if (row.reservation_status === 'CONSUMED') continue;
+      if (row.status === 'PENDING_PAYMENT') {
+        await terminateActivePaymentAttemptsInTransaction(transaction, context, {
+          orderId: row.id,
+          reason: `Inventory reservation ${row.reservation_status.toLowerCase()}`,
+          source: 'RECONCILIATION',
+          target: 'EXPIRED',
+        });
+      }
       const updated = await transaction.order.updateMany({
         data: {
           cancellationReason: `Inventory reservation ${row.reservation_status.toLowerCase()}`,
           closedAt: now,
+          ...(row.status === 'PENDING_PAYMENT' ? { paymentStatus: 'EXPIRED' as const } : {}),
           status: 'CLOSED',
           version: { increment: 1 },
         },

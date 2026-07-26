@@ -19,6 +19,7 @@ import {
   consumeReservationInTransaction,
   InventoryPrimitiveError,
   releaseReservationInTransaction,
+  terminateActivePaymentAttemptsInTransaction,
   withStoreTransaction,
 } from '@zalo-shop/database';
 import { createStoreContext, transitionOrderStatus, type StoreContext } from '@zalo-shop/domain';
@@ -116,9 +117,18 @@ export class OrdersService {
         );
         if (!order) throw new NotFoundException('Order not found');
         if (order.status === 'CANCELLED') return this.renderSummary(order);
-        if (order.status !== 'PENDING_CONFIRMATION')
+        if (order.status !== 'PENDING_CONFIRMATION' && order.status !== 'PENDING_PAYMENT')
           throw new ConflictException('ORDER_STATE_CONFLICT');
         if (!order.reservationId) throw new ConflictException('ORDER_RESERVATION_MISSING');
+        if (order.status === 'PENDING_PAYMENT') {
+          if (order.paymentMethod !== 'ONLINE') throw new ConflictException('ORDER_STATE_CONFLICT');
+          await terminateActivePaymentAttemptsInTransaction(transaction, member.context, {
+            orderId: order.id,
+            reason: input.reason,
+            source: 'MEMBER',
+            target: 'CANCELLED',
+          });
+        }
         await releaseReservationInTransaction(
           transaction,
           member.context,
@@ -267,10 +277,30 @@ export class OrdersService {
         const order = await this.lockOrder(transaction, context, input.orderId);
         if (!order) throw new NotFoundException('Order not found');
         if (order.status === 'CANCELLED') return this.renderSummary(order);
-        if (order.status !== 'PENDING_CONFIRMATION' && order.status !== 'PENDING_FULFILLMENT')
+        if (
+          order.status !== 'PENDING_CONFIRMATION' &&
+          order.status !== 'PENDING_PAYMENT' &&
+          order.status !== 'PENDING_FULFILLMENT'
+        )
+          throw new ConflictException('ORDER_STATE_CONFLICT');
+        if (order.paymentMethod === 'ONLINE' && order.status !== 'PENDING_PAYMENT')
           throw new ConflictException('ORDER_STATE_CONFLICT');
         if (!order.reservationId) throw new ConflictException('ORDER_RESERVATION_MISSING');
-        if (order.status === 'PENDING_CONFIRMATION') {
+        if (order.status === 'PENDING_PAYMENT') {
+          if (order.paymentMethod !== 'ONLINE') throw new ConflictException('ORDER_STATE_CONFLICT');
+          await terminateActivePaymentAttemptsInTransaction(transaction, context, {
+            orderId: order.id,
+            reason: input.reason,
+            source: 'ADMIN',
+            target: 'CANCELLED',
+          });
+          await releaseReservationInTransaction(
+            transaction,
+            context,
+            order.reservationId,
+            `m54-order-admin-cancel-${order.id}`,
+          );
+        } else if (order.status === 'PENDING_CONFIRMATION') {
           await releaseReservationInTransaction(
             transaction,
             context,
@@ -314,6 +344,14 @@ export class OrdersService {
         if (order.status !== 'PENDING_CONFIRMATION' && order.status !== 'PENDING_PAYMENT')
           throw new ConflictException('ORDER_STATE_CONFLICT');
         if (order.reservationId) {
+          if (order.status === 'PENDING_PAYMENT') {
+            await terminateActivePaymentAttemptsInTransaction(transaction, context, {
+              orderId: order.id,
+              reason: input.reason,
+              source: 'ADMIN',
+              target: 'CANCELLED',
+            });
+          }
           await releaseReservationInTransaction(
             transaction,
             context,
@@ -404,6 +442,7 @@ export class OrdersService {
       data: {
         cancellationReason: reason,
         cancelledAt: new Date(),
+        ...(order.paymentMethod === 'ONLINE' ? { paymentStatus: 'CANCELLED' as const } : {}),
         status,
         version: { increment: 1 },
       },
@@ -437,6 +476,9 @@ export class OrdersService {
       data: {
         cancellationReason: reason,
         ...(status === 'CANCELLED' ? { cancelledAt: new Date() } : { closedAt: new Date() }),
+        ...(order.paymentMethod === 'ONLINE' && order.status === 'PENDING_PAYMENT'
+          ? { paymentStatus: 'CANCELLED' as const }
+          : {}),
         status,
         version: { increment: 1 },
       },

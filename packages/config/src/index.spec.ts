@@ -78,6 +78,7 @@ describe('parseRuntimeConfig', () => {
     expect(config.OUTBOX_WORKER_LEASE_MS).toBe(30_000);
     expect(config.OUTBOX_WORKER_RETRY_BASE_DELAY_MS).toBe(1_000);
     expect(config.OUTBOX_WORKER_RETRY_MAX_DELAY_MS).toBe(300_000);
+    expect(config.PAYMENT_PROVIDER).toBe('disabled');
     expect(config.SEARCH_RATE_LIMIT_MAX_REQUESTS).toBe(120);
     expect(config.SEARCH_RATE_LIMIT_WINDOW_SECONDS).toBe(60);
     expect(config.S3_FORCE_PATH_STYLE).toBe(true);
@@ -91,6 +92,28 @@ describe('parseRuntimeConfig', () => {
         ...validEnvironment,
         OUTBOX_WORKER_RETRY_BASE_DELAY_MS: '5000',
         OUTBOX_WORKER_RETRY_MAX_DELAY_MS: '1000',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
+  it('allows the deterministic payment provider only in test with a dedicated secret', () => {
+    expect(
+      parseRuntimeConfig({
+        ...validEnvironment,
+        NODE_ENV: 'test',
+        PAYMENT_PROVIDER: 'test',
+        PAYMENT_TEST_PROVIDER_SECRET: 'p'.repeat(32),
+      }).PAYMENT_PROVIDER,
+    ).toBe('test');
+    expect(() =>
+      parseRuntimeConfig({ ...validEnvironment, NODE_ENV: 'test', PAYMENT_PROVIDER: 'test' }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnvironment,
+        NODE_ENV: 'development',
+        PAYMENT_PROVIDER: 'test',
+        PAYMENT_TEST_PROVIDER_SECRET: 'p'.repeat(32),
       }),
     ).toThrow(InvalidEnvironmentError);
   });

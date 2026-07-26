@@ -121,6 +121,7 @@ function assertVndAmount(
 
 export type PaymentFactIdentity = Readonly<{
   amountVnd: number;
+  attemptId: string;
   currency: string;
   orderId: string;
   providerOrderId: string;
@@ -137,6 +138,7 @@ export function assertPaymentFactMatches(
     expected.currency !== 'VND' ||
     received.currency !== 'VND' ||
     expected.amountVnd !== received.amountVnd ||
+    expected.attemptId !== received.attemptId ||
     expected.orderId !== received.orderId ||
     expected.providerOrderId !== received.providerOrderId ||
     expected.storeId !== received.storeId

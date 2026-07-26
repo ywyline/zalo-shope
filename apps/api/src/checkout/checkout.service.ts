@@ -9,11 +9,13 @@ import {
 } from '@nestjs/common';
 import type { PrismaClient, StoreTransaction } from '@zalo-shop/database';
 import {
+  appendOutboxMessageInTransaction,
   InventoryPrimitiveError,
   reserveInventoryInTransaction,
   withStoreTransaction,
   type InventoryReservationResult,
 } from '@zalo-shop/database';
+import type { RuntimeConfig } from '@zalo-shop/config';
 import {
   calculateDeliveryFees,
   calculateOrderPayable,
@@ -26,6 +28,7 @@ import type { CheckoutOrderRequest, CheckoutQuoteRequest } from '@zalo-shop/cont
 import { AuthService } from '../auth/auth.service';
 import { DATABASE_CLIENT } from '../auth/auth.tokens';
 import { PricingService } from '../pricing/pricing.service';
+import { RUNTIME_CONFIG } from '../health.controller';
 
 type StoreRecord = { id: string; code: string; default_locale: 'en' | 'vi' | 'zh' };
 type MemberContext = {
@@ -41,6 +44,7 @@ type CheckoutOrderResponse = {
   payable_vnd: number;
   payment_method: string;
   payment_status: string;
+  payment_attempt_id?: string;
   status: string;
 };
 
@@ -86,6 +90,7 @@ export class CheckoutService {
     @Inject(DATABASE_CLIENT) private readonly database: PrismaClient,
     @Inject(AuthService) private readonly auth: AuthService,
     @Inject(PricingService) private readonly pricing: PricingService,
+    @Inject(RUNTIME_CONFIG) private readonly config: RuntimeConfig,
   ) {}
 
   public async quote(input: {
@@ -118,9 +123,6 @@ export class CheckoutService {
       input.request.locale,
     );
     const requestHash = hash(input.request);
-    if (input.request.payment_method !== 'COD') {
-      throw new ConflictException('COD_ONLY_IN_M4');
-    }
     const orderId = deterministicUuid(
       `${member.storeId}:${member.memberId}:${input.idempotencyKey}`,
     );
@@ -152,6 +154,7 @@ export class CheckoutService {
           if (quote.quote_hash !== input.request.quote_hash)
             throw new ConflictException('QUOTE_STALE');
           if (
+            input.request.payment_method === 'COD' &&
             !isCodAmountAllowed({
               enabled: quote.cod_policy.enabled,
               maxAmountVnd: quote.cod_policy.max_amount_vnd,
@@ -161,18 +164,24 @@ export class CheckoutService {
             throw new ConflictException('COD_UNAVAILABLE');
           }
 
+          const paymentChannel =
+            input.request.payment_method === 'ONLINE'
+              ? await this.activeTestPaymentChannel(transaction, member.storeId)
+              : null;
+
           const inventoryItems = await this.resolveInventoryItems(
             transaction,
             member,
             input.request.items,
           );
-          const expirationRow = (
-            await transaction.$queryRaw<
-              Array<{ expires_at: Date }>
-            >`SELECT CURRENT_TIMESTAMP + INTERVAL '15 minutes' AS expires_at`
+          const clock = (
+            await transaction.$queryRaw<Array<{ current_time: Date }>>`
+              SELECT CURRENT_TIMESTAMP AS current_time
+            `
           )[0];
-          if (!expirationRow) throw new ConflictException('CHECKOUT_TIME_UNAVAILABLE');
-          const expiration = expirationRow.expires_at;
+          if (!clock) throw new ConflictException('CHECKOUT_TIME_UNAVAILABLE');
+          const paymentWindowSeconds = paymentChannel?.paymentWindowSeconds ?? 15 * 60;
+          const expiration = new Date(clock.current_time.getTime() + paymentWindowSeconds * 1_000);
           const reservation = (
             await reserveInventoryInTransaction(transaction, member.context, {
               expiresAt: expiration,
@@ -192,8 +201,18 @@ export class CheckoutService {
             orderId,
             cartId,
           );
+          const paymentAttempt = paymentChannel
+            ? await this.createInitialPaymentAttempt(
+                transaction,
+                member,
+                order,
+                paymentChannel.id,
+                input.idempotencyKey,
+                expiration,
+              )
+            : null;
           await this.redeemCoupon(transaction, member, input.request.coupon_code, order.id);
-          const response = this.renderOrder(order);
+          const response = this.renderOrder(order, paymentAttempt?.id);
           await transaction.idempotencyRecord.create({
             data: {
               expiresAt: new Date(expiration.getTime() + 24 * 60 * 60 * 1_000),
@@ -286,12 +305,19 @@ export class CheckoutService {
       shippingDiscountVnd: fees.shippingDiscountVnd,
       shippingFeeVnd: fees.shippingFeeVnd,
     });
+    if (request.payment_method === 'ONLINE' && orderPayableVnd <= 0) {
+      throw new ConflictException('ONLINE_PAYMENT_AMOUNT_INVALID');
+    }
     // The M3 merchandise quote contains a request-time timestamp and its own
     // timestamp-bound hash. Exclude both volatile fields from the M4 acceptance
     // hash so a quote can be revalidated during order creation.
     const merchandiseFacts = Object.fromEntries(
       Object.entries(merchandise).filter(([key]) => key !== 'quote_hash' && key !== 'quoted_at'),
     );
+    const paymentChannel =
+      request.payment_method === 'ONLINE'
+        ? await this.activeTestPaymentChannel(transaction, member.storeId)
+        : null;
     const quoteCore = {
       address_id: address.id,
       cod_policy: {
@@ -316,6 +342,13 @@ export class CheckoutService {
       fees,
       merchandise: merchandiseFacts,
       order_payable_vnd: orderPayableVnd,
+      payment_policy: paymentChannel
+        ? {
+            channel_id: paymentChannel.id,
+            payment_window_seconds: paymentChannel.paymentWindowSeconds,
+            version: paymentChannel.version,
+          }
+        : null,
       store_id: member.storeId,
     };
     return {
@@ -329,6 +362,76 @@ export class CheckoutService {
       shipping_fee_vnd: fees.shippingFeeVnd,
       quote_hash: hash(quoteCore),
     };
+  }
+
+  private async activeTestPaymentChannel(transaction: StoreTransaction, storeId: string) {
+    if (this.config.NODE_ENV !== 'test' || this.config.PAYMENT_PROVIDER !== 'test') {
+      throw new ConflictException('ONLINE_PAYMENT_UNAVAILABLE');
+    }
+    const channel = await transaction.storePaymentChannel.findFirst({
+      where: {
+        deploymentEnvironment: 'TEST',
+        providerCode: 'ZALO_CHECKOUT_ZALOPAY',
+        providerEnvironment: 'SANDBOX',
+        status: 'ACTIVE',
+        storeId,
+      },
+    });
+    if (!channel) throw new ConflictException('ONLINE_PAYMENT_UNAVAILABLE');
+    return channel;
+  }
+
+  private async createInitialPaymentAttempt(
+    transaction: StoreTransaction,
+    member: MemberContext,
+    order: {
+      id: string;
+      orderNumber: string;
+      payableVnd: bigint;
+    },
+    channelId: string,
+    idempotencyKey: string,
+    expiresAt: Date,
+  ) {
+    const attemptId = deterministicUuid(`${order.id}:payment:1`);
+    const attempt = await transaction.paymentAttempt.create({
+      data: {
+        amountVnd: order.payableVnd,
+        attemptSequence: 1,
+        channelId,
+        correlationId: member.context.correlationId,
+        createIdempotencyKeyHash: hash({ idempotency_key: idempotencyKey, order_id: order.id }),
+        currency: 'VND',
+        expiresAt,
+        id: attemptId,
+        orderId: order.id,
+        publicPaymentNumber: `PAY-${order.id.replaceAll('-', '').toUpperCase()}-1`,
+        status: 'CREATED',
+        storeId: member.storeId,
+      },
+    });
+    await transaction.paymentTransition.create({
+      data: {
+        actorId: member.memberId,
+        actorType: 'MEMBER',
+        correlationId: member.context.correlationId,
+        event: 'CREATE',
+        fromStatus: null,
+        paymentAttemptId: attempt.id,
+        source: 'MEMBER',
+        storeId: member.storeId,
+        toStatus: 'CREATED',
+      },
+    });
+    await appendOutboxMessageInTransaction(transaction, member.context, {
+      aggregateId: attempt.id,
+      aggregateType: 'PAYMENT_ATTEMPT',
+      eventType: 'payment.create.requested',
+      eventVersion: 1,
+      idempotencyKey: `payment.create.requested:${attempt.id}`,
+      payload: { payment_attempt_id: attempt.id, store_id: member.storeId },
+    });
+    return attempt;
   }
 
   private async resolveInventoryItems(
@@ -505,7 +608,7 @@ export class CheckoutService {
         orderDiscountVnd: BigInt(discounts.ORDER),
         orderNumber: `M4-${Date.now().toString(36).toUpperCase()}-${orderId.slice(0, 8).toUpperCase()}`,
         payableVnd: BigInt(quote.order_payable_vnd),
-        paymentMethod: 'COD',
+        paymentMethod: request.payment_method,
         paymentStatus: 'PENDING',
         quoteHash: quote.quote_hash,
         remoteSurchargeVnd: BigInt(quote.remote_surcharge_vnd),
@@ -513,6 +616,7 @@ export class CheckoutService {
         shippingDiscountVnd: BigInt(quote.shipping_discount_vnd),
         shippingFeeVnd: BigInt(quote.shipping_fee_vnd),
         storeId: member.storeId,
+        status: request.payment_method === 'ONLINE' ? 'PENDING_PAYMENT' : 'PENDING_CONFIRMATION',
       },
     });
     for (const item of request.items) {
@@ -580,11 +684,11 @@ export class CheckoutService {
         actorId: member.memberId,
         actorType: 'MEMBER',
         correlationId: member.context.correlationId,
-        event: 'SUBMIT_COD',
+        event: request.payment_method === 'ONLINE' ? 'SUBMIT_ONLINE' : 'SUBMIT_COD',
         fromStatus: null,
         orderId: order.id,
         storeId: member.storeId,
-        toStatus: 'PENDING_CONFIRMATION',
+        toStatus: request.payment_method === 'ONLINE' ? 'PENDING_PAYMENT' : 'PENDING_CONFIRMATION',
       },
     });
     return order;
@@ -623,15 +727,18 @@ export class CheckoutService {
     return typeof value === 'string' ? value : 'Unnamed';
   }
 
-  private renderOrder(order: {
-    id: string;
-    orderNumber: string;
-    status: string;
-    paymentMethod: string;
-    paymentStatus: string;
-    payableVnd: bigint;
-    createdAt: Date;
-  }): CheckoutOrderResponse {
+  private renderOrder(
+    order: {
+      id: string;
+      orderNumber: string;
+      status: string;
+      paymentMethod: string;
+      paymentStatus: string;
+      payableVnd: bigint;
+      createdAt: Date;
+    },
+    paymentAttemptId?: string,
+  ): CheckoutOrderResponse {
     return {
       created_at: order.createdAt.toISOString(),
       id: order.id,
@@ -639,6 +746,7 @@ export class CheckoutService {
       payable_vnd: safeAmount(order.payableVnd),
       payment_method: order.paymentMethod,
       payment_status: order.paymentStatus,
+      ...(paymentAttemptId ? { payment_attempt_id: paymentAttemptId } : {}),
       status: order.status,
     };
   }
@@ -656,6 +764,7 @@ export class CheckoutService {
       !Number.isSafeInteger(record.payable_vnd) ||
       typeof record.payment_method !== 'string' ||
       typeof record.payment_status !== 'string' ||
+      (record.payment_attempt_id !== undefined && typeof record.payment_attempt_id !== 'string') ||
       typeof record.status !== 'string'
     ) {
       throw new ConflictException('ORDER_IDEMPOTENCY_RECORD_INVALID');
@@ -667,6 +776,9 @@ export class CheckoutService {
       payable_vnd: record.payable_vnd,
       payment_method: record.payment_method,
       payment_status: record.payment_status,
+      ...(typeof record.payment_attempt_id === 'string'
+        ? { payment_attempt_id: record.payment_attempt_id }
+        : {}),
       status: record.status,
     };
   }

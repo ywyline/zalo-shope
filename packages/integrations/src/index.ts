@@ -428,6 +428,7 @@ export function createZaloTestToken(
 
 export * from './provider-contract';
 export * from './payment-provider';
+export * from './deterministic-payment-test-provider';
 export * from './shipping-provider';
 export * from './zalo-checkout-contract';
 export * from './ghn-contract';

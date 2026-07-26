@@ -36,6 +36,7 @@ describe('M5 payment attempt state machine', () => {
 describe('M5 payment fact validation', () => {
   const expected = {
     amountVnd: 500_000,
+    attemptId: 'payment-1',
     currency: 'VND',
     orderId: 'order-1',
     providerOrderId: 'zmp-order-1',
@@ -46,6 +47,9 @@ describe('M5 payment fact validation', () => {
     expect(() => assertPaymentFactMatches(expected, expected)).not.toThrow();
     expect(() =>
       assertPaymentFactMatches(expected, { ...expected, storeId: 'store-fashion' }),
+    ).toThrow('PAYMENT_FACT_MISMATCH');
+    expect(() =>
+      assertPaymentFactMatches(expected, { ...expected, attemptId: 'payment-2' }),
     ).toThrow('PAYMENT_FACT_MISMATCH');
     expect(() => assertPaymentFactMatches(expected, { ...expected, amountVnd: 499_999 })).toThrow(
       'PAYMENT_FACT_MISMATCH',

@@ -163,9 +163,18 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
 
 - 增量契约见 `docs/api/openapi.m4.yaml`，字段/约束见 `docs/database/m4-data-dictionary.md`，管理员授权见 `docs/security/m4-permission-matrix.md`。
 - `POST /v1/checkout/quote` 和 `POST /v1/checkout/orders` 只信任商城绑定会员、地址 ID、SKU/数量、券 code 和报价 hash；金额、优惠、库存、运费、商城和订单状态均由服务端重新加载。
-- M4 只允许 COD 下单。ONLINE 请求不会创建订单，仓库没有真实支付成功回调、物流报价、运单号或轨迹的假实现。
+- M4 交付时只允许 COD；该基线现由下述 M5.4 受限在线支付核心向后兼容扩展。
 - 地址和订单地址快照中的敏感字段加密；API 只返回掩码手机号。正式 staging/production 前必须导入并复核越南权威三级行政区主数据。
 - COD 确认消费库存预留；确认前取消释放预留；确认后发货前取消追加 RESTORE 反向流水。重复命令不会重复扣减或恢复。
+
+## M5.4 受限在线支付核心
+
+- 增量契约见 `docs/api/openapi.m5.yaml`，支付/可靠消息数据边界见 `docs/database/m5-data-dictionary.md`。
+- `PAYMENT_PROVIDER=test` 只允许与 `NODE_ENV=test` 同时使用，并要求独立的 `PAYMENT_TEST_PROVIDER_SECRET`；适配器不发网络请求，非测试环境构造会硬失败。
+- 测试中显式启用的商城独立 sandbox 渠道可创建 ONLINE 订单。订单、库存预留、首个支付尝试和 `payment.create.requested.v1` outbox 在同一事务提交，订单响应不伪造供应商成功。
+- worker 在数据库事务外生成确定性测试 launch，再保存哈希和供应商幂等引用。主动查单与未来回调共用支付事实命令；匹配成功只消费一次库存并推进两段订单状态。
+- 单次失败不关闭订单；窗口内可创建幂等新尝试。取消和到期会终止活动尝试并释放预留，迟到成功进入人工复核，不复活订单。
+- 当前没有真实 ZaloPay/Checkout 凭据、SDK、回调或 sandbox 验收。开发环境默认 `PAYMENT_PROVIDER=disabled`，不得把 test provider 或测试 launch 作为生产集成。
 
 ## 环境与密钥
 
@@ -176,6 +185,7 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
 - 对象存储就绪检查只对配置的 `S3_BUCKET` 执行 `HeadBucket`，不要求账户级 `ListBuckets`；临时 STS 凭据可通过可选的 `S3_SESSION_TOKEN` 注入。
 - 日志默认遮盖认证、Cookie 和 Zalo Token 请求头。
 - `ZALO_IDENTITY_PROVIDER=test` 只允许 `NODE_ENV=test`；生产环境会拒绝启动该 provider。
+- `PAYMENT_PROVIDER=test` 同样只允许 `NODE_ENV=test` 且需要专用测试密钥；development/production 默认并应保持 `disabled`，真实支付从商城 secret reference 解析属于 M5.5。
 - 真实 Zalo 登录使用 `ZALO_IDENTITY_PROVIDER=open-api`，并要求服务端配置 `ZALO_APP_ID`、`ZALO_MINI_APP_ID` 和 `ZALO_APP_SECRET`。App Secret 只能写入被 Git 忽略的本地环境或部署密钥，禁止写入 `VITE_*`、前端代码、终端输出和版本库。
 - `ZALO_OPEN_API_TIMEOUT_MS` 控制 Graph API 短超时；`ZALO_TOKEN_METADATA_TTL_SECONDS` 只是官方响应未给出过期时间时的保守元数据，不替代每次敏感操作的上游实时校验。
 - `CONTENT_EXTERNAL_TARGET_HOSTS` 是逗号分隔的页面外跳 HTTPS 主机白名单；默认空值表示禁止全部外跳，配置不含协议或路径。

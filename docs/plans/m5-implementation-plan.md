@@ -157,6 +157,14 @@ version 的审计重放。当前与上一探针事件版本仅在 `NODE_ENV=test
 - 测试适配器覆盖成功、失败、超时、重复、乱序、金额/商城篡改和未知状态，并在非测试环境
   构造时硬失败。
 
+完成记录（2026-07-26）：本阶段已按受限路径实现 ONLINE 原子下单、首个/重试支付尝试、
+`payment.create.requested.v1` handler、确定性 test-only provider、短期 launch 完整性校验、统一
+支付事实命令、一次性库存消费、两段订单转换、取消/过期协调和迟到成功复核。未新增数据库迁移，
+继续使用 M5.2 的金额复合外键、活动尝试唯一索引、RLS 和 append-only 转换事实。完整本地门禁与
+边界见 `docs/reports/m5.4-completion-report.md`。真实 ZaloPay/Checkout SDK、HTTPS 回调、sandbox、
+Zalo 宿主真机、GHN、退款和对账仍未实施或验收；下一步只能在取得批准的真实配置后进入 M5.5，
+不得据此标记整个 M5 完成。
+
 ### M5.5：选定支付供应商与 Zalo Checkout
 
 - 按已确认官方文档实现唯一选定支付适配器，端点采用 allowlist、HTTPS、连接/响应超时、

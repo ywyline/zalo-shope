@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, type ArgumentsHost } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ServiceUnavailableException,
+  type ArgumentsHost,
+} from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApiExceptionFilter } from './api-exception.filter';
@@ -79,6 +84,21 @@ describe('API conflict reason envelopes', () => {
       correlation_id: correlationId,
       details: { reason_code: 'VERSION_CONFLICT' },
       message_key: 'error.conflict',
+    });
+  });
+
+  it('maps provider availability failures to the public 503 envelope', () => {
+    const test = harness();
+    new ApiExceptionFilter().catch(
+      new ServiceUnavailableException('provider response must stay private'),
+      test.host,
+    );
+
+    expect(test.status).toHaveBeenCalledWith(503);
+    expect(test.json).toHaveBeenCalledWith({
+      code: 'UPSTREAM_UNAVAILABLE',
+      correlation_id: 'm35-filter-test',
+      message_key: 'error.upstream_unavailable',
     });
   });
 });
