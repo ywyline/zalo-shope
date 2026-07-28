@@ -107,3 +107,6 @@ export * from './delivery';
 export * from './order';
 export * from './payment';
 export * from './shipment';
+export * from './after-sales';
+export * from './member';
+export * from './share';

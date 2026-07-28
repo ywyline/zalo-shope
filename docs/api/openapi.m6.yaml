@@ -1,0 +1,2169 @@
+openapi: 3.1.0
+info:
+  title: Zalo Shop M6 incremental API contract
+  version: 0.6.1-contract
+  description: >-
+    M6.1 contract only. It is combined with the M1-M5 contracts and does not mean that these
+    routes are implemented. Buyer store ownership comes from the authenticated member and
+    X-Store-Code. Admin routes additionally require the matching store_id query parameter.
+servers:
+  - url: https://api.example.invalid
+paths:
+  /v1/after-sales/evidence-uploads:
+    post:
+      operationId: initializeAfterSaleEvidenceUpload
+      summary: Initialize a private evidence upload for the current member and store
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EvidenceUploadRequest' }
+      responses:
+        '201':
+          description: Private upload target; object is unreadable until confirmed and scanned
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Referrer-Policy: { $ref: '#/components/headers/NoReferrer' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvidenceUpload' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/after-sales/evidence-uploads/{evidenceId}/confirm:
+    post:
+      operationId: confirmAfterSaleEvidenceUpload
+      summary: Confirm object metadata and request scanning
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/EvidenceId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EvidenceConfirmRequest' }
+      responses:
+        '202':
+          description: Evidence is pending scanning
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvidenceView' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/after-sales:
+    get:
+      operationId: listMemberAfterSales
+      summary: List the current member's after-sale cases
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { name: type, in: query, schema: { $ref: '#/components/schemas/AfterSaleType' } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/AfterSaleStatus' } }
+      responses:
+        '200':
+          description: Member-scoped cases
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSalePage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    post:
+      operationId: createAfterSale
+      summary: Submit a refund-only, return-refund, or equivalent exchange request
+      description: Amount, policy result, state, refund, inventory and store facts are server-owned.
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleCreateRequest' }
+      responses:
+        '201':
+          description: Submitted case
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/after-sales/{afterSaleId}:
+    get:
+      operationId: getMemberAfterSale
+      summary: Get the current member's case and public timeline
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      responses:
+        '200':
+          description: Member-safe case detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/after-sales/{afterSaleId}/cancel:
+    post:
+      operationId: cancelMemberAfterSale
+      summary: Cancel a case that is still pending review
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VersionedReasonRequest' }
+      responses:
+        '200':
+          description: Current case; an idempotent replay returns the same fact
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/after-sales/{afterSaleId}/return-shipment:
+    post:
+      operationId: submitAfterSaleReturnShipment
+      summary: Submit buyer-provided return tracking without treating it as provider truth
+      description: >-
+        On the first valid submission from APPROVED, one transaction appends START_RETURN and
+        RETURN_SHIPPED in order, advances the aggregate to RETURN_IN_TRANSIT and records the
+        member-provided tracking fact. It must lock and win before the exclusive
+        return_deadline_at; at or after that instant the request conflicts. Idempotent replay
+        appends neither event again.
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReturnShipmentRequest' }
+      responses:
+        '200':
+          description: Case moved through an explicit return event
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/after-sales/{afterSaleId}/evidence/{evidenceId}:
+    get:
+      operationId: getMemberAfterSaleEvidence
+      summary: Get a short-lived no-store URL for the current member's scanned evidence
+      description: >-
+        Access is issued only while the claimed object is READY and before access_expires_at.
+        Expired, failed, quarantined, deletion-pending and deleted objects return the same not-found
+        response. A legal hold can retain bytes but never extends this member access window.
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+        - { $ref: '#/components/parameters/EvidenceId' }
+      responses:
+        '200':
+          description: Member-scoped private evidence access
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Referrer-Policy: { $ref: '#/components/headers/NoReferrer' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvidenceAccess' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/orders/{orderId}/after-sales:
+    post:
+      operationId: createMerchantAfterSale
+      summary: Create an audited merchant-initiated refund case for one order
+      description: The server calculates all refundable amounts and resolves the member and store.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MerchantAfterSaleCreateRequest' }
+      responses:
+        '201':
+          description: Merchant-initiated case; no refund has yet been claimed successful
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/after-sales:
+    get:
+      operationId: listAdminAfterSales
+      summary: List after-sale cases for one authorized store
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { name: order_id, in: query, schema: { type: string, format: uuid } }
+        - { name: member_id, in: query, schema: { type: string, format: uuid } }
+        - { name: type, in: query, schema: { $ref: '#/components/schemas/AfterSaleType' } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/AfterSaleStatus' } }
+      responses:
+        '200':
+          description: Store-scoped cases; evidence content is not included
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSalePage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/admin/after-sales/{afterSaleId}:
+    get:
+      operationId: getAdminAfterSale
+      summary: Read one store-scoped case without private evidence bytes
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      responses:
+        '200':
+          description: Admin case detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/after-sales/{afterSaleId}/review:
+    post:
+      operationId: reviewAfterSale
+      summary: Approve or reject after policy and order fact checks
+      description: >-
+        This initial review command accepts only a non-legacy case in PENDING_REVIEW and appends
+        APPROVE or REJECT. A case created directly in REVIEW_REQUIRED because its order lacks a
+        trustworthy policy snapshot must use resolve-review with LEGACY_APPROVE or LEGACY_REJECT;
+        the two paths cannot be interchanged.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleReviewRequest' }
+      responses:
+        '200':
+          description: Reviewed case
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/after-sales/{afterSaleId}/inspect-return:
+    post:
+      operationId: inspectAfterSaleReturn
+      summary: Record received, restockable, quarantine or scrap quantities
+      description: >-
+        One transaction first appends RETURN_RECEIVED and then derives ACCEPT_INSPECTION only when
+        at least one unit is accepted. A complete all-RETURN_TO_MEMBER inspection derives
+        REJECT_INSPECTION and cannot enter refund or exchange processing. The client cannot select
+        either transition event; idempotent replay appends neither event again. Any
+        RESTOCK_SELLABLE quantity dynamically requires both after-sales inspect and inventory-adjust
+        permission plus recent MFA; otherwise no inspection or inventory fact is committed.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleInspectionRequest' }
+      responses:
+        '200':
+          description: Inspection and any exactly-once inventory action committed atomically
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/after-sales/{afterSaleId}/refund:
+    post:
+      operationId: requestAfterSaleRefund
+      summary: Request server-calculated ONLINE or COD settlement
+      description: >-
+        ONLINE reuses the M5 refund capacity and outbox. COD creates a pending dual-control
+        settlement and is never immediately marked successful. The server branches only from the
+        trusted order payment method: ONLINE requires after-sales review plus M5 refund-create
+        permission; COD requires the independent COD-refund-request permission. The client cannot
+        select the payment branch. From APPROVED, both branches first append QUEUE_REFUND. ONLINE
+        then atomically creates the M5 refund/outbox fact and appends REFUND_REQUESTED; a
+        return-refund already at REFUND_PENDING appends only REFUND_REQUESTED. COD remains at
+        REFUND_PENDING until independently confirmed. Idempotent replay appends no duplicate event.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleRefundRequest' }
+      responses:
+        '202':
+          description: >-
+            Refund or COD settlement is pending; no client amount is accepted. The returned
+            settlements include the public_number required by the separate COD confirmation route.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/after-sales/{afterSaleId}/exchange:
+    post:
+      operationId: createAfterSaleExchange
+      summary: Reserve and start an equal-quantity replacement SKU fulfillment
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleExchangeRequest' }
+      responses:
+        '202':
+          description: Replacement inventory is reserved or the command failed closed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/after-sales/{afterSaleId}/convert-exchange-to-refund:
+    post:
+      operationId: convertAfterSaleExchangeToRefund
+      summary: Convert an inspected exchange to a refund before replacement fulfillment starts
+      description: >-
+        Requires after-sales exchange plus review permission and recent MFA. The server proves no
+        replacement shipment or unreleased reservation exists, appends CONVERT_EXCHANGE_TO_REFUND
+        and keeps all return, inspection and inventory history. A later refund command applies the
+        trusted ONLINE/COD branch and permissions; this command cannot submit an amount.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleExchangeToRefundRequest' }
+      responses:
+        '200':
+          description: Exchange converted to REFUND_PENDING without losing prior facts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/after-sales/{afterSaleId}/resolve-review:
+    post:
+      operationId: resolveAfterSaleManualReview
+      summary: Resolve an uncertain fact or make the one-time decision for a legacy-policy case
+      description: >-
+        RESUME records RESUME_REVIEW and returns only to the stored type-compatible resume state.
+        REJECT records REJECT_REVIEW and is allowed only from APPROVED/RETURN_PENDING after the
+        server proves there are no fund, in-transit return, inspection, inventory or exchange facts.
+        LEGACY_APPROVE/LEGACY_REJECT are accepted only for a newly created REVIEW_REQUIRED case with
+        legacy_policy_review=true and no prior side effects, record a distinct append-only decision,
+        and can execute exactly once. Legacy approval never backfills a current policy as historical;
+        it freezes the reviewed policy basis and, for return-refund/exchange, the submitted one-time
+        return window and shipping payer. The server rejects non-null return terms for non-return
+        types and requires them for return-refund/exchange. policy_basis is an audited reference to
+        reviewed archival rules, not a field for raw evidence, account data or payment details.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleReviewResolveRequest' }
+      responses:
+        '200':
+          description: Case resumed or given its one-time legacy decision after audited validation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/after-sales/{afterSaleId}/cod-refunds/{settlementNumber}/confirm:
+    post:
+      operationId: confirmAfterSaleCodRefund
+      summary: Independently confirm a COD refund without accepting client amount or payout reference
+      description: >-
+        This command is available only after an approved payout adapter or finance workflow has
+        written an encrypted proof fact. The API cannot create that proof or mark an unsupported
+        transfer successful. After proving different initiating/confirming actors and authoritative
+        transfer evidence, one transaction marks the settlement successful and appends
+        REFUND_REQUESTED then REFUND_SUCCEEDED, ending at REFUNDED. Replay returns the same facts
+        without new transitions. settlementNumber is the public_number returned by the refund
+        command; the server resolves and locks it only within the supplied store and after-sale case.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+        - { $ref: '#/components/parameters/SettlementNumber' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleCodRefundConfirmRequest' }
+      responses:
+        '200':
+          description: COD settlement confirmed by a different authorized administrator
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/after-sales/{afterSaleId}/evidence/{evidenceId}:
+    get:
+      operationId: getAdminAfterSaleEvidence
+      summary: Audit and issue short-lived access to one scanned private evidence object
+      description: >-
+        Access is issued only for READY evidence before access_expires_at. Expired, failed,
+        quarantined, deletion-pending and deleted objects are not readable through this route.
+        A legal hold retains bytes for the governed compliance process but does not extend ordinary
+        after-sales access; every successful administrator read remains audited.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+        - { $ref: '#/components/parameters/EvidenceId' }
+      responses:
+        '200':
+          description: Access URL; the read is separately audited
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Referrer-Policy: { $ref: '#/components/headers/NoReferrer' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvidenceAccess' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/after-sale-settings:
+    get:
+      operationId: getAfterSaleSettings
+      summary: Read current-store policy readiness and enforcement state
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+      responses:
+        '200':
+          description: Store-scoped policy snapshot readiness
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSaleSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      operationId: setAfterSalePolicyEnforcement
+      summary: Enable or disable policy snapshot enforcement for one store
+      description: >-
+        Enabling runs the full current-store readiness preflight atomically and fails closed when
+        the default active version, assignments or checkout snapshot write are not ready.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleSettingsEnforcementRequest' }
+      responses:
+        '200':
+          description: Audited current enforcement state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSaleSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/after-sale-policies:
+    get:
+      operationId: listAfterSalePolicies
+      summary: List current-store policy heads without mutable published payloads
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { name: status, in: query, schema: { type: string, enum: [DRAFT, ACTIVE, DISABLED] } }
+      responses:
+        '200':
+          description: Policy heads
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSalePolicyPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/admin/after-sale-policies/{policyCode}:
+    get:
+      operationId: getAfterSalePolicy
+      summary: Read a policy draft/head and immutable version metadata
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - {
+            name: policyCode,
+            in: path,
+            required: true,
+            schema: { $ref: '#/components/schemas/PublicCode' },
+          }
+      responses:
+        '200':
+          description: Store-scoped policy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSalePolicyDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: putAfterSalePolicyDraft
+      summary: Create or replace one store-scoped policy draft
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - {
+            name: policyCode,
+            in: path,
+            required: true,
+            schema: { $ref: '#/components/schemas/PublicCode' },
+          }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSalePolicyDraft' }
+      responses:
+        '200':
+          description: Draft only; it is not effective until published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSalePolicyDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/after-sale-policies/{policyCode}/versions:
+    get:
+      operationId: listAfterSalePolicyVersions
+      summary: List immutable current-store policy versions
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/PolicyCode' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Immutable policy history
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSalePolicyVersionPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/after-sale-policies/{policyCode}/versions/{versionNumber}:
+    get:
+      operationId: getAfterSalePolicyVersion
+      summary: Read one immutable current-store policy version and its frozen content
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/PolicyCode' }
+        - { $ref: '#/components/parameters/PolicyVersionNumber' }
+      responses:
+        '200':
+          description: Immutable policy version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSalePolicyVersion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/after-sale-policies/{policyCode}/publish:
+    post:
+      operationId: publishAfterSalePolicy
+      summary: Publish an immutable after-sale policy version
+      description: >-
+        The transaction locks canonical target keys and returns 409 when another ACTIVE policy
+        already owns the same store product, category or store-default target. It atomically writes
+        the immutable version, replaces only this policy's active assignment projection and audits
+        the publish; timestamp or last-writer ordering never resolves overlap.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/PolicyCode' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyPublishRequest' }
+      responses:
+        '200':
+          description: Published immutable version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSalePolicyVersion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/after-sale-policies/{policyCode}/disable:
+    post:
+      operationId: disableAfterSalePolicy
+      summary: Disable a policy for new resolution without changing historical versions
+      description: >-
+        The server rejects disabling the enforced store default or any policy whose removal would
+        make current-store snapshot resolution not ready. Historical versions remain immutable.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/PolicyCode' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyDisableRequest' }
+      responses:
+        '200':
+          description: Disabled policy head; historical snapshots and versions remain readable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSalePolicySummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/members/me/favorites:
+    get:
+      operationId: listMemberFavorites
+      summary: List product favorites for the current member and store
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Locale' }
+      responses:
+        '200':
+          description: Favorites; unavailable products have a restricted summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberProductPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/members/me/commerce-summary:
+    get:
+      operationId: getMemberCommerceSummary
+      summary: Aggregate counts only; detailed facts remain in existing member APIs
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+      responses:
+        '200':
+          description: Current member and store summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberCommerceSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/members/me/favorites/{productCode}:
+    put:
+      operationId: putMemberFavorite
+      summary: Idempotently add a current-store product favorite
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/ProductCode' }
+      responses:
+        '204': { description: Favorite exists }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteMemberFavorite
+      summary: Idempotently remove a current-store product favorite
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/ProductCode' }
+      responses:
+        '204': { description: Favorite is absent }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/members/me/product-history:
+    get:
+      operationId: listMemberProductHistory
+      summary: List the current member's most recent 100 viewed products
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Locale' }
+      responses:
+        '200':
+          description: Member product history
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberProductPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      operationId: clearMemberProductHistory
+      summary: Delete all current-store product history for the member
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '204': { description: History is empty }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/members/me/product-history/{productCode}:
+    put:
+      operationId: touchMemberProductHistory
+      summary: Idempotently update the last viewed time after a successful product render
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/ProductCode' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '204': { description: History was updated and bounded }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteMemberProductHistoryItem
+      summary: Remove one current-store product from history
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/ProductCode' }
+      responses:
+        '204': { description: History item is absent }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/members/me/privacy-requests:
+    get:
+      operationId: listMemberPrivacyRequests
+      summary: List the current member's real privacy intake facts and current status
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Privacy requests scoped to the current member and store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyRequestPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: createMemberPrivacyRequest
+      summary: Persist a privacy request intake without claiming that fulfillment is complete
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PrivacyRequestCreateRequest' }
+      responses:
+        '201':
+          description: A SUBMITTED privacy request fact; fulfillment remains an audited later process
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/members/me/privacy-requests/{requestNumber}:
+    get:
+      operationId: getMemberPrivacyRequest
+      summary: Get one current-member privacy request by its public number
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/PrivacyRequestNumber' }
+      responses:
+        '200':
+          description: Current audited status without internal notes or other-member facts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/members/me/privacy-requests/{requestNumber}/cancel:
+    post:
+      operationId: cancelMemberPrivacyRequest
+      summary: Cancel a request only while its audited state still permits cancellation
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/PrivacyRequestNumber' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PrivacyRequestCancelRequest' }
+      responses:
+        '200':
+          description: Request is CANCELLED or the idempotent current fact is returned
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivacyRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/shares:
+    post:
+      operationId: createShareLink
+      summary: Create an opaque, store-bound share link from a published target
+      description: The client cannot provide a URL, title, image, member ID or store ID.
+      security: [{ MemberBearer: [] }, {}]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShareCreateRequest' }
+      responses:
+        '201':
+          description: Server-resolved card and links
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShareCreation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/shares/{shortCode}:
+    get:
+      operationId: resolveShareLink
+      summary: Resolve an opaque share link to a safe Mini App and browser target
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/ShortCode' }
+        - { $ref: '#/components/parameters/Locale' }
+      responses:
+        '200':
+          description: Published target or safe store-home fallback
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShareCard' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/shares/{shortCode}/outcome:
+    post:
+      operationId: recordShareOutcome
+      summary: Record a user-driven share-sheet completion or cancellation
+      description: >-
+        The signed interaction token is issued only by share creation and is bound to the short
+        code, initial interaction and expiry. Outcomes are idempotent analytics facts and never
+        authorize rewards, commission, redirects or financial changes.
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/ShortCode' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShareOutcomeRequest' }
+      responses:
+        '204': { description: Outcome recorded or idempotently replayed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /s/{shortCode}:
+    get:
+      operationId: renderShareFallback
+      summary: Render escaped OG metadata and an explicit open-in-Zalo action
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/ShortCode' }
+      responses:
+        '200':
+          description: >-
+            CSP-protected browser fallback with an explicit open action; no Location header,
+            meta refresh or request-controlled redirect is permitted
+          headers:
+            Content-Security-Policy: { $ref: '#/components/headers/FallbackCsp' }
+            X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+            Referrer-Policy: { $ref: '#/components/headers/NoReferrer' }
+            Cache-Control: { $ref: '#/components/headers/PublicFallbackCache' }
+          content:
+            text/html:
+              schema: { type: string }
+        '404':
+          description: Unknown code renders a static safe chooser without Location or meta refresh
+          headers:
+            Content-Security-Policy: { $ref: '#/components/headers/FallbackCsp' }
+            X-Content-Type-Options: { $ref: '#/components/headers/NoSniff' }
+            Referrer-Policy: { $ref: '#/components/headers/NoReferrer' }
+            Cache-Control: { $ref: '#/components/headers/PublicFallbackCache' }
+components:
+  securitySchemes:
+    MemberBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: ZaloShopMemberToken
+    AdminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: ZaloShopAdminToken
+  parameters:
+    StoreCode:
+      name: X-Store-Code
+      in: header
+      required: true
+      schema: { type: string, minLength: 2, maxLength: 64, pattern: '^[a-z][a-z0-9-]*$' }
+    StoreIdQuery:
+      name: store_id
+      in: query
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128, pattern: '^[!-~]+$' }
+    AfterSaleId:
+      name: afterSaleId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EvidenceId:
+      name: evidenceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SettlementNumber:
+      name: settlementNumber
+      in: path
+      required: true
+      schema: { type: string, pattern: '^AST-[A-Z0-9]{16,32}$' }
+    ProductCode:
+      name: productCode
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/PublicCode' }
+    PolicyCode:
+      name: policyCode
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/PublicCode' }
+    PolicyVersionNumber:
+      name: versionNumber
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    ShortCode:
+      name: shortCode
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/ShortCode' }
+    PrivacyRequestNumber:
+      name: requestNumber
+      in: path
+      required: true
+      schema: { type: string, pattern: '^PRV-[A-Z0-9]{16,32}$' }
+    Cursor:
+      name: cursor
+      in: query
+      description: Signed opaque cursor bound to the authenticated store, member/admin scope and sort key
+      schema: { $ref: '#/components/schemas/OpaqueCursor' }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Locale:
+      name: locale
+      in: query
+      schema: { type: string, enum: [vi, zh, en], default: vi }
+  schemas:
+    OpaqueCursor:
+      type: string
+      minLength: 23
+      maxLength: 512
+      pattern: '^c1_[A-Za-z0-9_-]{20,509}$'
+    ShortCode:
+      type: string
+      minLength: 20
+      maxLength: 128
+      pattern: '^[A-Za-z0-9_-]+$'
+    HttpsUrl:
+      type: string
+      format: uri
+      pattern: '^https://'
+    MiniAppPath:
+      type: string
+      pattern: '^/(?:\?locale=(?:vi|zh|en)|(?:brands|categories|products|promotions|coupons)/[a-z0-9]+(?:-[a-z0-9]+)*\?locale=(?:vi|zh|en))$'
+    PublicCode:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+    AfterSaleType:
+      type: string
+      enum: [REFUND_ONLY, RETURN_REFUND, EXCHANGE, MERCHANT_REFUND]
+    AfterSaleStatus:
+      type: string
+      enum:
+        [
+          PENDING_REVIEW,
+          APPROVED,
+          REJECTED,
+          CANCELLED,
+          RETURN_PENDING,
+          RETURN_IN_TRANSIT,
+          INSPECTION_PENDING,
+          REFUND_PENDING,
+          REFUND_PROCESSING,
+          REFUNDED,
+          EXCHANGE_PENDING,
+          EXCHANGE_IN_TRANSIT,
+          REVIEW_REQUIRED,
+          COMPLETED,
+        ]
+    EvidenceUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [byte_size, checksum_sha256, filename, mime_type]
+      properties:
+        byte_size: { type: integer, minimum: 1, maximum: 52428800 }
+        checksum_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        filename: { type: string, minLength: 1, maxLength: 255, pattern: '^[^/\\]+$' }
+        mime_type: { type: string, enum: [image/jpeg, image/png, image/webp, video/mp4] }
+      allOf:
+        - if:
+            properties:
+              mime_type: { enum: [image/jpeg, image/png, image/webp] }
+          then:
+            properties:
+              byte_size: { maximum: 10485760 }
+    EvidenceUpload:
+      type: object
+      additionalProperties: false
+      required: [evidence_id, upload_url, expires_at, version]
+      properties:
+        evidence_id: { type: string, format: uuid }
+        upload_url: { $ref: '#/components/schemas/HttpsUrl' }
+        expires_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+    EvidenceConfirmRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+    EvidenceView:
+      type: object
+      additionalProperties: false
+      description: >-
+        Safe public projection. Internal scan, quarantine and deletion states are collapsed into
+        UNAVAILABLE so member and ordinary admin responses cannot reveal cleanup or security detail.
+      required: [evidence_id, status, access_expires_at, version]
+      properties:
+        evidence_id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [PENDING, READY, UNAVAILABLE]
+        access_expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: >-
+            Exclusive ordinary-access deadline; null when unavailable. A legal hold never extends it.
+        version: { type: integer, minimum: 1 }
+    EvidenceAccess:
+      type: object
+      additionalProperties: false
+      required: [url, expires_at]
+      properties:
+        url: { $ref: '#/components/schemas/HttpsUrl' }
+        expires_at: { type: string, format: date-time }
+    AfterSaleStandardItemInput:
+      type: object
+      additionalProperties: false
+      required: [order_item_id, quantity]
+      properties:
+        order_item_id: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 1, maximum: 1000 }
+    AfterSaleExchangeItemInput:
+      type: object
+      additionalProperties: false
+      required: [order_item_id, quantity, replacement_sku_id]
+      properties:
+        order_item_id: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 1, maximum: 1000 }
+        replacement_sku_id: { type: string, format: uuid }
+    RefundOnlyCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [description, evidence_ids, items, order_id, reason_code, type]
+      properties:
+        description: { type: string, minLength: 10, maxLength: 2000 }
+        evidence_ids:
+          { type: array, maxItems: 6, uniqueItems: true, items: { type: string, format: uuid } }
+        items:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 20,
+            items: { $ref: '#/components/schemas/AfterSaleStandardItemInput' },
+          }
+        order_id: { type: string, format: uuid }
+        reason_code: { $ref: '#/components/schemas/PublicCode' }
+        type: { type: string, const: REFUND_ONLY }
+    ReturnRefundCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [description, evidence_ids, items, order_id, reason_code, type]
+      properties:
+        description: { type: string, minLength: 10, maxLength: 2000 }
+        evidence_ids:
+          { type: array, maxItems: 6, uniqueItems: true, items: { type: string, format: uuid } }
+        items:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 20,
+            items: { $ref: '#/components/schemas/AfterSaleStandardItemInput' },
+          }
+        order_id: { type: string, format: uuid }
+        reason_code: { $ref: '#/components/schemas/PublicCode' }
+        type: { type: string, const: RETURN_REFUND }
+    ExchangeCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [description, evidence_ids, items, order_id, reason_code, type]
+      properties:
+        description: { type: string, minLength: 10, maxLength: 2000 }
+        evidence_ids:
+          { type: array, maxItems: 6, uniqueItems: true, items: { type: string, format: uuid } }
+        items:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 20,
+            items: { $ref: '#/components/schemas/AfterSaleExchangeItemInput' },
+          }
+        order_id: { type: string, format: uuid }
+        reason_code: { $ref: '#/components/schemas/PublicCode' }
+        type: { type: string, const: EXCHANGE }
+    AfterSaleCreateRequest:
+      oneOf:
+        - { $ref: '#/components/schemas/RefundOnlyCreateRequest' }
+        - { $ref: '#/components/schemas/ReturnRefundCreateRequest' }
+        - { $ref: '#/components/schemas/ExchangeCreateRequest' }
+      discriminator: { propertyName: type }
+    MerchantAfterSaleCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [description, items, reason_code, type]
+      properties:
+        description: { type: string, minLength: 10, maxLength: 2000 }
+        items:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 20,
+            items: { $ref: '#/components/schemas/AfterSaleStandardItemInput' },
+          }
+        reason_code: { $ref: '#/components/schemas/PublicCode' }
+        type: { type: string, const: MERCHANT_REFUND }
+    VersionedReasonRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, reason]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    ReturnShipmentRequest:
+      type: object
+      additionalProperties: false
+      required: [carrier_name, expected_version, tracking_number]
+      properties:
+        carrier_name: { type: string, minLength: 2, maxLength: 160 }
+        expected_version: { type: integer, minimum: 1 }
+        tracking_number: { type: string, minLength: 2, maxLength: 160 }
+    ApproveAfterSaleReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, decision, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: APPROVE_AFTER_SALE }
+        decision: { type: string, const: APPROVE }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    RejectAfterSaleReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, decision, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: REJECT_AFTER_SALE }
+        decision: { type: string, const: REJECT }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    AfterSaleReviewRequest:
+      oneOf:
+        - { $ref: '#/components/schemas/ApproveAfterSaleReviewRequest' }
+        - { $ref: '#/components/schemas/RejectAfterSaleReviewRequest' }
+      discriminator: { propertyName: decision }
+    InspectionDisposition:
+      type: object
+      additionalProperties: false
+      required: [disposition, quantity]
+      properties:
+        disposition: { type: string, enum: [RESTOCK_SELLABLE, QUARANTINE, SCRAP, RETURN_TO_MEMBER] }
+        quantity: { type: integer, minimum: 1, maximum: 1000 }
+    InspectionItem:
+      type: object
+      additionalProperties: false
+      description: >-
+        Dispositions must be unique and their quantities must sum exactly to received_quantity.
+        The submitted item set must exactly match every approved case item awaiting inspection;
+        partial or zero-quantity inspection cannot advance the aggregate.
+      required: [dispositions, order_item_id, received_quantity]
+      properties:
+        dispositions:
+          type: array
+          minItems: 1
+          maxItems: 4
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/InspectionDisposition' }
+        order_item_id: { type: string, format: uuid }
+        received_quantity: { type: integer, minimum: 1, maximum: 1000 }
+    AfterSaleInspectionRequest:
+      type: object
+      additionalProperties: false
+      description: >-
+        order_item_id values are unique and the item set exactly covers all approved lines awaiting
+        inspection. Within each item, disposition codes are unique and quantities sum exactly to
+        received_quantity. These server constraints apply even where JSON Schema uniqueItems alone
+        cannot express key uniqueness or sums.
+      required: [confirmation_code, expected_version, items, reason]
+      properties:
+        confirmation_code: { type: string, const: INSPECT_RETURN }
+        expected_version: { type: integer, minimum: 1 }
+        items:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 20,
+            items: { $ref: '#/components/schemas/InspectionItem' },
+          }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    AfterSaleRefundRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: ISSUE_AFTER_SALE_REFUND }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    AfterSaleExchangeRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: CREATE_EXCHANGE }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    AfterSaleExchangeToRefundRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: CONVERT_EXCHANGE_TO_REFUND }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    AfterSaleReviewResolutionBase:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, decision, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: RESOLVE_AFTER_SALE_REVIEW }
+        decision: { type: string, enum: [RESUME, REJECT] }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    LegacyAfterSaleApproveRequest:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          confirmation_code,
+          decision,
+          expected_version,
+          policy_basis,
+          reason,
+          return_shipping_payer,
+          return_window_days,
+        ]
+      properties:
+        confirmation_code: { type: string, const: RESOLVE_AFTER_SALE_REVIEW }
+        decision: { type: string, const: LEGACY_APPROVE }
+        expected_version: { type: integer, minimum: 1 }
+        policy_basis: { type: string, minLength: 10, maxLength: 2000 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+        return_shipping_payer:
+          { type: [string, 'null'], enum: [BUYER, MERCHANT, CONDITIONAL, null] }
+        return_window_days: { type: [integer, 'null'], minimum: 1, maximum: 60 }
+      allOf:
+        - oneOf:
+            - properties:
+                return_shipping_payer: { type: string, enum: [BUYER, MERCHANT, CONDITIONAL] }
+                return_window_days: { type: integer, minimum: 1, maximum: 60 }
+            - properties:
+                return_shipping_payer: { type: 'null' }
+                return_window_days: { type: 'null' }
+    LegacyAfterSaleRejectRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, decision, expected_version, policy_basis, reason]
+      properties:
+        confirmation_code: { type: string, const: RESOLVE_AFTER_SALE_REVIEW }
+        decision: { type: string, const: LEGACY_REJECT }
+        expected_version: { type: integer, minimum: 1 }
+        policy_basis: { type: string, minLength: 10, maxLength: 2000 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    AfterSaleReviewResolveRequest:
+      oneOf:
+        - { $ref: '#/components/schemas/AfterSaleReviewResolutionBase' }
+        - { $ref: '#/components/schemas/LegacyAfterSaleApproveRequest' }
+        - { $ref: '#/components/schemas/LegacyAfterSaleRejectRequest' }
+      discriminator: { propertyName: decision }
+    AfterSaleCodRefundConfirmRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, expected_settlement_version, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: CONFIRM_COD_REFUND }
+        expected_settlement_version: { type: integer, minimum: 1 }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    AfterSaleItem:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          order_item_id,
+          requested_quantity,
+          approved_quantity,
+          received_quantity,
+          accepted_quantity,
+          rejected_quantity,
+          restockable_quantity,
+          restored_quantity,
+        ]
+      properties:
+        order_item_id: { type: string, format: uuid }
+        requested_quantity: { type: integer, minimum: 1 }
+        approved_quantity: { type: integer, minimum: 0 }
+        received_quantity: { type: integer, minimum: 0 }
+        accepted_quantity: { type: integer, minimum: 0 }
+        rejected_quantity: { type: integer, minimum: 0 }
+        restockable_quantity: { type: integer, minimum: 0 }
+        restored_quantity: { type: integer, minimum: 0 }
+        replacement_sku_id: { type: [string, 'null'], format: uuid }
+    AfterSaleTimelineEntry:
+      type: object
+      additionalProperties: false
+      required: [event, status, created_at]
+      properties:
+        event:
+          type: string
+          enum:
+            [
+              APPROVE,
+              REJECT,
+              CANCEL,
+              START_RETURN,
+              RETURN_EXPIRED,
+              RETURN_SHIPPED,
+              RETURN_RECEIVED,
+              ACCEPT_INSPECTION,
+              REJECT_INSPECTION,
+              QUEUE_REFUND,
+              REFUND_REQUESTED,
+              REFUND_SUCCEEDED,
+              REFUND_FAILED,
+              REFUND_CANCELLED,
+              CONVERT_EXCHANGE_TO_REFUND,
+              EXCHANGE_SHIPPED,
+              EXCHANGE_DELIVERED,
+              REQUIRE_REVIEW,
+              RESUME_REVIEW,
+              REJECT_REVIEW,
+              LEGACY_APPROVE,
+              LEGACY_REJECT,
+              COMPLETE,
+            ]
+        status: { $ref: '#/components/schemas/AfterSaleStatus' }
+        created_at: { type: string, format: date-time }
+    AfterSaleSettlementView:
+      type: object
+      additionalProperties: false
+      required: [public_number, method, status, amount_vnd, created_at, updated_at]
+      properties:
+        public_number:
+          type: string
+          pattern: '^AST-[A-Z0-9]{16,32}$'
+          description: Stable, server-generated and unguessable settlement command identifier
+        method: { type: string, enum: [ONLINE_ORIGINAL, COD_OFFLINE, NO_PAYOUT] }
+        status:
+          type: string
+          enum: [PENDING, PROCESSING, SUCCEEDED, FAILED, REVIEW_REQUIRED, CANCELLED]
+        amount_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        refund_public_number: { type: [string, 'null'], maxLength: 64 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AfterSaleReturnShipmentView:
+      type: object
+      additionalProperties: false
+      required: [carrier_name, masked_tracking_number, status, submitted_at]
+      properties:
+        carrier_name: { type: string, minLength: 2, maxLength: 160 }
+        masked_tracking_number: { type: string, minLength: 2, maxLength: 160 }
+        status:
+          type: string
+          enum: [SUBMITTED, IN_TRANSIT, DELIVERED, REJECTED, UNKNOWN]
+        submitted_at: { type: string, format: date-time }
+    AfterSalePolicySnapshotView:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          legacy_policy_review,
+          policy_code,
+          policy_version_number,
+          resolved_locale,
+          name,
+          summary,
+          buyer_instructions,
+        ]
+      properties:
+        legacy_policy_review: { type: boolean }
+        policy_code:
+          oneOf:
+            - { $ref: '#/components/schemas/PublicCode' }
+            - { type: 'null' }
+        policy_version_number: { type: [integer, 'null'], minimum: 1 }
+        resolved_locale: { type: [string, 'null'], enum: [vi, zh, en, null] }
+        name: { type: [string, 'null'], maxLength: 160 }
+        summary: { type: [string, 'null'], maxLength: 1000 }
+        buyer_instructions: { type: [string, 'null'], maxLength: 2000 }
+    AfterSale:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          public_number,
+          order_id,
+          reason_code,
+          reason_detail,
+          type,
+          status,
+          currency,
+          approved_refund_vnd,
+          items,
+          evidence,
+          policy_snapshot,
+          return_deadline_at,
+          return_shipments,
+          settlements,
+          timeline,
+          version,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        public_number: { type: string }
+        order_id: { type: string, format: uuid }
+        reason_code: { $ref: '#/components/schemas/PublicCode' }
+        reason_detail: { type: string, minLength: 10, maxLength: 2000 }
+        type: { $ref: '#/components/schemas/AfterSaleType' }
+        status: { $ref: '#/components/schemas/AfterSaleStatus' }
+        currency: { type: string, const: VND }
+        approved_refund_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        items: { type: array, items: { $ref: '#/components/schemas/AfterSaleItem' } }
+        evidence: { type: array, maxItems: 6, items: { $ref: '#/components/schemas/EvidenceView' } }
+        policy_snapshot: { $ref: '#/components/schemas/AfterSalePolicySnapshotView' }
+        return_deadline_at: { type: [string, 'null'], format: date-time }
+        return_shipments:
+          { type: array, items: { $ref: '#/components/schemas/AfterSaleReturnShipmentView' } }
+        settlements:
+          { type: array, items: { $ref: '#/components/schemas/AfterSaleSettlementView' } }
+        timeline: { type: array, items: { $ref: '#/components/schemas/AfterSaleTimelineEntry' } }
+        evidence_count: { type: integer, minimum: 0, maximum: 6 }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AfterSalePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AfterSale' } }
+        next_cursor:
+          oneOf:
+            - { $ref: '#/components/schemas/OpaqueCursor' }
+            - { type: 'null' }
+    PolicyLocalization:
+      type: object
+      additionalProperties: false
+      required: [buyer_instructions, locale, name, summary]
+      properties:
+        buyer_instructions: { type: string, minLength: 1, maxLength: 2000 }
+        locale: { type: string, enum: [vi, zh, en] }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        summary: { type: string, minLength: 1, maxLength: 1000 }
+    PolicyLocalizations:
+      type: array
+      minItems: 3
+      maxItems: 3
+      uniqueItems: true
+      items: { $ref: '#/components/schemas/PolicyLocalization' }
+      allOf:
+        - contains:
+            type: object
+            required: [locale]
+            properties: { locale: { const: vi } }
+          minContains: 1
+          maxContains: 1
+        - contains:
+            type: object
+            required: [locale]
+            properties: { locale: { const: zh } }
+          minContains: 1
+          maxContains: 1
+        - contains:
+            type: object
+            required: [locale]
+            properties: { locale: { const: en } }
+          minContains: 1
+          maxContains: 1
+    AfterSalePolicyConditionRules:
+      type: object
+      additionalProperties: false
+      required:
+        [evidence_required, evidence_required_reason_codes, opened_package_exception_reason_codes]
+      properties:
+        evidence_required: { type: boolean }
+        evidence_required_reason_codes:
+          type: array
+          maxItems: 64
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/PublicCode' }
+        opened_package_exception_reason_codes:
+          type: array
+          maxItems: 64
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/PublicCode' }
+    AfterSalePolicyDraft:
+      type: object
+      additionalProperties: false
+      description: >-
+        The exchange_attribute_code is non-null exactly when allowed_types contains EXCHANGE.
+        product_ids is a same-store replace-set that becomes effective only on atomic publish.
+      required:
+        [
+          allowed_types,
+          category_id,
+          condition_rules,
+          damaged_exception,
+          exchange_attribute_code,
+          exchange_same_product_only,
+          expected_version,
+          hygiene_restricted,
+          localizations,
+          product_ids,
+          request_window_days,
+          return_shipping_payer,
+          return_window_days,
+          unopened_required,
+        ]
+      properties:
+        allowed_types:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 4,
+            uniqueItems: true,
+            items: { $ref: '#/components/schemas/AfterSaleType' },
+          }
+        category_id: { type: [string, 'null'], format: uuid }
+        condition_rules: { $ref: '#/components/schemas/AfterSalePolicyConditionRules' }
+        damaged_exception: { type: boolean }
+        exchange_attribute_code:
+          { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/PublicCode' }] }
+        exchange_same_product_only: { type: boolean, const: true }
+        expected_version: { type: integer, minimum: 0 }
+        hygiene_restricted: { type: boolean }
+        localizations: { $ref: '#/components/schemas/PolicyLocalizations' }
+        product_ids:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        request_window_days: { type: integer, minimum: 0, maximum: 365 }
+        return_shipping_payer: { type: string, enum: [BUYER, MERCHANT, CONDITIONAL] }
+        return_window_days: { type: integer, minimum: 1, maximum: 60 }
+        unopened_required: { type: boolean }
+    AfterSalePolicyContent:
+      type: object
+      additionalProperties: false
+      description: >-
+        Canonical immutable business content. exchange_attribute_code is non-null exactly when
+        allowed_types contains EXCHANGE; optimistic-lock and command fields are excluded.
+      required:
+        [
+          allowed_types,
+          category_id,
+          condition_rules,
+          damaged_exception,
+          exchange_attribute_code,
+          exchange_same_product_only,
+          hygiene_restricted,
+          localizations,
+          product_ids,
+          request_window_days,
+          return_shipping_payer,
+          return_window_days,
+          unopened_required,
+        ]
+      properties:
+        allowed_types:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 4,
+            uniqueItems: true,
+            items: { $ref: '#/components/schemas/AfterSaleType' },
+          }
+        category_id: { type: [string, 'null'], format: uuid }
+        condition_rules: { $ref: '#/components/schemas/AfterSalePolicyConditionRules' }
+        damaged_exception: { type: boolean }
+        exchange_attribute_code:
+          { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/PublicCode' }] }
+        exchange_same_product_only: { type: boolean, const: true }
+        hygiene_restricted: { type: boolean }
+        localizations: { $ref: '#/components/schemas/PolicyLocalizations' }
+        product_ids:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        request_window_days: { type: integer, minimum: 0, maximum: 365 }
+        return_shipping_payer: { type: string, enum: [BUYER, MERCHANT, CONDITIONAL] }
+        return_window_days: { type: integer, minimum: 1, maximum: 60 }
+        unopened_required: { type: boolean }
+    PolicyPublishRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: PUBLISH_AFTER_SALE_POLICY }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    PolicyDisableRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: DISABLE_AFTER_SALE_POLICY }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    AfterSaleSettingsEnforcementRequest:
+      oneOf:
+        - $ref: '#/components/schemas/EnableAfterSaleSettingsRequest'
+        - $ref: '#/components/schemas/DisableAfterSaleSettingsRequest'
+    EnableAfterSaleSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, enabled, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: ENABLE_AFTER_SALE_POLICY_ENFORCEMENT }
+        enabled: { type: boolean, const: true }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    DisableAfterSaleSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, enabled, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: DISABLE_AFTER_SALE_POLICY_ENFORCEMENT }
+        enabled: { type: boolean, const: false }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    AfterSaleSettings:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          enforce_policy_snapshots,
+          readiness_state,
+          default_policy_code,
+          current_version_number,
+          readiness_checked_at,
+          version,
+        ]
+      properties:
+        enforce_policy_snapshots: { type: boolean }
+        readiness_state: { type: string, enum: [NOT_READY, READY, ENFORCED] }
+        default_policy_code:
+          oneOf:
+            - { $ref: '#/components/schemas/PublicCode' }
+            - { type: 'null' }
+        current_version_number: { type: [integer, 'null'], minimum: 1 }
+        readiness_checked_at: { type: [string, 'null'], format: date-time }
+        version: { type: integer, minimum: 1 }
+    AfterSalePolicySummary:
+      type: object
+      additionalProperties: false
+      required: [code, status, current_version_number, version]
+      properties:
+        code: { $ref: '#/components/schemas/PublicCode' }
+        status: { type: string, enum: [DRAFT, ACTIVE, DISABLED] }
+        current_version_number: { type: [integer, 'null'], minimum: 1 }
+        version: { type: integer, minimum: 1 }
+    AfterSalePolicyDetail:
+      type: object
+      additionalProperties: false
+      required: [code, status, current_version_number, draft, current_version, version]
+      properties:
+        code: { $ref: '#/components/schemas/PublicCode' }
+        status: { type: string, enum: [DRAFT, ACTIVE, DISABLED] }
+        current_version_number: { type: [integer, 'null'], minimum: 1 }
+        draft: { $ref: '#/components/schemas/AfterSalePolicyContent' }
+        current_version:
+          oneOf:
+            - { $ref: '#/components/schemas/AfterSalePolicyVersion' }
+            - { type: 'null' }
+        version: { type: integer, minimum: 1 }
+    AfterSalePolicyVersion:
+      type: object
+      additionalProperties: false
+      description: Immutable version; content is the exact canonical payload covered by payload_hash.
+      required: [code, version_number, effective_at, content, payload_hash, published_at]
+      properties:
+        code: { $ref: '#/components/schemas/PublicCode' }
+        version_number: { type: integer, minimum: 1 }
+        effective_at: { type: string, format: date-time }
+        content: { $ref: '#/components/schemas/AfterSalePolicyContent' }
+        payload_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        published_at: { type: string, format: date-time }
+    AfterSalePolicyVersionPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AfterSalePolicyVersion' } }
+        next_cursor:
+          oneOf:
+            - { $ref: '#/components/schemas/OpaqueCursor' }
+            - { type: 'null' }
+    AfterSalePolicyPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AfterSalePolicySummary' } }
+        next_cursor:
+          oneOf:
+            - { $ref: '#/components/schemas/OpaqueCursor' }
+            - { type: 'null' }
+    MemberProduct:
+      type: object
+      additionalProperties: false
+      required: [product_code, name, available, last_interaction_at]
+      properties:
+        product_code: { $ref: '#/components/schemas/PublicCode' }
+        name: { type: string }
+        available: { type: boolean }
+        primary_media_url:
+          oneOf:
+            - { $ref: '#/components/schemas/HttpsUrl' }
+            - { type: 'null' }
+        last_interaction_at: { type: string, format: date-time }
+    MemberProductPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/MemberProduct' } }
+        next_cursor:
+          oneOf:
+            - { $ref: '#/components/schemas/OpaqueCursor' }
+            - { type: 'null' }
+    MemberCommerceSummary:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          address_count,
+          usable_coupon_count,
+          favorite_count,
+          product_history_count,
+          order_status_counts,
+        ]
+      properties:
+        address_count: { type: integer, minimum: 0 }
+        usable_coupon_count: { type: integer, minimum: 0 }
+        favorite_count: { type: integer, minimum: 0 }
+        product_history_count: { type: integer, minimum: 0, maximum: 100 }
+        order_status_counts:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+    PrivacyRequestType:
+      type: string
+      enum: [ACCESS, CORRECTION, DELETION, ANONYMIZATION, ACCOUNT_CLOSURE]
+    PrivacyRequestStatus:
+      type: string
+      enum: [SUBMITTED, UNDER_REVIEW, ACTION_REQUIRED, IN_PROGRESS, COMPLETED, REJECTED, CANCELLED]
+    PrivacyRequestCreateRequest:
+      oneOf:
+        - $ref: '#/components/schemas/PrivacyAccessCreateRequest'
+        - $ref: '#/components/schemas/PrivacyCorrectionCreateRequest'
+        - $ref: '#/components/schemas/PrivacyDeletionCreateRequest'
+        - $ref: '#/components/schemas/PrivacyAnonymizationCreateRequest'
+        - $ref: '#/components/schemas/PrivacyAccountClosureCreateRequest'
+      discriminator: { propertyName: request_type }
+    PrivacyAccessCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, description, request_type]
+      properties:
+        confirmation_code: { type: string, const: SUBMIT_DATA_ACCESS_REQUEST }
+        description: { type: string, minLength: 10, maxLength: 1000 }
+        request_type: { type: string, const: ACCESS }
+    PrivacyCorrectionCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, description, request_type]
+      properties:
+        confirmation_code: { type: string, const: SUBMIT_DATA_CORRECTION_REQUEST }
+        description: { type: string, minLength: 10, maxLength: 1000 }
+        request_type: { type: string, const: CORRECTION }
+    PrivacyDeletionCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, description, request_type]
+      properties:
+        confirmation_code: { type: string, const: SUBMIT_DATA_DELETION_REQUEST }
+        description: { type: string, minLength: 10, maxLength: 1000 }
+        request_type: { type: string, const: DELETION }
+    PrivacyAnonymizationCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, description, request_type]
+      properties:
+        confirmation_code: { type: string, const: SUBMIT_DATA_ANONYMIZATION_REQUEST }
+        description: { type: string, minLength: 10, maxLength: 1000 }
+        request_type: { type: string, const: ANONYMIZATION }
+    PrivacyAccountClosureCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, description, request_type]
+      properties:
+        confirmation_code: { type: string, const: SUBMIT_ACCOUNT_CLOSURE_REQUEST }
+        description: { type: string, minLength: 10, maxLength: 1000 }
+        request_type: { type: string, const: ACCOUNT_CLOSURE }
+    PrivacyRequestCancelRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, expected_version, reason]
+      properties:
+        confirmation_code: { type: string, const: CANCEL_PRIVACY_REQUEST }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    PrivacyRequest:
+      type: object
+      additionalProperties: false
+      required: [public_number, request_type, status, description, version, created_at, updated_at]
+      properties:
+        public_number: { type: string, pattern: '^PRV-[A-Z0-9]{16,32}$' }
+        request_type: { $ref: '#/components/schemas/PrivacyRequestType' }
+        status: { $ref: '#/components/schemas/PrivacyRequestStatus' }
+        description: { type: string, minLength: 10, maxLength: 1000 }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    PrivacyRequestPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PrivacyRequest' } }
+        next_cursor:
+          oneOf:
+            - { $ref: '#/components/schemas/OpaqueCursor' }
+            - { type: 'null' }
+    ShareTargetType:
+      type: string
+      enum: [STORE, BRAND, CATEGORY, PRODUCT, PROMOTION, COUPON]
+    ShareSource:
+      type: string
+      enum:
+        [
+          STORE_HOME,
+          BRAND_PAGE,
+          CATEGORY_PAGE,
+          PRODUCT_DETAIL,
+          PROMOTION_PAGE,
+          COUPON_PAGE,
+          MEMBER_CENTER,
+        ]
+    StoreShareCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [locale, source, target_type]
+      properties:
+        attribution_token:
+          { type: string, minLength: 20, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' }
+        locale: { type: string, enum: [vi, zh, en], default: vi }
+        source: { $ref: '#/components/schemas/ShareSource' }
+        target_type: { type: string, const: STORE }
+    CodedShareCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [locale, source, target_code, target_type]
+      properties:
+        attribution_token:
+          { type: string, minLength: 20, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' }
+        locale: { type: string, enum: [vi, zh, en], default: vi }
+        source: { $ref: '#/components/schemas/ShareSource' }
+        target_code: { $ref: '#/components/schemas/PublicCode' }
+        target_type: { type: string, enum: [BRAND, CATEGORY, PRODUCT, PROMOTION, COUPON] }
+    ShareCreateRequest:
+      oneOf:
+        - { $ref: '#/components/schemas/StoreShareCreateRequest' }
+        - { $ref: '#/components/schemas/CodedShareCreateRequest' }
+      discriminator: { propertyName: target_type }
+    ShareCard:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          short_code,
+          target_type,
+          requested_locale,
+          resolved_locale,
+          title,
+          summary,
+          image_url,
+          mini_app_path,
+          browser_url,
+        ]
+      properties:
+        short_code: { $ref: '#/components/schemas/ShortCode' }
+        target_type: { $ref: '#/components/schemas/ShareTargetType' }
+        target_code:
+          oneOf:
+            - { $ref: '#/components/schemas/PublicCode' }
+            - { type: 'null' }
+        requested_locale: { type: string, enum: [vi, zh, en] }
+        resolved_locale: { type: string, enum: [vi, zh, en] }
+        title: { type: string, maxLength: 240 }
+        summary: { type: string, maxLength: 500 }
+        image_url: { $ref: '#/components/schemas/HttpsUrl' }
+        mini_app_path: { $ref: '#/components/schemas/MiniAppPath' }
+        browser_url: { $ref: '#/components/schemas/HttpsUrl' }
+    ShareCreation:
+      type: object
+      additionalProperties: false
+      required: [card, interaction_token]
+      properties:
+        card: { $ref: '#/components/schemas/ShareCard' }
+        interaction_token:
+          { type: string, minLength: 20, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' }
+    ShareOutcomeRequest:
+      type: object
+      additionalProperties: false
+      required: [interaction_token, outcome]
+      properties:
+        interaction_token:
+          { type: string, minLength: 20, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' }
+        outcome: { type: string, enum: [COMPLETED, CANCELLED] }
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message_key, correlation_id]
+      properties:
+        code:
+          type: string
+          enum:
+            [
+              AUTHENTICATION_REQUIRED,
+              AUTHENTICATION_FAILED,
+              AUTHORIZATION_DENIED,
+              INPUT_INVALID,
+              RESOURCE_NOT_FOUND,
+              STORE_CONTEXT_INVALID,
+              CONFLICT,
+              RATE_LIMITED,
+              UPSTREAM_UNAVAILABLE,
+              INTERNAL_ERROR,
+            ]
+        message_key: { type: string }
+        correlation_id: { type: string }
+        details: { type: object, additionalProperties: true }
+  headers:
+    FallbackCsp:
+      required: true
+      schema:
+        type: string
+        pattern: "^default-src 'none';"
+    NoSniff:
+      required: true
+      schema: { type: string, const: nosniff }
+    NoReferrer:
+      required: true
+      schema: { type: string, const: no-referrer }
+    PublicFallbackCache:
+      required: true
+      schema: { type: string, const: 'public, max-age=300' }
+    PrivateNoStore:
+      required: true
+      schema: { type: string, const: 'private, no-store' }
+  responses:
+    BadRequest:
+      description: Strict DTO, file metadata, header or path input is invalid
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Unauthorized:
+      description: Authentication failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Forbidden:
+      description: The actor lacks the target-store permission or required fresh MFA
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    NotFound:
+      description: The resource is absent in the current actor and store scope
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Conflict:
+      description: State, version, quantity, amount, policy, inventory or idempotency conflict
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    RateLimited:
+      description: Request rate exceeded
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }

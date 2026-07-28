@@ -2,9 +2,9 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5 已加入按商城解析的 Zalo Checkout 适配器、官方 MAC/查单契约、provider-order 绑定和原始 body webhook 接缝；M5.6 已加入 GHN 适配器、可信仓库/订单物理事实、可靠运单命令、面单代理及三语轨迹工作台；M5.7 已加入退款创建/查询、支付状态投影、逐笔权威查单、本地异常任务和双端三语退款状态。真实商户/物流凭据、HTTPS 回调、Zalo/GHN sandbox、商户结算文件、GHN COD 回款和真机证据仍未验收，不能标记 M5.5-M5.7、整个 M5 或 P0 完成。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5 已加入按商城解析的 Zalo Checkout 适配器、官方 MAC/查单契约、provider-order 绑定和原始 body webhook 接缝；M5.6 已加入 GHN 适配器、可信仓库/订单物理事实、可靠运单命令、面单代理及三语轨迹工作台；M5.7 已加入退款创建/查询、支付状态投影、逐笔权威查单、本地异常任务和双端三语退款状态。M6.1 已冻结售后、会员收藏/历史和主动分享的数据、权限、API、严格 DTO 与纯领域契约；M6.2 已完成 30 个商城模型/表、11 段迁移、RLS、复合关系、权限目录和数据库完整性 guard，定向数据库 38/38 与 35 段迁移演练通过。M6.3 尚未开始，没有售后/会员/分享运行时 API、worker 或 UI；政策 enforcement 全部保持 OFF，没有生产政策、checkout writer/readiness 或生产 rollout。真实商户/物流凭据、HTTPS 回调、Zalo/GHN sandbox、商户结算文件、GHN COD 回款和真机证据仍未验收，不能标记 M5.5-M5.7、整个 M5 或 P0 完成。
 
-Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。M4 浏览器验收使用真实本地 API、PostgreSQL 和 Zalo 测试桥，不能替代 Zalo 宿主真机。真实 staging S3/CDN、越南权威行政区主数据、近生产规模性能、两个商城的 Zalo Checkout/ZaloPay 与 GHN sandbox 配置/密钥/回调条件、生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。阶段证据见 `docs/reports/m4-completion-report.md`、`docs/reports/m5.1-completion-report.md`、`docs/reports/m5.2-completion-report.md`、`docs/reports/m5.3-completion-report.md`、`docs/reports/m5.4-completion-report.md`、`docs/reports/m5.5-progress-report.md`、`docs/reports/m5.6-progress-report.md` 与 `docs/reports/m5.7-progress-report.md`。
+Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。M4 浏览器验收使用真实本地 API、PostgreSQL 和 Zalo 测试桥，不能替代 Zalo 宿主真机。真实 staging S3/CDN、越南权威行政区主数据、近生产规模性能、两个商城的 Zalo Checkout/ZaloPay 与 GHN sandbox 配置/密钥/回调条件、生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。阶段证据见 `docs/reports/m4-completion-report.md`、`docs/reports/m5.1-completion-report.md`、`docs/reports/m5.2-completion-report.md`、`docs/reports/m5.3-completion-report.md`、`docs/reports/m5.4-completion-report.md`、`docs/reports/m5.5-progress-report.md`、`docs/reports/m5.6-progress-report.md`、`docs/reports/m5.7-progress-report.md`、`docs/reports/m6.1-completion-report.md` 与 `docs/reports/m6.2-completion-report.md`。
 
 ## 应用与包
 
@@ -112,7 +112,7 @@ Mini App 且显式设置 `VITE_ZALO_TEST_BRIDGE=true` 时安装测试桥，之�
 
 ## 数据库迁移与本地种子
 
-M1 包含商城、身份、RBAC、会话、同意和审计表，并强制 runtime role RLS。M4 迁移新增三级行政区、地址、配送策略、订单、订单行、快照、转换、幂等与会员券核销门禁；权限迁移只登记 M4 权限 code，不给生产角色自动扩权。种子仅创建可识别的 local/test 商城、行政区测试夹具、三语配置、配送策略、权限目录和系统商城角色，不创建默认管理员、会员、订单或真实 Zalo ID。staging/production 必须先为每个商城导入并复核带 `source_version` 的越南权威省/区/坊数据；没有有效父链时地址写入和未知偏远省份配置会被服务端拒绝。
+M1 包含商城、身份、RBAC、会话、同意和审计表，并强制 runtime role RLS。M4 迁移新增三级行政区、地址、配送策略、订单、订单行、快照、转换、幂等与会员券核销门禁；权限迁移只登记 M4 权限 code，不给生产角色自动扩权。M6.2 的十一段前向迁移新增售后政策/快照、售后事实、会员收藏/历史、最小隐私请求与分享数据基础，并扩展运单 purpose、容量占用和 M5/M6 退款锁序保护；12 项 M6 STORE 权限同样只登记、不自动赋予生产角色。种子仅创建可识别的 local/test 商城、行政区测试夹具、三语配置、配送策略、权限目录和系统商城角色，不创建默认管理员、会员、订单、售后政策、售后/分享事实或真实 Zalo ID。staging/production 必须先为每个商城导入并复核带 `source_version` 的越南权威省/区/坊数据；没有有效父链时地址写入和未知偏远省份配置会被服务端拒绝。
 
 ```powershell
 corepack pnpm db:generate
@@ -131,7 +131,7 @@ $env:SEARCH_REBUILD_ACTOR_ID='<authorized-admin-uuid>'
 corepack pnpm --filter @zalo-shop/database search:rebuild
 ```
 
-迁移目录提供人工审查的 `down.sql`，仅允许用于无真实身份、审计、M3/M4 业务事实和优惠券核销的 local/test 环境；检测到地址、订单或 `USED` 会员券会以 SQLSTATE `55000` 拒绝，已有事实后只采用向前修复。仓库提供严格限制为 `NODE_ENV=test`、loopback PostgreSQL 和随机 `zalo_shop_m2_upgrade_*` scratch 数据库的 M2-to-current 回归；它部署真实 M2 迁移前缀和代表性双商城数据，验证完整升级、重复部署、fingerprint、搜索回填、RLS/权限与零虚构交易事实，并在成功或失败后清理：
+迁移目录提供人工审查的 `down.sql`，仅允许用于无真实身份、审计、M3-M6 业务事实的 local/test 环境；检测到地址、订单、`USED` 会员券、支付/物流/退款或 M6 售后、政策快照、会员、隐私和分享事实会以 SQLSTATE `55000` 拒绝，已有事实后只采用向前修复。仓库提供严格限制为 `NODE_ENV=test`、loopback PostgreSQL 和随机 `zalo_shop_m2_upgrade_*` scratch 数据库的 M2-to-current 回归；它部署真实 M2 迁移前缀和代表性双商城数据，验证完整升级、重复部署、fingerprint、搜索回填、RLS/权限与零虚构交易事实，并在成功或失败后清理：
 
 ```powershell
 corepack pnpm infra:up
@@ -209,7 +209,27 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
 - 管理端提供商城隔离的支付、退款、主动查询、延迟重试和 dead-letter 任务视图；危险重试要求
   对应领域权限、近期 MFA、原因、版本、幂等键和固定确认码，并保留审计记录。
 - 当前对账只覆盖逐笔权威查询、本地异常与死信视图，不代表商户日结完成。真实两商城退款、
-  商户结算文件/手续费、GHN COD 回款和 Zalo 宿主验收保持 `BLOCKED/NOT_RUN`，不进入 M6。
+  商户结算文件/手续费、GHN COD 回款和 Zalo 宿主验收保持 `BLOCKED/NOT_RUN`；M5/M5.7/P0 不标记
+  完成，但 2026-07-27 的受限双轨批准允许继续仓库内 M6，外部上线门禁不变。
+
+## M6.2 售后、会员与分享数据基础
+
+- 十一段前向迁移建立 30 个商城模型/表、Prisma 复合关系、30 表 FORCE RLS、会员 owner scope、
+  只追加事实和列级最小授权；政策快照、累计结算、COD 双人事实、M5 Refund 链接、库存/换货、
+  凭证、隐私和运单 purpose 由数据库 guard 保护。初始第六段
+  `20260727115000_m62_integrity_closeout` 进一步关闭 legacy 初态/决定、settlement 聚合锁、返件与
+  凭证/COD、库存恢复、换货状态及共享 shipment 并发旁路；后续五段前向修复收口请求/批准容量、
+  immutable order allocation、M5/M6 共享 advisory lock、固定行锁顺序、definer fail-closed scope 与
+  仅批准/已有副作用案例占用订单级额度。定向数据库 38/38、完整 integration 26 个文件/201 项、
+  35 段迁移演练、`verify` 51 个文件/352 项
+  单元测试及既有 E2E 21/21 均通过。
+- 所有商城售后政策快照 enforcement 保持 OFF；本地种子不创建生产或默认政策。checkout 政策解析/
+  快照 writer、readiness API 和受审启用命令尚未实现，不能直接修改设置表或把无快照新单解释为
+  已按当前政策下单。
+- M6.2 没有售后、收藏、历史、隐私或分享的买家/管理员运行时，也没有 worker、UI、对象存储扫描、
+  真实 COD/GHN/Zalo 调用。M6.3 创建返件/换货运单前，既有 M5 物流查询、命令、callback 和 worker
+  必须按 purpose 分流，只有 `ORDER_OUTBOUND` 可以推进原订单 `SHIP/DELIVER`。
+- M6.3 尚未开始；M5.5-M5.7、整个 M5 与 P0 的外部上线门禁和 `BLOCKED/NOT_RUN` 状态保持不变。
 
 ## 环境与密钥
 

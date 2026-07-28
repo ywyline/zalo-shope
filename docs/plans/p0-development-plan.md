@@ -1,10 +1,10 @@
 # P0 分阶段开发计划
 
-> 状态：已批准，M0 已完成，M1 实施完成但验收有保留；M2.1-M2.8.4、M3.1-M3.7、M4 与 M5.1-M5.4 已完成自动化收口；M5.5-M5.7 仓库自动化已实施，外部验收仍阻塞
+> 状态：已批准，M0 已完成，M1 实施完成但验收有保留；M2.1-M2.8.4、M3.1-M3.7、M4 与 M5.1-M5.4 已完成自动化收口；M5.5-M5.7 仓库自动化已实施但外部验收仍阻塞；M6.1 契约与 M6.2 数据层已完成；M6.3 未开始
 >
-> 版本：0.4
+> 版本：0.6
 >
-> 日期：2026-07-25
+> 日期：2026-07-27
 >
 > 依赖：`REQUIREMENTS.md`、`AGENTS.md`、`docs/architecture/system-architecture.md`
 
@@ -40,7 +40,7 @@ M5 批准记录（2026-07-24）：用户批准 `docs/plans/m5-implementation-pla
 
 M5.1 完成记录（2026-07-24）：支付/退款/物流/回调/outbox-inbox 数据与权限契约、19 路径 OpenAPI、严格 DTO、纯状态机、Zalo Checkout ZaloPay MAC/状态契约和 GHN 状态映射已冻结；GHN 未签名 webhook 只作为主动查单提示。`verify`（32 个文件/236 项单元测试）与生产依赖高危审计通过。M5.2 等待两个商城的 Zalo Checkout/ZaloPay sandbox 与 GHN sandbox 配置、secret reference 和 HTTPS 回调条件，不以假凭据继续。
 
-M5 受限继续批准记录（2026-07-25）：用户确认主体尚未核验且部分真实测试不能进行，并批准将 Zalo 主体核验、真实 sandbox 账户、secret reference 与 HTTPS 回调作为 M5.5/M5.7 外部验收门槛。M5.2-M5.4 可按顺序实施，但渠道默认禁用、不得创建虚构业务事实、测试适配器必须在非 test 环境硬失败；未补齐真实证据前不标记 M5 完成且不进入 M6。
+M5 受限继续批准记录（2026-07-25）：用户确认主体尚未核验且部分真实测试不能进行，并批准将 Zalo 主体核验、真实 sandbox 账户、secret reference 与 HTTPS 回调作为 M5.5/M5.7 外部验收门槛。M5.2-M5.4 可按顺序实施，但渠道默认禁用、不得创建虚构业务事实、测试适配器必须在非 test 环境硬失败；当时结论是未补齐真实证据前不标记 M5 完成且不进入 M6，后者已被 2026-07-27 的受限双轨批准替代。
 
 M5.2 完成记录（2026-07-25）：商城隔离的支付/退款/物流渠道、支付尝试/转换、回调、退款/转换、报价、运单/行/轨迹/operation 与 outbox/inbox 共 14 张表已实施；12 项权限只登记不自动赋予生产角色。四条前向迁移提供强制 RLS、复合外键、活动单唯一约束、订单金额/币种绑定、退款容量锁、GHN 未验证提示门禁、只追加保护和运行角色列级最小授权。local/test seed 不创建渠道或业务事实；20 份迁移的升级、重复部署、down/重新前滚和 `55000` 门禁通过。下一步按批准顺序进入 M5.3，不标记 M5 完成。
 
@@ -57,14 +57,38 @@ M5.7 进度记录（2026-07-26）：仓库内 Zalo Checkout 退款创建/查询�
 已实现。退款创建因官方无供应商幂等键而最多调用一次，网络结果不确定转人工复核并继续占用容量；
 脱敏任务元数据按领域 read 权限过滤。最终 318 项单元、162 项集成、21 项 E2E 和 24 个迁移演练
 通过。当前对账仅为逐笔权威查询和本地异常视图。真实两商城退款、商户结算文件/手续费、GHN COD
-回款与 Zalo 宿主仍为 `BLOCKED/NOT_RUN`，因此 M5.7、M5 和 P0 均不标记完成且不进入 M6；详见
+回款与 Zalo 宿主仍为 `BLOCKED/NOT_RUN`，因此 M5.7、M5 和 P0 均不标记完成；原“不进入 M6”的
+顺序结论已由 2026-07-27 的受限双轨批准替代；详见
 `docs/reports/m5.7-progress-report.md`。
+
+M6 受限继续批准记录（2026-07-27）：用户明确批准采用双轨方案，允许在 M5 外部验收继续阻塞且
+M5/M5.7/P0 均不标记完成的前提下推进仓库内 M6，并先完成 M6.1 契约冻结。该批准只替代上述
+“不进入 M6”的实施顺序限制，不放宽真实 ZaloPay/GHN、HTTPS 回调、结算、COD 回款和 Zalo 宿主
+上线门禁，也不授权 M6.2 schema/迁移、真实供应商调用、生产凭据、部署、推送或发布。
+
+M6.1 完成记录（2026-07-27）：已冻结售后、会员收藏/历史、最小隐私请求受理和主动分享的数据、
+权限、OpenAPI、严格 DTO 与纯领域规则；定向 34 项测试及仓库级 `verify`（352 项单元测试）通过。
+M6.1 完成时 M6.2 尚未获授权；M5/M5.7/P0 未完成状态及全部外部上线门禁保持不变。详见
+`docs/reports/m6.1-completion-report.md`。
+
+M6.2 批准与完成记录（2026-07-27）：用户随后明确授权继续 M6.2 数据层。30 个商城模型/表、11 段
+前向迁移、12 项只登记不自动赋予生产角色的 STORE 权限、FORCE RLS、复合租户关系、会员 owner
+scope、只追加/列级授权以及政策快照、售后结算、库存/换货、凭证、隐私和分享完整性 guard 已实施；
+初始第六段 `20260727115000_m62_integrity_closeout` 关闭 legacy 初态/决定、settlement 聚合锁、返件/
+凭证/COD、库存、换货、共享 shipment 并发和 definer ACL 旁路；后续五段前向修复补齐容量占用、
+immutable order allocation、M5/M6 退款锁序和 fail-closed actor scope。定向数据库 38/38、完整
+integration 26 个文件/201 项、35 段迁移演练及 `verify` 51 个文件/352 项单元测试通过。所有商城政策快照
+enforcement 保持 OFF，未创建生产政策，checkout writer/readiness、买家/管理员运行时、worker、UI
+和真实外部调用均未交付，M6.3 未开始。
+M5.5-M5.7、整个 M5 与 P0 仍不标记完成，原有外部上线门禁保持不变。
 
 ## 1. 总体范围
 
 本计划覆盖 `REQUIREMENTS.md` 第 22.1 节的 P0 能力及其安全、合规和验收前置条件。P1/P2 只保留架构扩展点，不进入实现范围。所有阶段使用同一套代码，通过商城配置、主题令牌和行业属性模板表达美妆/服装差异。
 
-每个里程碑结束时必须独立完成测试、构建、差异审查和需求验收；上一里程碑未达到完成定义，不进入下一里程碑。
+每个里程碑结束时必须独立完成测试、构建、差异审查和需求验收；上一里程碑未达到完成定义时，
+默认不进入下一里程碑。2026-07-27 的 M6 双轨批准是有边界的顺序例外，不改变未完成里程碑及其
+外部上线门禁状态。
 
 ## 2. 里程碑
 
@@ -244,16 +268,16 @@ M5.7 进度记录（2026-07-26）：仓库内 Zalo Checkout 退款创建/查询�
 
 ## 3. 预计数据模型与 API 演进
 
-| 里程碑 | 主要数据模型变化                                                                                               | 主要接口面                                                                                   |
-| ------ | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| M0     | 仅迁移框架和连接健康检查，不创建业务表                                                                         | `/health/live`、`/health/ready`，其余不开放                                                  |
-| M1     | stores、store_configs、members、admin_users、roles、permissions、consents、audit_logs                          | `/v1/auth`、`/v1/stores`、`/v1/admin/rbac`、`/v1/admin/audit-logs`                           |
-| M2     | brands、categories、attribute_templates、products、skus、translations、compliance_records、page_modules、media | `/v1/catalog`、`/v1/admin/catalog`、`/v1/admin/content`                                      |
-| M3     | warehouses、inventory_balances、inventory_reservations、inventory_movements、carts、promotions、coupons        | `/v1/search`、`/v1/cart`、`/v1/pricing/quote`、`/v1/admin/inventory`、`/v1/admin/promotions` |
-| M4     | addresses、orders、order_items、order_snapshots、order_transitions、idempotency_records                        | `/v1/checkout`、`/v1/orders`、`/v1/admin/orders`                                             |
-| M5     | payment_attempts、provider_callbacks、refunds、shipments、tracking_events、outbox、inbox                       | `/v1/payments`、`/v1/webhooks/{provider}`、`/v1/shipments`、后台补偿接口                     |
-| M6     | after_sales、return_items、evidence_files、favorites、browse_history、share_links                              | `/v1/after-sales`、`/v1/member`、`/v1/shares`                                                |
-| M7     | report_exports、privacy_requests、operational_alerts、合规发布记录                                             | `/v1/admin/reports`、`/v1/privacy-requests`、内部运维接口                                    |
+| 里程碑 | 主要数据模型变化                                                                                                                     | 主要接口面                                                                                   |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| M0     | 仅迁移框架和连接健康检查，不创建业务表                                                                                               | `/health/live`、`/health/ready`，其余不开放                                                  |
+| M1     | stores、store_configs、members、admin_users、roles、permissions、consents、audit_logs                                                | `/v1/auth`、`/v1/stores`、`/v1/admin/rbac`、`/v1/admin/audit-logs`                           |
+| M2     | brands、categories、attribute_templates、products、skus、translations、compliance_records、page_modules、media                       | `/v1/catalog`、`/v1/admin/catalog`、`/v1/admin/content`                                      |
+| M3     | warehouses、inventory_balances、inventory_reservations、inventory_movements、carts、promotions、coupons                              | `/v1/search`、`/v1/cart`、`/v1/pricing/quote`、`/v1/admin/inventory`、`/v1/admin/promotions` |
+| M4     | addresses、orders、order_items、order_snapshots、order_transitions、idempotency_records                                              | `/v1/checkout`、`/v1/orders`、`/v1/admin/orders`                                             |
+| M5     | payment_attempts、provider_callbacks、refunds、shipments、tracking_events、outbox、inbox                                             | `/v1/payments`、`/v1/webhooks/{provider}`、`/v1/shipments`、后台补偿接口                     |
+| M6     | after_sales、after_sale_items/inspections/evidence/settlements、member_favorites/member_product_views、privacy_requests、share_links | `/v1/after-sales`、`/v1/members/me`、`/v1/shares`                                            |
+| M7     | report_exports、privacy_request_fulfillment、operational_alerts、合规发布记录                                                        | `/v1/admin/reports`、`/v1/admin/privacy-requests`、内部运维接口                              |
 
 具体表、字段、索引、RLS 策略、状态转换和 OpenAPI 契约必须在对应里程碑编码前形成专项设计并通过审查。公开接口从 `/v1` 起步；兼容期内只做向后兼容新增，破坏性变化使用新版本或明确弃用窗口。
 

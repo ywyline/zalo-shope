@@ -113,6 +113,21 @@ function result(refund: LockedRefund, replayed: boolean): RefundCommandResult {
   };
 }
 
+async function lockRefundOrderScope(
+  transaction: StoreTransaction,
+  storeId: string,
+  orderId: string,
+): Promise<void> {
+  await transaction.$executeRaw`
+    SELECT pg_catalog.pg_advisory_xact_lock(
+      pg_catalog.hashtextextended(
+        'm62-refund:' || (${storeId}::uuid)::text || ':' || (${orderId}::uuid)::text,
+        0
+      )
+    )
+  `;
+}
+
 async function lockPaymentAndRefund(
   transaction: StoreTransaction,
   storeId: string,
@@ -123,6 +138,7 @@ async function lockPaymentAndRefund(
     where: { id: refundId, storeId },
   });
   if (!identity) throw new RefundCommandError('REFUND_NOT_FOUND');
+  await lockRefundOrderScope(transaction, storeId, identity.orderId);
   await transaction.$queryRaw`
     SELECT id FROM orders
     WHERE store_id = ${storeId}::uuid AND id = ${identity.orderId}::uuid
@@ -181,16 +197,20 @@ async function ensureQueryMessage(
   context: StoreContext,
   refund: LockedRefund,
 ): Promise<void> {
-  await appendOutboxMessageInTransaction(transaction, context, {
-    aggregateId: refund.id,
-    aggregateType: 'REFUND',
-    availableAt: new Date(Date.now() + REFUND_QUERY_INITIAL_DELAY_MS),
-    eventType: REFUND_QUERY_EVENT_TYPE,
-    eventVersion: 1,
-    idempotencyKey: `${REFUND_QUERY_EVENT_TYPE}:${refund.id}`,
-    maxAttempts: REFUND_QUERY_MAX_ATTEMPTS,
-    payload: { refund_id: refund.id, store_id: context.storeId },
-  });
+  await appendOutboxMessageInTransaction(
+    transaction,
+    { ...context, storeId: refund.storeId },
+    {
+      aggregateId: refund.id,
+      aggregateType: 'REFUND',
+      availableAt: new Date(Date.now() + REFUND_QUERY_INITIAL_DELAY_MS),
+      eventType: REFUND_QUERY_EVENT_TYPE,
+      eventVersion: 1,
+      idempotencyKey: `${REFUND_QUERY_EVENT_TYPE}:${refund.id}`,
+      maxAttempts: REFUND_QUERY_MAX_ATTEMPTS,
+      payload: { refund_id: refund.id, store_id: refund.storeId },
+    },
+  );
 }
 
 export function createRefundCommand(
@@ -226,6 +246,7 @@ export function createRefundCommand(
         where: { id: input.paymentAttemptId, storeId: context.storeId },
       });
       if (!identity) throw new RefundCommandError('PAYMENT_NOT_REFUNDABLE');
+      await lockRefundOrderScope(transaction, context.storeId, identity.orderId);
       await transaction.$queryRaw`
         SELECT id FROM orders
         WHERE store_id = ${context.storeId}::uuid AND id = ${identity.orderId}::uuid
@@ -248,7 +269,7 @@ export function createRefundCommand(
       ) {
         throw new RefundCommandError('PAYMENT_NOT_REFUNDABLE');
       }
-      const keyHash = digest(`${context.storeId}\u0000${payment.id}\u0000${input.idempotencyKey}`);
+      const keyHash = digest(`${payment.storeId}\u0000${payment.id}\u0000${input.idempotencyKey}`);
       const replay = await transaction.refund.findUnique({
         include: { order: true, paymentAttempt: { include: { channel: true } } },
         where: {
@@ -331,15 +352,19 @@ export function createRefundCommand(
           toStatus: 'REQUESTED',
         },
       });
-      await appendOutboxMessageInTransaction(transaction, context, {
-        aggregateId: refund.id,
-        aggregateType: 'REFUND',
-        eventType: REFUND_CREATE_EVENT_TYPE,
-        eventVersion: 1,
-        idempotencyKey: `${REFUND_CREATE_EVENT_TYPE}:${refund.id}`,
-        maxAttempts: 1,
-        payload: { refund_id: refund.id, store_id: context.storeId },
-      });
+      await appendOutboxMessageInTransaction(
+        transaction,
+        { ...context, storeId: refund.storeId },
+        {
+          aggregateId: refund.id,
+          aggregateType: 'REFUND',
+          eventType: REFUND_CREATE_EVENT_TYPE,
+          eventVersion: 1,
+          idempotencyKey: `${REFUND_CREATE_EVENT_TYPE}:${refund.id}`,
+          maxAttempts: 1,
+          payload: { refund_id: refund.id, store_id: refund.storeId },
+        },
+      );
       await transaction.auditLog.create({
         data: {
           action: 'payment.refund.requested',
@@ -582,15 +607,19 @@ export function requestRefundQuery(
     if (refund.status !== 'PROCESSING' || !refund.providerRefundId) {
       throw new RefundCommandError('REFUND_PROVIDER_REFERENCE_MISSING');
     }
-    const appended = await appendOutboxMessageInTransaction(transaction, context, {
-      aggregateId: refund.id,
-      aggregateType: 'REFUND',
-      eventType: REFUND_QUERY_EVENT_TYPE,
-      eventVersion: 1,
-      idempotencyKey: `${REFUND_QUERY_EVENT_TYPE}:manual:${digest(`${context.storeId}\u0000${refund.id}\u0000${input.idempotencyKey}`)}`,
-      maxAttempts: REFUND_QUERY_MAX_ATTEMPTS,
-      payload: { refund_id: refund.id, store_id: context.storeId },
-    });
+    const appended = await appendOutboxMessageInTransaction(
+      transaction,
+      { ...context, storeId: refund.storeId },
+      {
+        aggregateId: refund.id,
+        aggregateType: 'REFUND',
+        eventType: REFUND_QUERY_EVENT_TYPE,
+        eventVersion: 1,
+        idempotencyKey: `${REFUND_QUERY_EVENT_TYPE}:manual:${digest(`${refund.storeId}\u0000${refund.id}\u0000${input.idempotencyKey}`)}`,
+        maxAttempts: REFUND_QUERY_MAX_ATTEMPTS,
+        payload: { refund_id: refund.id, store_id: refund.storeId },
+      },
+    );
     if (!appended.replayed) {
       await transaction.auditLog.create({
         data: {

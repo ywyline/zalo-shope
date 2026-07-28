@@ -53,6 +53,54 @@ const permissionSeeds = [
   ['store.integrations.read', PermissionScope.STORE, 'Read redacted integration configuration'],
   ['store.integrations.manage', PermissionScope.STORE, 'Manage integration secret references'],
   ['store.integration-jobs.retry', PermissionScope.STORE, 'Retry reviewed integration jobs'],
+  ['store.after-sales.read', PermissionScope.STORE, 'Read current store after-sales cases'],
+  ['store.after-sales.review', PermissionScope.STORE, 'Review current store after-sales cases'],
+  ['store.after-sales.inspect', PermissionScope.STORE, 'Inspect current store after-sales returns'],
+  [
+    'store.after-sales.exchange',
+    PermissionScope.STORE,
+    'Manage current store after-sales exchanges',
+  ],
+  [
+    'store.after-sales.evidence.read',
+    PermissionScope.STORE,
+    'Read current store after-sales evidence',
+  ],
+  [
+    'store.after-sales.policy.read',
+    PermissionScope.STORE,
+    'Read current store after-sales policies',
+  ],
+  [
+    'store.after-sales.policy.manage',
+    PermissionScope.STORE,
+    'Manage current store after-sales policy drafts',
+  ],
+  [
+    'store.after-sales.policy.publish',
+    PermissionScope.STORE,
+    'Publish current store after-sales policy versions',
+  ],
+  [
+    'store.after-sales.policy.disable',
+    PermissionScope.STORE,
+    'Disable current store after-sales policies',
+  ],
+  [
+    'store.after-sales.policy.enforce',
+    PermissionScope.STORE,
+    'Enforce current store after-sales policy snapshots',
+  ],
+  [
+    'store.after-sales.cod-refunds.request',
+    PermissionScope.STORE,
+    'Request current store COD after-sales refunds',
+  ],
+  [
+    'store.after-sales.cod-refunds.confirm',
+    PermissionScope.STORE,
+    'Confirm current store COD after-sales refunds',
+  ],
 ] as const;
 
 async function seed(): Promise<void> {

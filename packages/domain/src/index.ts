@@ -117,3 +117,6 @@ export * from './address';
 export * from './payment';
 export * from './shipment';
 export * from './reliable-messaging';
+export * from './after-sales';
+export * from './share';
+export * from './privacy';

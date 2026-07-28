@@ -1,0 +1,385 @@
+# M6 售后、会员与分享数据字典
+
+> 状态：M6.1 契约已冻结；M6.2 schema、RLS 与 11 段迁移已实施；运行时和生产 rollout 未开始
+>
+> 日期：2026-07-27
+
+M6.2 实施使用 `20260727110000_m62_after_sales_member_share_foundation`、
+`20260727111000_m62_permission_catalog`、`20260727112000_m62_integrity_and_snapshot_guards`、
+`20260727113000_m62_integrity_forward_fix`、`20260727114000_m62_runtime_member_scope` 与
+`20260727115000_m62_integrity_closeout` 六段基础迁移，以及
+`20260727116000_m62_capacity_allocation_closeout`、
+`20260727117000_m62_capacity_allocation_runtime_fix`、
+`20260727118000_m62_capacity_allocation_expression_fix`、
+`20260727119000_m62_order_lock_order_closeout` 与
+`20260727120000_m62_capacity_scope_and_approval_occupancy_fix` 五段前向修复。十一段迁移建立 30 个
+商城模型/表及 Prisma 复合关系，并收口请求/批准容量、不可变订单级分配、M5/M6 共享锁序、
+definer fail-closed scope 与批准占用；定向数据库 38/38 和 35 段 M2-to-current、重复部署、
+down/重新前滚及回滚门禁演练已通过。该证据只证明数据事实边界，不代表下述 API、worker 或 UI 已交付。
+
+## 1. 统一约定
+
+- 所有商城业务表包含 `store_id uuid NOT NULL` 和 `UNIQUE (store_id, id)`；领域引用优先使用
+  `(store_id, id)` 复合外键，全部启用并强制 RLS。
+- 金额使用非负 `bigint` VND，API 限制为 JavaScript 安全整数。数量使用正整数并由数据库 guard
+  保护跨售后单累计容量。
+- 面向用户的售后号、分享短码与内部 UUID 分离。客户端不提交 `store_id/member_id`、退款金额、
+  状态、库存动作、供应商引用或任意跳转 URL。
+- 售后、政策版本、转换、证据检查、结算、库存动作和分享交互属于业务事实；需要修正时追加受审
+  事实，不覆盖历史。密钥、完整手机号/地址、收款账户和原始证据内容不进入普通日志或审计 JSON。
+- 时间使用 UTC `timestamptz`；售后期限按 `Asia/Ho_Chi_Minh` 自然日和冻结政策计算。
+
+## 2. 领域枚举
+
+### 2.1 售后类型和状态
+
+- 类型：`REFUND_ONLY`、`RETURN_REFUND`、`EXCHANGE`、`MERCHANT_REFUND`。
+- 状态：`PENDING_REVIEW`、`APPROVED`、`REJECTED`、`CANCELLED`、`RETURN_PENDING`、
+  `RETURN_IN_TRANSIT`、`INSPECTION_PENDING`、`REFUND_PENDING`、`REFUND_PROCESSING`、
+  `REFUNDED`、`EXCHANGE_PENDING`、`EXCHANGE_IN_TRANSIT`、`REVIEW_REQUIRED`、`COMPLETED`。
+- 买家 UI 可把细粒度退货/退款/换货状态映射为需求附录的统一文案，但 API 和数据库保留精确状态。
+
+命令/权威事实到转换的顺序固定如下；每一行在单个商城范围事务内锁定聚合、校验 expected version、
+追加全部转换并只递增一次聚合版本。同幂等键同请求复放返回原结果，不重复追加部分事件：
+
+| 命令或事实         | 起点                                   | 按序追加事件与终点                                                                                                                                    |
+| ------------------ | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 管理员批准/拒绝    | `PENDING_REVIEW`                       | `APPROVE -> APPROVED` 或 `REJECT -> REJECTED`                                                                                                         |
+| legacy 一次性决定  | `REVIEW_REQUIRED`                      | 仅 `legacy_policy_review=true` 且无副作用时，`LEGACY_APPROVE -> APPROVED` 或 `LEGACY_REJECT -> REJECTED`                                              |
+| 买家取消           | `PENDING_REVIEW`                       | `CANCEL -> CANCELLED`                                                                                                                                 |
+| 买家首次提交返件   | `APPROVED`                             | `START_RETURN -> RETURN_PENDING`，`RETURN_SHIPPED -> RETURN_IN_TRANSIT`                                                                               |
+| 寄回窗口到期       | `APPROVED`                             | 仅退货退款/换货且尚未提交返件时，`RETURN_EXPIRED -> REJECTED`                                                                                         |
+| 管理员完整验收     | `RETURN_IN_TRANSIT`                    | `RETURN_RECEIVED -> INSPECTION_PENDING`，再按处置派生 `ACCEPT_INSPECTION -> REFUND_PENDING/EXCHANGE_PENDING` 或全拒绝 `REJECT_INSPECTION -> REJECTED` |
+| 发起 ONLINE 退款   | `APPROVED` 或 `REFUND_PENDING`         | 前者先 `QUEUE_REFUND -> REFUND_PENDING`；M5 refund/outbox 创建后 `REFUND_REQUESTED -> REFUND_PROCESSING`                                              |
+| 发起 COD 退款      | `APPROVED` 或 `REFUND_PENDING`         | 前者 `QUEUE_REFUND -> REFUND_PENDING`；只创建待复核 settlement，不伪造处理中                                                                          |
+| 独立确认 COD 到账  | `REFUND_PENDING`                       | `REFUND_REQUESTED -> REFUND_PROCESSING`，`REFUND_SUCCEEDED -> REFUNDED`                                                                               |
+| M5 ONLINE 退款成功 | `REFUND_PROCESSING`                    | `REFUND_SUCCEEDED -> REFUNDED`                                                                                                                        |
+| M5 退款失败/取消   | `REFUND_PROCESSING`                    | `REFUND_FAILED/REFUND_CANCELLED -> REFUND_PENDING`；保留失败退款事实并释放其 M5 活动容量，允许新幂等键重试                                            |
+| 换货改为退款       | `EXCHANGE_PENDING`                     | 无替换预留或出库副作用时 `CONVERT_EXCHANGE_TO_REFUND -> REFUND_PENDING`；保留返件、验收和库存事实                                                     |
+| 换货出库/签收      | `EXCHANGE_PENDING/EXCHANGE_IN_TRANSIT` | `EXCHANGE_SHIPPED -> EXCHANGE_IN_TRANSIT`，`EXCHANGE_DELIVERED -> COMPLETED`                                                                          |
+| 不确定事实         | 各类型显式允许的非终态                 | `REQUIRE_REVIEW -> REVIEW_REQUIRED`，冻结原状态                                                                                                       |
+| 解决人工复核       | `REVIEW_REQUIRED`                      | `RESUME_REVIEW` 回冻结状态；仅无副作用早期状态可 `REJECT_REVIEW -> REJECTED`                                                                          |
+| 退款售后收口       | `REFUNDED`                             | `COMPLETE -> COMPLETED`                                                                                                                               |
+
+### 2.2 其他枚举
+
+- 售后来源：`MEMBER`、`ADMIN`。
+- 退货承担方：`BUYER`、`MERCHANT`、`CONDITIONAL`。
+- 验收处置：`PENDING`、`RESTOCK_SELLABLE`、`QUARANTINE`、`SCRAP`、`RETURN_TO_MEMBER`。
+- 结算方式：`ONLINE_ORIGINAL`、`COD_OFFLINE`、`NO_PAYOUT`。
+- 结算状态：`PENDING`、`PROCESSING`、`SUCCEEDED`、`FAILED`、`REVIEW_REQUIRED`、`CANCELLED`。
+- 运单目的：`ORDER_OUTBOUND`、`AFTER_SALE_RETURN`、`EXCHANGE_OUTBOUND`。
+- 分享目标：`STORE`、`BRAND`、`CATEGORY`、`PRODUCT`、`PROMOTION`、`COUPON`。
+
+## 3. 售后政策和历史快照
+
+### 3.1 `store_after_sale_settings`
+
+每商城一行，包含 `enforce_policy_snapshots boolean DEFAULT false`、`default_policy_id/current_version_id`、
+readiness 时间、版本和审计 actor。`false` 时 checkout 保持兼容，但新订单明确没有快照并只能进入
+legacy review；只有默认政策活动版本、所有目标绑定和订单写入预检通过后，受审命令才可逐商城切为
+`true`。启用后任何政策解析/快照失败必须使下单事务失败并告警，禁止静默降级或读取当前政策代替。
+管理控制面使用独立 `store.after-sales.policy.enforce` 权限、近期 MFA、确认词、expected version 与
+幂等键；GET 返回 readiness，启用命令必须在同一受审流程内重新验证默认活动版本、全部 assignment
+和 checkout 快照写入预检，不能信任客户端提交的 ready 标志。
+
+M6.2 不创建任何默认或生产政策，也不实现 checkout 政策解析/快照 writer、readiness API 或受审
+enforcement 命令；所有商城 enforcement 保持 OFF。上述启用流程是 M6.3 运行时前置条件，未完成前
+不得直接修改设置表宣称商城已 ready。
+
+### 3.2 `after_sale_policies`
+
+| 字段                 | 类型             | 约束与说明                                            |
+| -------------------- | ---------------- | ----------------------------------------------------- |
+| `id` / `store_id`    | uuid             | 商城复合唯一，强制 RLS                                |
+| `code`               | varchar(64)      | `UNIQUE(store_id, code)`；规范小写业务 code           |
+| `category_id`        | uuid nullable    | 同商城类目；空值为商城默认政策，每商城恰一条活动默认  |
+| `status`             | enum             | `DRAFT/ACTIVE/DISABLED`；停用不破坏历史版本           |
+| `current_version_id` | uuid nullable    | 同商城、同政策版本；发布事务内更新                    |
+| `draft_payload/hash` | jsonb/char(64)   | 受 JSON Schema allowlist 的可变草稿；不参与当前解析   |
+| `draft_product_ids`  | API 投影         | 实际存独立同商城 draft 关联表；仅发布事务切换活动绑定 |
+| `version`            | integer          | 管理配置乐观锁，`>=1`                                 |
+| 审计字段             | uuid/timestamptz | 创建/更新管理员和时间                                 |
+
+商品级覆盖已在 M6.2 通过同商城目标关联实施；没有采用 M2 字典中曾规划的
+`products.after_sale_policy_code`。解析顺序固定为商品覆盖、主类目最近规则、商城默认。
+
+### 3.3 `after_sale_policy_versions`
+
+只追加，`UNIQUE(store_id, policy_id, version_number)`。字段包括：
+
+- `effective_at`、`request_window_days`、`return_window_days`。
+- 四种售后类型开关、`return_shipping_payer`、`unopened_required`、`hygiene_restricted`。
+- 损坏/错发/缺陷例外、`exchange_same_product_only=true`、可换属性 code（服装通常为 size）。
+- `condition_rules jsonb`，只接受版本化 JSON Schema allowlist；禁止可执行表达式。
+- 越南语、中文、英文的政策名称、摘要和买家说明；越南语必填。
+- `payload_hash char(64)`、发布管理员和发布时间；发布后拒绝 UPDATE/DELETE。
+
+草稿 `PUT /{policyCode}` 的 path code 是唯一标识，body 不重复提交 code。`product_ids` 是 draft
+replace-set，不得在发布前改变 ACTIVE 解析。发布事务原子创建版本、不可变商品/类目 assignment、
+更新 `current_version_id/status/version` 并写审计；`DISABLED` 只阻止新订单解析，不破坏历史快照。
+`after_sale_policy_draft_products` 以 `(store_id, policy_id, product_id)` 复合 FK 持久化可变草稿集合；
+`after_sale_policy_version_assignments` 只追加保存发布版本的 PRODUCT/CATEGORY/STORE_DEFAULT 目标，
+CHECK 保证目标列恰好匹配类型。另用 `after_sale_active_policy_assignments` 保存当前解析投影并对
+`(store_id, target_type, target_id)` 建唯一约束；STORE_DEFAULT 使用商城级唯一键。发布事务按规范目标
+键排序加锁，只能替换同一 policy 的旧投影；目标已由另一 ACTIVE policy 占用时返回 `409`，不能以
+最后写入或发布时间隐式取胜。停用原子移除该 policy 的活动投影，但 enforcement 启用时若因此失去
+默认或使目标不完整则拒绝。解析只读活动投影指向的不可变 version assignment，绝不直接读取 draft
+表。并发发布相同商品/类目必须恰有一个成功，另一个稳定冲突。
+政策详情返回独立草稿与当前不可变版本；历史版本通过只读分页/详情接口查询。停用使用独立受审命令
+和 `store.after-sales.policy.disable`，不得通过草稿 PUT 篡改状态或删除历史版本。
+
+### 3.4 `order_item_after_sale_policy_snapshots`
+
+主键/唯一 `(store_id, order_item_id)`；复合引用订单、订单行和政策版本。保存 `policy_code`、
+`policy_version_number`、规范 `payload`、`payload_hash` 和 `captured_at`。它在新订单事务中创建，
+不可更新/删除。旧订单不回填；售后单以 `legacy_policy_review=true` 和一次性受审决定处理。
+legacy 决定不写成历史政策版本：`LEGACY_APPROVE/LEGACY_REJECT` 只追加保存管理员、理由、
+`policy_basis`、决定时刻和规范 payload/hash。`policy_basis` 只保存经审查的历史规则引用/摘要并加密，
+不得写入原始凭证、账户或支付数据。退货退款/换货批准 payload 必须包含 1-60 天的
+`return_window_days` 与运费承担方；仅退款/商家退款两项必须为 null。该决定只能写一次，不能被当前
+活动政策替换或事后改写。无政策快照的 legacy 售后只能以 `legacy_policy_review=true` 和
+`REVIEW_REQUIRED` 初态创建；决定写入会锁定售后聚合，必须绑定当前管理员、尚未产生普通/返件/
+换货 shipment、结算、验收、库存或换货履约副作用的未触碰初态，并由匹配的
+`LEGACY_APPROVE/LEGACY_REJECT` 一次性转换消费。普通 `APPROVE/REJECT`、冒用其他管理员或事后补写
+决定均拒绝。
+
+## 4. 售后聚合
+
+### 4.1 `after_sales`
+
+| 字段组   | 关键字段                                            | 约束与说明                                         |
+| -------- | --------------------------------------------------- | -------------------------------------------------- |
+| 归属     | `id/store_id/order_id/member_id`                    | `(store,order,member)` 复合 FK 证明订单所有者；RLS |
+| 标识     | `public_case_number`                                | 全局不可猜且唯一；内部 ID 不对外充当业务号         |
+| 业务     | `type/status/source/reason_code/reason_detail`      | 状态只由领域命令更新                               |
+| 人工复核 | `review_resume_status/review_reason`                | 冻结可恢复状态；解决命令不得任选跳转               |
+| 政策     | `policy_snapshot/policy_hash/legacy_policy_review`  | 不读取当前政策替代历史                             |
+| 寄回     | `return_deadline_at/return_expired_at`              | 冻结排他截止时刻；逾期转换只追加且幂等             |
+| 金额     | 商品/运费/其他申请与批准 VND 分项、`currency='VND'` | 服务端从订单事实计算                               |
+| 并发     | `version/idempotency_key_hash/request_hash`         | 同键同请求复放；异请求冲突                         |
+| 审计     | 发起/审核/完成 actor 与时间                         | 管理动作含原因、MFA 和 correlation ID              |
+
+普通售后只能以 `PENDING_REVIEW` 创建，legacy 售后只能使用上述 `REVIEW_REQUIRED` 初态；初态不得预填
+审批金额、审核人、完成时间或履约事实。运行角色没有 header 状态列直改权限，状态、复核恢复状态、版本和
+完成时间仅由校验后的只追加 `after_sale_transitions` 通过固定 definer trigger 原子投影。
+
+活动数量占用状态包括待审核、已批准、退货、验收、退款、换货和人工复核。拒绝/取消只释放尚无
+资金、返件在途、验收、库存或换货副作用的未履约数量；已退款、已换货、已完成以及任何不可逆/
+结果不确定事实继续占用历史容量，防止同一订单行重复获赔。人工复核拒绝只允许记录恢复状态为
+`APPROVED/RETURN_PENDING` 且事务内证明无 settlement、返件、验收、库存、换货及共享售后 shipment
+副作用；其他阶段必须恢复并协调权威事实。
+
+退货退款/换货批准事务以越南时区日历计算并持久化 `return_deadline_at`，后续不再读取当前政策。
+普通订单使用订单行快照的 `return_window_days`；legacy 订单使用该次不可变例外决定的天数。批准日
+不消耗完整寄回日，N 天窗口的排他截止点是批准日之后第 N 个完整越南自然日结束后的下一日
+`00:00:00 Asia/Ho_Chi_Minh`。返件提交必须在同一锁内满足 `now < return_deadline_at`；到点后 worker
+幂等追加 `RETURN_EXPIRED`，而提交与到期并发只能有一个成功。仅退款/商家退款的截止字段为 null。
+
+### 4.2 `after_sale_items`
+
+`UNIQUE(store_id, after_sale_id, order_item_id)`；冗余不可变 `order_id`，并同时用
+`(store_id, after_sale_id, order_id)` 与 `(store_id, order_id, order_item_id)` 复合 FK 证明售后行属于
+售后单的原订单。字段包括：
+
+- `requested_quantity`、`approved_quantity`、`received_quantity`、`accepted_quantity`、
+  `rejected_quantity`、`restockable_quantity`、`restored_quantity`，逐级守恒且不得超过购买量。
+- 申请/批准商品退款 VND、原 SKU/商品/品牌/类目不可变摘要。
+- `condition`、`disposition`、验收版本和管理员。
+- 换货时的 `replacement_sku_id`、数量；必须同商城、同商品 SPU、等量且不同 SKU。
+
+售后行 INSERT 会锁定当前售后聚合并只允许安全审核初态，防止与 `APPROVE/REJECT` 并发后向终态
+追加行。审批必须由当前管理员在待审状态原子写入：零批准数量必须对应零商品金额，换货必须有正数
+等量 replacement 且不能使用原 SKU。聚合批准转换再次核对每一行和 header 金额，不能只填运费/
+其他金额而留下未决定的换货行。数据库 guard 另在锁定订单行后汇总所有占用售后行，防止并发超出
+`order_items.quantity`。
+
+商品退款权益锁定订单行后，只汇总仍占用容量的批准行：
+`available_quantity = ordered_quantity - occupied_approved_quantity`，
+`available_vnd = order_item.payable_vnd - occupied_allocated_vnd`，本次分配为
+`floor(available_vnd * requested_approved_quantity / available_quantity)`；若本次覆盖全部剩余数量则
+直接分配全部 `available_vnd`。无副作用早期拒绝从活动汇总释放其数量和金额，但不可变历史分配仍
+保留审计；带副作用拒绝、人工复核和终态继续占用。这样释放后可重新使用权益，分次批准的折扣余数
+不丢失、不重复，全部活动数量最终仍精确等于行 `payable_vnd`。运费/偏远费权益使用独立订单级分配
+事实，按政策决定且每订单最多成功分配一次。数据库同时限制售后批准额、订单累计额、同 payment
+的 M5 `REQUESTED/PROCESSING/SUCCEEDED/REVIEW_REQUIRED` 与 COD settlement 占用。
+
+### 4.3 `after_sale_transitions`
+
+只追加保存 `from_status/to_status/event/actor_type/actor_id/reason/correlation_id/created_at`，复合
+引用售后单。人工复核恢复/早期拒绝分别记录 `RESUME_REVIEW/REJECT_REVIEW`，legacy 一次性决定记录
+`LEGACY_APPROVE/LEGACY_REJECT`，不能复用初次审核事件掩盖状态修正。状态修正只能追加受审转换；
+终态不得更新或删除。转换写入锁定售后聚合、校验当前 actor、from/to/event、类型图和所需权威事实，
+再由 trigger 原子投影 header；运行角色不能直接执行 definer 函数或跳过 transition 改状态。
+
+### 4.4 `after_sale_operations`
+
+保存商城、售后单、operation、幂等键 hash、请求 hash、状态、版本、结果摘要和时间。
+`UNIQUE(store_id, operation, idempotency_key_hash)`；不保存原始幂等键、证据正文或敏感账户。
+
+### 4.5 `after_sale_inspections` 与 `after_sale_inspection_allocations`
+
+- inspection header 只追加保存售后单、版本、管理员、原因和时间；P0 一次命令必须精确覆盖所有
+  等待验收的 approved 行，管理员必须等于当前 actor，禁止只提交部分行或全零数量推进整个聚合。
+- allocation 逐售后行保存 `RESTOCK_SELLABLE/QUARANTINE/SCRAP/RETURN_TO_MEMBER` 和正整数数量；
+  同 inspection/行/处置唯一，各处置之和必须等于实际 `received_quantity`。
+- `accepted_quantity` 是前三种处置之和，`rejected_quantity` 是 `RETURN_TO_MEMBER`，
+  `restockable_quantity` 仅等于 `RESTOCK_SELLABLE`；全部拒绝走 `REJECT_INSPECTION`，不能进入退款/
+  换货。更正通过新 inspection 版本追加，不能覆盖旧验收事实。
+
+## 5. 凭证、结算、库存和换货履约
+
+### 5.1 `after_sale_evidence_files`
+
+- 预上传先以 `store_id/member_id/upload_session_id` 和 nullable `after_sale_id` 建立 staged 事实；对象
+  key 固定包含环境/商城/临时上传命名空间，不要求尚不存在的售后 ID。确认并扫描通过后状态为
+  `READY_UNCLAIMED`，带短 `claim_deadline_at`；认领后切为 `READY` 并冻结 `retention_deadline_at`。
+- 创建售后事务按 evidence IDs 锁行，验证同商城/同会员、认领窗口未过期、扫描通过且从未 claim，
+  再一次性写入 `(store_id, after_sale_id, member_id)`；同一凭证不能复用到第二个售后。claim 后对象
+  访问始终通过数据库授权，不依赖可猜对象路径。
+- 保存 MIME、byte size、SHA-256、原文件名、扫描结果和
+  `PENDING/READY_UNCLAIMED/READY/FAILED/QUARANTINED/DELETION_PENDING/DELETED/DELETE_FAILED`。
+  `EXPIRE` 只允许在对应 claim/retention 截止点到达且无活动 legal hold 时进入
+  `DELETION_PENDING`；`DELETE_SUCCEEDED -> DELETED`，失败记录稳定错误类别并走
+  `DELETE_FAILED -> RETRY_DELETE -> DELETION_PENDING`，使用幂等对象删除和有界退避告警。
+  `EXPIRE`、`RETRY_DELETE` 和 `DELETE_SUCCEEDED` 不能走无上下文的通用状态转换；每次尝试都必须重新
+  锁行并检查截止点和 legal hold，hold 在首次排队或失败后激活时同样阻止重试/成功提交。
+- staged 凭证只能从无扫描结果的安全初态进入扫描流程；可认领状态要求非空且精确的 `CLEAN`
+  scan result，NULL 不能绕过。每次状态变化自动追加不可变 transition；删除失败重试必须达到
+  `next_delete_attempt_at`，成功后对象、衍生和扫描临时 key 均清空。
+- `legal_hold_active/held_at/held_by/reason` 是正交受审事实，不新增可读取状态。M6 普通售后 API 不提供
+  设置/解除 legal hold 的入口；M6.2 只为受治理的合规流程保留最小字段。活动 hold 阻止删除，但不延长
+  买家或普通管理员的访问窗口；解除后若截止点已过，worker 立即重新排队删除。
+- 到达访问截止点后，即使对象因 legal hold 尚在，普通访问也统一拒绝。只有 `READY` 且未过期对象可
+  签发短期 URL；`PENDING/READY_UNCLAIMED/FAILED/QUARANTINED/DELETION_PENDING/DELETED/DELETE_FAILED`
+  均不可读取，响应不能泄露扫描或删除细节。会员和普通管理员 API 不直接投影内部状态：
+  `PENDING -> PENDING`，`READY_UNCLAIMED/READY` 在各自有效窗口内投影为 `READY`，其他内部状态或
+  已过期对象统一投影为 `UNAVAILABLE` 且 `access_expires_at=null`；访问端点继续使用无差别 `404`。
+- 删除范围包含原对象、缩略图/转码衍生物和扫描临时对象。`DELETED` 后清除对象 key、衍生 key、签名
+  token 和原始错误，只保留商城/售后归属、checksum、byte size、状态转换、截止时间、删除时间、
+  尝试次数与审计元数据；该最小元数据继续受 RLS 与审计保留策略保护。
+- 只允许 JPEG/PNG/WebP 与 MP4，拒绝 SVG、脚本和可执行内容。
+- 每单最多 6 个文件；图片单个最多 10 MiB、视频最多 50 MiB。确认时校验 magic bytes、声明类型、
+  长度和 checksum；未扫描或隔离对象不能读取。
+- 买家只能读取本人售后凭证，管理员需要专门权限；短期 no-store URL，每次管理员读取写审计。
+
+### 5.2 `after_sale_settlements` 与 `after_sale_refunds`
+
+- `after_sale_settlements` 保存全局唯一且不可猜的 `public_settlement_number`、售后单、方式、批准金额、
+  状态、版本、幂等 hash、申请/确认 actor 和时间；内部主键不作为管理工作台命令标识。
+- settlement 冗余不可变 `order_id`；部分唯一索引保证 `(store_id, after_sale_id, method)` 最多一个
+  `PENDING/PROCESSING/REVIEW_REQUIRED` 活动事实。退款命令响应必须投影 settlement 公开号；COD 确认
+  路由同时携带 case ID 与该公开号，并在商城/售后范围内解析后锁行，不能接受客户端金额或内部 ID。
+- ONLINE 结算通过 `after_sale_refunds(store_id, settlement_id, refund_id, amount_vnd)` 关联现有 M5
+  `refunds`；链接冗余 order/payment ID，并以复合 FK/约束证明 case、settlement、payment、refund 是
+  同一订单。`amount_vnd` 必须等于 M5 refund amount 与 settlement amount，refund 只能被一个售后
+  结算占用。它不是第二套退款账。
+- COD 结算保存脱敏转账引用 digest、加密凭证引用和双人确认；申请人与确认人必须不同。
+- COD 结算的转账 digest 与加密凭证引用必须非空，NULL 不能绕过格式/存在性校验；确认 actor 必须与
+  申请 actor 不同。
+- settlement 写入先锁定售后聚合，并只允许匹配退款阶段或受审恢复阶段的状态；全部活动/成功结算及
+  M5 人工复核退款合计不得超过售后批准额、订单可退额和已捕获金额。
+
+### 5.3 `after_sale_inventory_actions`
+
+只追加保存售后行、验收版本、warehouse/SKU、处置、数量和 `inventory_operation_id`。
+`UNIQUE(store_id, after_sale_item_id, inspection_version, action_type)`。只有
+`RESTOCK_SELLABLE` 可关联 M3 `RESTORE` 操作；退款或运单终态不能创建库存动作。
+每次创建动作必须锁售后聚合、售后行、原订单行和库存余额，绑定原订单实际消费的 reservation、
+最新完整 inspection、唯一且 tuple/数量精确的 `RESTORE` movement，并按 UUID 无序假设安全地汇总该行
+全部 inspection version 的已完成恢复量；汇总不得超过累计 accepted/restockable 和原已消费量，
+`after_sale_items.restored_quantity` 必须与只追加 actions 之和一致。新增 inspection version 不能重置
+总量或获得第二份容量。
+
+### 5.4 返件和换货
+
+- `after_sale_return_shipments` 保存返件承运商、脱敏运单号、状态、提交人和时间；P0 可记录买家
+  自寄事实，不把未验证文本当作供应商权威签收。提交会锁定售后聚合并校验本人、类型、允许状态和
+  `now < return_deadline_at`；与 `RETURN_EXPIRED` 并发只能一个成功，`RETURN_SHIPPED` 需要权威返件
+  已进入运输状态。
+- `exchange_fulfillments` 保存售后行、replacement SKU、warehouse、预留、出库运单、状态和版本。
+  替换库存使用 `source_type='AFTER_SALE_EXCHANGE'` 的 M3 预留；出库消费，取消/超时释放。INSERT 和
+  每次 UPDATE 都锁定售后聚合并核对 `EXCHANGE_PENDING/EXCHANGE_IN_TRANSIT` 或相应复核恢复状态；
+  转退款后即使只更新时间戳/版本也不能重新推进预留、出库或交付。
+- M6.2 已选择扩展共享 M5 `shipments`：新增非空 `purpose`、nullable `after_sale_id`，旧数据和未显式
+  传值的新订单运单默认为 `ORDER_OUTBOUND`；复合 FK、shape/type guard 和活动 purpose 唯一索引约束
+  售后归属。非订单 shipment 写入会锁定售后聚合并限制到对应允许状态；`RETURN_EXPIRED`、
+  `REJECT_REVIEW`、普通拒绝或 `CONVERT_EXCHANGE_TO_REFUND` 与 raw shipment 并发串行后不能留下非法
+  售后物流事实。既有 M5 运行时尚未全面按 purpose 分流，因此 M6.3 创建 `AFTER_SALE_RETURN` 或
+  `EXCHANGE_OUTBOUND` 前，订单物流查询、命令、callback 和 worker 必须只让 `ORDER_OUTBOUND`
+  推进原订单 `SHIP/DELIVER`，售后 purpose 只能由售后协调器处理。
+
+## 6. 会员能力
+
+### 6.1 `member_favorites`
+
+主键/唯一 `(store_id, member_id, product_id)`；复合 FK 阻止跨商城。`PUT` 幂等创建，`DELETE`
+真实删除当前会员收藏。索引 `(store_id, member_id, created_at DESC, product_id)`。
+
+### 6.2 `member_product_views`
+
+唯一 `(store_id, member_id, product_id)`，保存 `first_viewed_at/last_viewed_at`。商品详情成功展示后
+由认证会员幂等 upsert；不保存匿名身份或每次事件计数。每会员/商城最多 100 条，事务内稳定裁剪；
+支持单条删除和全部清空。
+
+favorites/history 的 member policy 在 `USING` 与 `WITH CHECK` 同时要求商城上下文、
+`current_setting('app.actor_type')='member'` 和 `member_id=app_security.current_actor_id()`；普通管理员
+不获得 store-wide 直读。列表 cursor 是 `c1_` 前缀的签名 opaque token，绑定商城、会员、时间排序键
+和 product tie-breaker；解码后仍显式查询当前 store/member，不回显内部 UUID。
+
+### 6.3 `privacy_requests` 与 `privacy_request_transitions`
+
+- 状态固定为 `SUBMITTED`、`UNDER_REVIEW`、`ACTION_REQUIRED`、`IN_PROGRESS`、`COMPLETED`、
+  `REJECTED`、`CANCELLED`。转换固定为：`SUBMITTED --START_REVIEW--> UNDER_REVIEW`、
+  `SUBMITTED/UNDER_REVIEW --REQUEST_ACTION--> ACTION_REQUIRED`、
+  `ACTION_REQUIRED --PROVIDE_ACTION--> SUBMITTED`、`UNDER_REVIEW --START_FULFILLMENT--> IN_PROGRESS`、
+  `UNDER_REVIEW/IN_PROGRESS --REJECT--> REJECTED`、`IN_PROGRESS --COMPLETE--> COMPLETED`，以及
+  `SUBMITTED/ACTION_REQUIRED --CANCEL--> CANCELLED`。履约开始后不能经 ACTION_REQUIRED 绕回可取消状态；
+  所有终态关闭。
+- M6 只持久化真实受理：`store_id/member_id/public_number/type/status/version`、加密 description、
+  幂等/request hash、创建/更新时间；类型为访问、更正、删除、匿名化、注销，初始状态只能
+  `SUBMITTED`。提交响应不得声称已导出、删除、匿名化或注销。
+- transitions 只追加，记录状态、actor、原因、correlation ID 和审计；契约计划让买家查询本人状态并在
+  `SUBMITTED/ACTION_REQUIRED` 阶段取消。M6.2 仅实现 member owner-RLS 和数据库转换投影，尚未开放
+  提交、本人查询或取消运行时；其余管理履约转换先冻结但到 M7 才实现。M7 实施管理员履约、数据导出/删除执行、法定保留
+  冲突处理和 SLA 工作台。
+- 与收藏/历史相同使用 member-owner RLS；描述视为敏感数据，日志/普通审计只记录请求号、类型和
+  状态。会员中心继续复用现有 `members`、地址、订单和 `member_coupons`，不复制这些事实。
+
+## 7. 分享
+
+### 7.1 `share_links`
+
+- `id/store_id/short_code/target_type/locale/source_code/verified_campaign_id/verified_promotion_id/created_by_member_id`
+  和时间；short code 全局随机唯一，URL 不含会员或 Zalo subject。
+- BRAND/CATEGORY/PRODUCT/PROMOTION/COUPON 使用各自 nullable FK 列和 CHECK 保证恰好一个目标，
+  STORE 目标全部为空；所有目标使用同商城复合 FK，不采用无约束 polymorphic UUID。
+- `mini_app_path` 与浏览器 URL 由固定路由模板生成，不保存客户端任意 URL。失效目标安全回商城首页。
+- 创建请求只接受服务端签发、绑定商城/活动/有效期的 opaque attribution token；原始 campaign 或
+  promotion code 不入请求。无效/跨商城 token 拒绝，不作为奖励或资金事实。
+
+### 7.2 `share_link_localizations`
+
+主键 `(store_id, share_link_id, locale)`；保存标题、摘要、图片发布产物/源媒体引用、目标版本和
+payload hash。越南语必有，中英缺失显式回退越南语。长期图片通过固定 HTTPS 公共代理或 CDN
+发布产物提供，对象 key 至少包含规范商城 code 与不可变 payload hash，不保存会过期的签名 URL。
+
+### 7.3 `share_interactions`
+
+可选会员、分享 link、`INITIATED/COMPLETED/CANCELLED/OPENED/FALLBACK_OPENED`、来源、粗粒度
+设备类别和时间，只追加且有限保留。SDK 返回只用于体验/基础统计，不作为奖励、佣金或资金事实；
+不收集收件人列表。创建响应签发仅绑定 short code、初始 interaction 和有效期的 outcome token，库中
+只存 digest；重复完成/取消幂等，跨 link、过期或篡改 token 拒绝。P1 才实现推广归因与佣金。
+
+## 8. RLS、授权与迁移要求
+
+- 会员表策略同时使用当前 `store_id` 和应用层 `member_id` 条件；管理员售后表仍需服务层逐商城判权。
+- 运行角色不获得政策版本、转换、证据检查、结算确认、库存动作和分享交互的 UPDATE/DELETE。
+- 跨 FORCE RLS 投影或校验所需函数使用受控 definer owner 和固定
+  `search_path=pg_catalog, public, pg_temp`；PUBLIC 与 `zalo_shop_runtime` 的直接 EXECUTE 均撤销，运行
+  角色只能通过受 RLS 和 trigger guard 的表命令触发。M6.6 分享运行时交付前，runtime 对
+  `share_links/share_link_localizations/share_interactions` 的 INSERT 同样撤销。
+- 权限迁移只登记 M6 code，不自动授予生产角色；local/test seed 可以显式授权系统测试角色。
+- 政策 publish、disable 与逐商城 enforcement 是三个独立极高风险权限，互不隐含。
+- M6.2 十一段 `down.sql` 检测任一售后、政策快照、结算、凭证、库存动作、收藏/历史、隐私请求或分享
+  事实时以 `55000` 拒绝。生产和已有事实环境只允许向前修复。

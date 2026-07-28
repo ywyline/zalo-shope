@@ -16,6 +16,8 @@ import {
   createRuntimePrismaClient,
   markRefundReviewRequired,
   PrismaClient,
+  requestRefundQuery,
+  type StoreTransaction,
 } from '@zalo-shop/database';
 import { createStoreContext } from '@zalo-shop/domain';
 import { hashSensitive, signJwt } from '@zalo-shop/security';
@@ -41,6 +43,7 @@ describe('M5.7 refund API and database invariants', () => {
   const admin = new PrismaClient({ datasourceUrl: adminUrl });
   const owner = new PrismaClient({ datasourceUrl: ownerUrl });
   const runtime = createRuntimePrismaClient(runtimeUrl);
+  const contender = createRuntimePrismaClient(runtimeUrl);
   const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
   const fixture = {
     adminId: randomUUID(),
@@ -106,14 +109,132 @@ describe('M5.7 refund API and database invariants', () => {
     return { Authorization: `Bearer ${token}`, 'X-Store-Code': storeCode };
   }
 
-  function context() {
+  function context(storeId = BEAUTY_STORE_ID) {
     return createStoreContext({
       actor: { id: fixture.adminId, type: 'admin' },
       correlationId: `m57-${suffix}-${randomUUID()}`,
       locale: 'vi',
       storeCode: 'beauty-local',
-      storeId: BEAUTY_STORE_ID,
+      storeId,
     });
+  }
+
+  function createDeferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((complete) => {
+      resolve = complete;
+    });
+    return { promise, resolve };
+  }
+
+  async function setAdminContext(transaction: StoreTransaction): Promise<void> {
+    await transaction.$executeRaw`
+      SELECT
+        set_config('app.store_id', ${BEAUTY_STORE_ID}, true),
+        set_config('app.actor_id', ${fixture.adminId}, true),
+        set_config('app.actor_type', 'admin', true),
+        set_config('app.correlation_id', ${`m57-${suffix}-${randomUUID()}`}, true)
+    `;
+  }
+
+  async function waitForAdvisoryWait(input: {
+    blockerPid: number;
+    pid: number;
+  }): Promise<{ orderLockModes: string[]; paymentLockModes: string[] }> {
+    const deadline = Date.now() + 3_000;
+    while (Date.now() < deadline) {
+      const [state] = await owner.$queryRaw<
+        Array<{
+          advisory_waiting: boolean;
+          order_lock_modes: string[];
+          payment_lock_modes: string[];
+        }>
+      >`
+        SELECT
+          EXISTS (
+            SELECT 1 FROM pg_catalog.pg_locks lock
+            WHERE lock.pid = ${input.pid}
+              AND lock.locktype = 'advisory'
+              AND NOT lock.granted
+              AND ${input.blockerPid} = ANY(pg_catalog.pg_blocking_pids(lock.pid))
+          ) AS advisory_waiting,
+          ARRAY(
+            SELECT lock.mode FROM pg_catalog.pg_locks lock
+            WHERE lock.pid = ${input.pid}
+              AND lock.relation = 'orders'::regclass
+              AND lock.granted
+              AND lock.mode NOT IN ('AccessShareLock', 'SIReadLock')
+            ORDER BY lock.mode
+          ) AS order_lock_modes,
+          ARRAY(
+            SELECT lock.mode FROM pg_catalog.pg_locks lock
+            WHERE lock.pid = ${input.pid}
+              AND lock.relation = 'payment_attempts'::regclass
+              AND lock.granted
+              AND lock.mode NOT IN ('AccessShareLock', 'SIReadLock')
+            ORDER BY lock.mode
+          ) AS payment_lock_modes
+      `;
+      if (state?.advisory_waiting) {
+        return {
+          orderLockModes: state.order_lock_modes,
+          paymentLockModes: state.payment_lock_modes,
+        };
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`Refund lock waiter ${input.pid} did not reach the expected advisory state`);
+  }
+
+  async function waitForOtherAdvisoryWait(
+    excludedPid: number,
+    blockerPid: number,
+  ): Promise<{ orderLockModes: string[]; paymentLockModes: string[]; pid: number }> {
+    const deadline = Date.now() + 3_000;
+    while (Date.now() < deadline) {
+      const rows = await owner.$queryRaw<
+        Array<{
+          order_lock_modes: string[];
+          payment_lock_modes: string[];
+          pid: number;
+        }>
+      >`
+        SELECT
+          waiting.pid::integer AS pid,
+          ARRAY(
+            SELECT acquired.mode FROM pg_catalog.pg_locks acquired
+            WHERE acquired.pid = waiting.pid
+              AND acquired.relation = 'orders'::regclass
+              AND acquired.granted
+              AND acquired.mode NOT IN ('AccessShareLock', 'SIReadLock')
+            ORDER BY acquired.mode
+          ) AS order_lock_modes,
+          ARRAY(
+            SELECT acquired.mode FROM pg_catalog.pg_locks acquired
+            WHERE acquired.pid = waiting.pid
+              AND acquired.relation = 'payment_attempts'::regclass
+              AND acquired.granted
+              AND acquired.mode NOT IN ('AccessShareLock', 'SIReadLock')
+            ORDER BY acquired.mode
+          ) AS payment_lock_modes
+        FROM pg_catalog.pg_locks waiting
+        WHERE waiting.locktype = 'advisory'
+          AND NOT waiting.granted
+          AND waiting.pid <> ${excludedPid}
+          AND ${blockerPid} = ANY(pg_catalog.pg_blocking_pids(waiting.pid))
+        ORDER BY waiting.pid
+        LIMIT 1
+      `;
+      if (rows[0]) {
+        return {
+          orderLockModes: rows[0].order_lock_modes,
+          paymentLockModes: rows[0].payment_lock_modes,
+          pid: rows[0].pid,
+        };
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('M5 refund command did not wait for the shared advisory lock');
   }
 
   async function issueAdminToken(adminId: string, mfaVerifiedAt: Date): Promise<string> {
@@ -221,7 +342,7 @@ describe('M5.7 refund API and database invariants', () => {
     scratchCreated = true;
     runPackageScript('migrate:deploy');
     runPackageScript('seed');
-    await Promise.all([owner.$connect(), runtime.$connect()]);
+    await Promise.all([owner.$connect(), runtime.$connect(), contender.$connect()]);
 
     await owner.adminUser.createMany({
       data: [
@@ -315,7 +436,7 @@ describe('M5.7 refund API and database invariants', () => {
 
   afterAll(async () => {
     await app?.close();
-    await Promise.allSettled([owner.$disconnect(), runtime.$disconnect()]);
+    await Promise.allSettled([owner.$disconnect(), runtime.$disconnect(), contender.$disconnect()]);
     if (scratchCreated) {
       assertScratchName();
       await admin.$executeRaw`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${scratchDatabaseName} AND pid <> pg_backend_pid()`;
@@ -437,6 +558,189 @@ describe('M5.7 refund API and database invariants', () => {
         source: 'QUERY',
       }),
     ).rejects.toMatchObject({ code: 'REFUND_STATE_CONFLICT' });
+  });
+
+  it('canonicalizes store UUIDs across refund idempotency and outbox payloads', async () => {
+    const { payment } = await createSucceededPayment('canonical-store', 100_000);
+    const compactStoreId = BEAUTY_STORE_ID.replaceAll('-', '');
+    const idempotencyKey = `m57-canonical-store-${suffix}`;
+    const createInput = {
+      amountVnd: 30_000,
+      confirmation: 'CREATE_REFUND' as const,
+      expectedPaymentVersion: payment.version,
+      idempotencyKey,
+      paymentAttemptId: payment.id,
+      reason: 'Verify canonical store identity across refund messages',
+    };
+
+    const created = await createRefundCommand(runtime, context(compactStoreId), createInput);
+    const replay = await createRefundCommand(runtime, context(), createInput);
+    expect(created.replayed).toBe(false);
+    expect(replay).toMatchObject({ refundId: created.refundId, replayed: true });
+
+    const processing = await applyRefundProviderFact(runtime, context(compactStoreId), {
+      fact: {
+        amountVnd: 30_000,
+        providerRefundId: `zalo-refund-canonical-${suffix}`,
+        providerStatus: 'ZALO_CHECKOUT_2',
+        status: 'PENDING',
+      },
+      refundId: created.refundId,
+      source: 'QUERY',
+    });
+    expect(processing.status).toBe('PROCESSING');
+
+    const manualQuery = await requestRefundQuery(runtime, context(compactStoreId), {
+      expectedVersion: processing.version,
+      idempotencyKey: `m57-canonical-query-${suffix}`,
+      reason: 'Verify canonical store identity for a manual provider query',
+      refundId: created.refundId,
+    });
+    const manualReplay = await requestRefundQuery(runtime, context(), {
+      expectedVersion: processing.version,
+      idempotencyKey: `m57-canonical-query-${suffix}`,
+      reason: 'Verify canonical store identity for a manual provider query',
+      refundId: created.refundId,
+    });
+    expect(manualReplay.id).toBe(manualQuery.id);
+
+    const messages = await owner.outboxMessage.findMany({
+      where: {
+        aggregateId: created.refundId,
+        eventType: { in: ['refund.create.requested', 'refund.query.requested'] },
+      },
+    });
+    expect(messages).toHaveLength(3);
+    expect(
+      messages.every((message) => {
+        const payload = message.payload as Record<string, unknown>;
+        return (
+          message.storeId === BEAUTY_STORE_ID &&
+          payload.refund_id === created.refundId &&
+          payload.store_id === BEAUTY_STORE_ID &&
+          Object.keys(payload).sort().join(',') === 'refund_id,store_id'
+        );
+      }),
+    ).toBe(true);
+  });
+
+  it('takes the shared M6 advisory lock before M5 order and payment locks', async () => {
+    const { order, payment } = await createSucceededPayment('m62-lock-order', 100_000);
+    const afterSaleId = randomUUID();
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const publicCaseNumber = `ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`;
+    await owner.$transaction(async (transaction) => {
+      await setAdminContext(transaction);
+      await transaction.$executeRaw`INSERT INTO after_sales
+        (id, store_id, order_id, member_id, public_case_number, type, status, source,
+          reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+          requested_other_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
+          initiated_by, correlation_id, updated_at)
+        VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${order.id}::uuid,
+          ${fixture.memberId}::uuid,
+          ${publicCaseNumber},
+          'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'm57-m62-lock-order',
+          '{}'::jsonb, ${digest(`policy-${afterSaleId}`)}, false, 60000, 60000,
+          ${digest(`case-key-${afterSaleId}`)}, ${digest(`case-request-${afterSaleId}`)},
+          ${fixture.adminId}::uuid, ${`m57-${afterSaleId}`}, now())`;
+    });
+
+    const advisoryReady = createDeferred<number>();
+    const releaseAdvisory = createDeferred();
+    const advisoryHolder = owner.$transaction(
+      async (transaction) => {
+        const [backend] = await transaction.$queryRaw<Array<{ pid: number }>>`
+          SELECT pg_catalog.pg_backend_pid()::integer AS pid
+        `;
+        if (!backend) throw new Error('Advisory holder backend PID is unavailable');
+        await transaction.$executeRaw`
+          SELECT pg_catalog.pg_advisory_xact_lock(
+            pg_catalog.hashtextextended(
+              ${`m62-refund:${BEAUTY_STORE_ID}:${order.id}`},
+              0
+            )
+          )
+        `;
+        advisoryReady.resolve(backend.pid);
+        await releaseAdvisory.promise;
+      },
+      { timeout: 15_000 },
+    );
+    const advisoryBackendPid = await advisoryReady.promise;
+
+    const approvalPid = createDeferred<number>();
+    const approvalAttempt = runtime.$transaction(
+      async (transaction) => {
+        const [backend] = await transaction.$queryRaw<Array<{ pid: number }>>`
+          SELECT pg_catalog.pg_backend_pid()::integer AS pid
+        `;
+        if (!backend) throw new Error('M6 approval backend PID is unavailable');
+        approvalPid.resolve(backend.pid);
+        await setAdminContext(transaction);
+        await transaction.$executeRaw`UPDATE after_sales
+          SET approved_other_vnd = 60000, approved_total_vnd = 60000, updated_at = now()
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`;
+        await transaction.$executeRaw`INSERT INTO after_sale_order_allocations
+          (store_id, after_sale_id, order_id, other_vnd)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid, ${order.id}::uuid, 60000)`;
+        await transaction.$executeRaw`INSERT INTO after_sale_transitions
+          (store_id, after_sale_id, from_status, to_status, event, actor_type, actor_id,
+            correlation_id)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+            'PENDING_REVIEW', 'APPROVED', 'APPROVE', 'ADMIN', ${fixture.adminId}::uuid,
+            ${`m57-${randomUUID()}`})`;
+      },
+      { timeout: 15_000 },
+    );
+    const approvalBackendPid = await approvalPid.promise;
+    let observationFailure: unknown;
+    let refundAttempt: Promise<unknown> | undefined;
+    try {
+      expect(
+        await waitForAdvisoryWait({
+          blockerPid: advisoryBackendPid,
+          pid: approvalBackendPid,
+        }),
+      ).toEqual({ orderLockModes: [], paymentLockModes: [] });
+      refundAttempt = createRefundCommand(contender, context(BEAUTY_STORE_ID.replaceAll('-', '')), {
+        amountVnd: 100_001,
+        confirmation: 'CREATE_REFUND',
+        expectedPaymentVersion: payment.version,
+        idempotencyKey: `m57-m62-lock-order-${suffix}`,
+        paymentAttemptId: payment.id,
+        reason: 'Verify shared refund lock order before row locks',
+      });
+      const m5Waiter = await waitForOtherAdvisoryWait(approvalBackendPid, advisoryBackendPid);
+      expect(m5Waiter).toMatchObject({
+        orderLockModes: [],
+        paymentLockModes: [],
+      });
+    } catch (error) {
+      observationFailure = error;
+    } finally {
+      releaseAdvisory.resolve(undefined);
+      await advisoryHolder;
+    }
+
+    const outcomes = await Promise.allSettled([
+      approvalAttempt,
+      refundAttempt ?? Promise.reject(new Error('M5 refund command was not started')),
+    ]);
+    if (observationFailure instanceof Error) throw observationFailure;
+    if (observationFailure) {
+      throw new Error('M5/M6 advisory lock observation failed', { cause: observationFailure });
+    }
+    expect(outcomes[0]).toMatchObject({ status: 'fulfilled' });
+    expect(outcomes[1]).toMatchObject({
+      reason: { code: 'REFUND_AMOUNT_EXCEEDS_AVAILABLE' },
+      status: 'rejected',
+    });
+    expect(
+      await owner.$queryRaw<Array<{ status: string }>>`SELECT status::text AS status
+        FROM after_sales
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`,
+    ).toEqual([{ status: 'APPROVED' }]);
+    expect(await owner.refund.count({ where: { paymentAttemptId: payment.id } })).toBe(0);
   });
 
   it('rejects excess amounts and cross-store administration', async () => {

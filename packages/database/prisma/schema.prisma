@@ -91,66 +91,96 @@ model Store {
   createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  localizations                 StoreLocalization[]
-  theme                         StoreTheme?
-  zaloApps                      StoreZaloApp[]
-  storeRoles                    StoreRole[]
-  adminStoreRoles               AdminStoreRole[]
-  members                       Member[]
-  memberIdentities              MemberExternalIdentity[]
-  memberPhoneContact            MemberPhoneContact[]
-  consents                      Consent[]
-  memberSessions                MemberSession[]
-  auditLogs                     AuditLog[]
-  brands                        Brand[]
-  categories                    Category[]
-  attributeTemplates            AttributeTemplate[]
-  products                      Product[]
-  mediaAssets                   MediaAsset[]
-  complianceRequirements        ComplianceRequirement[]
-  pages                         Page[]
-  warehouses                    Warehouse[]
-  warehouseFulfillmentProfiles  WarehouseFulfillmentProfile[]
-  inventoryBalances             InventoryBalance[]
-  inventoryOperations           InventoryOperation[]
-  inventoryReservations         InventoryReservation[]
-  inventoryReservationItems     InventoryReservationItem[]
-  inventoryMovements            InventoryMovement[]
-  productSearchDocuments        ProductSearchDocument[]
-  memberSearchHistory           MemberSearchHistory[]
-  searchQueryStats              SearchQueryStat[]
-  promotions                    Promotion[]
-  promotionVersions             PromotionVersion[]
-  promotionVersionLocalizations PromotionVersionLocalization[]
-  promotionTargets              PromotionTarget[]
-  promotionOperations           PromotionOperation[]
-  coupons                       Coupon[]
-  memberCoupons                 MemberCoupon[]
-  carts                         Cart[]
-  cartItems                     CartItem[]
-  warehouseLocalizations        WarehouseLocalization[]
-  administrativeAreas           AdministrativeArea[]
-  deliveryPolicy                StoreDeliveryPolicy?
-  addresses                     Address[]
-  orders                        Order[]
-  orderItems                    OrderItem[]
-  orderSnapshots                OrderSnapshot[]
-  orderTransitions              OrderTransition[]
-  idempotencyRecords            IdempotencyRecord[]
-  paymentChannels               StorePaymentChannel[]
-  shippingChannels              StoreShippingChannel[]
-  paymentAttempts               PaymentAttempt[]
-  paymentTransitions            PaymentTransition[]
-  providerCallbacks             ProviderCallback[]
-  refunds                       Refund[]
-  refundTransitions             RefundTransition[]
-  shippingQuotes                ShippingQuote[]
-  shipments                     Shipment[]
-  shipmentItems                 ShipmentItem[]
-  trackingEvents                TrackingEvent[]
-  shippingOperations            ShippingOperation[]
-  outboxMessages                OutboxMessage[]
-  inboxMessages                 InboxMessage[]
+  localizations                  StoreLocalization[]
+  theme                          StoreTheme?
+  zaloApps                       StoreZaloApp[]
+  storeRoles                     StoreRole[]
+  adminStoreRoles                AdminStoreRole[]
+  members                        Member[]
+  memberIdentities               MemberExternalIdentity[]
+  memberPhoneContact             MemberPhoneContact[]
+  consents                       Consent[]
+  memberSessions                 MemberSession[]
+  auditLogs                      AuditLog[]
+  brands                         Brand[]
+  categories                     Category[]
+  attributeTemplates             AttributeTemplate[]
+  products                       Product[]
+  mediaAssets                    MediaAsset[]
+  complianceRequirements         ComplianceRequirement[]
+  pages                          Page[]
+  warehouses                     Warehouse[]
+  warehouseFulfillmentProfiles   WarehouseFulfillmentProfile[]
+  inventoryBalances              InventoryBalance[]
+  inventoryOperations            InventoryOperation[]
+  inventoryReservations          InventoryReservation[]
+  inventoryReservationItems      InventoryReservationItem[]
+  inventoryMovements             InventoryMovement[]
+  productSearchDocuments         ProductSearchDocument[]
+  memberSearchHistory            MemberSearchHistory[]
+  searchQueryStats               SearchQueryStat[]
+  promotions                     Promotion[]
+  promotionVersions              PromotionVersion[]
+  promotionVersionLocalizations  PromotionVersionLocalization[]
+  promotionTargets               PromotionTarget[]
+  promotionOperations            PromotionOperation[]
+  coupons                        Coupon[]
+  memberCoupons                  MemberCoupon[]
+  carts                          Cart[]
+  cartItems                      CartItem[]
+  warehouseLocalizations         WarehouseLocalization[]
+  administrativeAreas            AdministrativeArea[]
+  deliveryPolicy                 StoreDeliveryPolicy?
+  addresses                      Address[]
+  orders                         Order[]
+  orderItems                     OrderItem[]
+  orderSnapshots                 OrderSnapshot[]
+  orderTransitions               OrderTransition[]
+  idempotencyRecords             IdempotencyRecord[]
+  paymentChannels                StorePaymentChannel[]
+  shippingChannels               StoreShippingChannel[]
+  paymentAttempts                PaymentAttempt[]
+  paymentTransitions             PaymentTransition[]
+  providerCallbacks              ProviderCallback[]
+  refunds                        Refund[]
+  refundTransitions              RefundTransition[]
+  shippingQuotes                 ShippingQuote[]
+  shipments                      Shipment[]
+  shipmentItems                  ShipmentItem[]
+  trackingEvents                 TrackingEvent[]
+  shippingOperations             ShippingOperation[]
+  outboxMessages                 OutboxMessage[]
+  inboxMessages                  InboxMessage[]
+  afterSaleSetting               StoreAfterSaleSetting?
+  afterSalePolicies              AfterSalePolicy[]
+  afterSalePolicyVersions        AfterSalePolicyVersion[]
+  afterSalePolicyLocalizations   AfterSalePolicyLocalization[]
+  afterSalePolicyDraftProducts   AfterSalePolicyDraftProduct[]
+  afterSalePolicyAssignments     AfterSalePolicyVersionAssignment[]
+  activeAfterSalePolicies        AfterSaleActivePolicyAssignment[]
+  orderItemPolicySnapshots       OrderItemAfterSalePolicySnapshot[]
+  afterSales                     AfterSale[]
+  afterSaleItems                 AfterSaleItem[]
+  afterSaleTransitions           AfterSaleTransition[]
+  afterSaleOperations            AfterSaleOperation[]
+  afterSaleLegacyDecisions       AfterSaleLegacyDecision[]
+  afterSaleOrderAllocations      AfterSaleOrderAllocation[]
+  afterSaleInspections           AfterSaleInspection[]
+  afterSaleInspectionAllocations AfterSaleInspectionAllocation[]
+  afterSaleEvidenceFiles         AfterSaleEvidenceFile[]
+  afterSaleEvidenceTransitions   AfterSaleEvidenceTransition[]
+  afterSaleSettlements           AfterSaleSettlement[]
+  afterSaleRefunds               AfterSaleRefund[]
+  afterSaleInventoryActions      AfterSaleInventoryAction[]
+  afterSaleReturnShipments       AfterSaleReturnShipment[]
+  exchangeFulfillments           ExchangeFulfillment[]
+  memberFavorites                MemberFavorite[]
+  memberProductViews             MemberProductView[]
+  privacyRequests                PrivacyRequest[]
+  privacyRequestTransitions      PrivacyRequestTransition[]
+  shareLinks                     ShareLink[]
+  shareLinkLocalizations         ShareLinkLocalization[]
+  shareInteractions              ShareInteraction[]
 
   @@map("stores")
 }
@@ -216,19 +246,31 @@ model AdminUser {
   createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  platformRolesGranted       AdminPlatformRole[]   @relation("AdminPlatformRoleAdmin")
-  platformRolesGrantedBy     AdminPlatformRole[]   @relation("AdminPlatformRoleGrantor")
-  storeRoles                 AdminStoreRole[]      @relation("AdminStoreRoleAdmin")
-  storeRolesGrantedBy        AdminStoreRole[]      @relation("AdminStoreRoleGrantor")
-  adminSessions              AdminSession[]
-  inventoryOperations        InventoryOperation[]
-  promotionsCreated          Promotion[]           @relation("PromotionCreatedBy")
-  promotionsUpdated          Promotion[]           @relation("PromotionUpdatedBy")
-  promotionVersionsPublished PromotionVersion[]    @relation("PromotionVersionPublishedBy")
-  promotionOperations        PromotionOperation[]
-  deliveryPoliciesUpdated    StoreDeliveryPolicy[] @relation("DeliveryPolicyUpdatedBy")
-  warehouseProfilesUpdated   WarehouseFulfillmentProfile[] @relation("WarehouseFulfillmentProfileUpdatedBy")
-  refundsRequested           Refund[]
+  platformRolesGranted          AdminPlatformRole[]           @relation("AdminPlatformRoleAdmin")
+  platformRolesGrantedBy        AdminPlatformRole[]           @relation("AdminPlatformRoleGrantor")
+  storeRoles                    AdminStoreRole[]              @relation("AdminStoreRoleAdmin")
+  storeRolesGrantedBy           AdminStoreRole[]              @relation("AdminStoreRoleGrantor")
+  adminSessions                 AdminSession[]
+  inventoryOperations           InventoryOperation[]
+  promotionsCreated             Promotion[]                   @relation("PromotionCreatedBy")
+  promotionsUpdated             Promotion[]                   @relation("PromotionUpdatedBy")
+  promotionVersionsPublished    PromotionVersion[]            @relation("PromotionVersionPublishedBy")
+  promotionOperations           PromotionOperation[]
+  deliveryPoliciesUpdated       StoreDeliveryPolicy[]         @relation("DeliveryPolicyUpdatedBy")
+  warehouseProfilesUpdated      WarehouseFulfillmentProfile[] @relation("WarehouseFulfillmentProfileUpdatedBy")
+  refundsRequested              Refund[]
+  afterSalePoliciesCreated      AfterSalePolicy[]             @relation("AfterSalePolicyCreatedBy")
+  afterSalePoliciesUpdated      AfterSalePolicy[]             @relation("AfterSalePolicyUpdatedBy")
+  afterSaleVersionsPublished    AfterSalePolicyVersion[]
+  afterSaleLegacyDecisions      AfterSaleLegacyDecision[]
+  afterSaleInspections          AfterSaleInspection[]
+  afterSaleSettingsReadiness    StoreAfterSaleSetting[]       @relation("StoreAfterSaleReadinessCheckedBy")
+  afterSaleSettingsUpdated      StoreAfterSaleSetting[]       @relation("StoreAfterSaleSettingUpdatedBy")
+  afterSalesReviewed            AfterSale[]                   @relation("AfterSaleReviewedBy")
+  afterSaleItemsInspected       AfterSaleItem[]               @relation("AfterSaleItemInspectedBy")
+  afterSaleEvidenceHeld         AfterSaleEvidenceFile[]       @relation("AfterSaleEvidenceHeldBy")
+  afterSaleSettlementsRequested AfterSaleSettlement[]         @relation("AfterSaleSettlementRequestedBy")
+  afterSaleSettlementsConfirmed AfterSaleSettlement[]         @relation("AfterSaleSettlementConfirmedBy")
 
   @@map("admin_users")
 }
@@ -340,17 +382,24 @@ model Member {
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store              Store                    @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  identities         MemberExternalIdentity[]
-  phoneContact       MemberPhoneContact?
-  consents           Consent[]
-  sessions           MemberSession[]
-  searchHistory      MemberSearchHistory[]
-  coupons            MemberCoupon[]
-  carts              Cart[]
-  addresses          Address[]
-  orders             Order[]
-  idempotencyRecords IdempotencyRecord[]
+  store                     Store                     @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  identities                MemberExternalIdentity[]
+  phoneContact              MemberPhoneContact?
+  consents                  Consent[]
+  sessions                  MemberSession[]
+  searchHistory             MemberSearchHistory[]
+  coupons                   MemberCoupon[]
+  carts                     Cart[]
+  addresses                 Address[]
+  orders                    Order[]
+  idempotencyRecords        IdempotencyRecord[]
+  afterSaleEvidenceFiles    AfterSaleEvidenceFile[]
+  afterSaleReturnsSubmitted AfterSaleReturnShipment[]
+  favorites                 MemberFavorite[]
+  productViews              MemberProductView[]
+  privacyRequests           PrivacyRequest[]
+  shareLinksCreated         ShareLink[]
+  shareInteractions         ShareInteraction[]
 
   @@unique([storeId, id])
   @@index([storeId, status])
@@ -617,6 +666,8 @@ model Brand {
   orderItems             OrderItem[]
   productSearchDocuments ProductSearchDocument[]
   promotionTargets       PromotionTarget[]
+  afterSaleItems         AfterSaleItem[]
+  shareLinks             ShareLink[]
 
   @@unique([storeId, code])
   @@unique([storeId, id])
@@ -669,22 +720,22 @@ model CategoryMedia {
 }
 
 model Category {
-  id                           String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId                      String                      @map("store_id") @db.Uuid
-  parentId                     String?                     @map("parent_id") @db.Uuid
-  code                         String                      @db.VarChar(64)
+  id                           String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                      String                             @map("store_id") @db.Uuid
+  parentId                     String?                            @map("parent_id") @db.Uuid
+  code                         String                             @db.VarChar(64)
   depth                        Int
-  status                       RecordStatus                @default(ACTIVE)
-  sortOrder                    Int                         @default(0) @map("sort_order")
-  version                      Int                         @default(1)
-  deletedAt                    DateTime?                   @map("deleted_at") @db.Timestamptz(6)
-  createdAt                    DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy                    String?                     @map("created_by") @db.Uuid
-  updatedAt                    DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy                    String?                     @map("updated_by") @db.Uuid
-  categories                   Category?                   @relation("categoriesTocategories", fields: [storeId, parentId], references: [storeId, id], map: "categories_parent_fkey")
-  other_categories             Category[]                  @relation("categoriesTocategories")
-  stores                       Store                       @relation(fields: [storeId], references: [id])
+  status                       RecordStatus                       @default(ACTIVE)
+  sortOrder                    Int                                @default(0) @map("sort_order")
+  version                      Int                                @default(1)
+  deletedAt                    DateTime?                          @map("deleted_at") @db.Timestamptz(6)
+  createdAt                    DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                    String?                            @map("created_by") @db.Uuid
+  updatedAt                    DateTime                           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy                    String?                            @map("updated_by") @db.Uuid
+  categories                   Category?                          @relation("categoriesTocategories", fields: [storeId, parentId], references: [storeId, id], map: "categories_parent_fkey")
+  other_categories             Category[]                         @relation("categoriesTocategories")
+  stores                       Store                              @relation(fields: [storeId], references: [id])
   category_attribute_templates CategoryAttributeTemplate[]
   category_localizations       CategoryLocalization[]
   category_media               CategoryMedia[]
@@ -694,6 +745,11 @@ model Category {
   productSearchDocuments       ProductSearchDocument[]
   promotionTargets             PromotionTarget[]
   orderItems                   OrderItem[]
+  afterSalePolicies            AfterSalePolicy[]
+  afterSalePolicyAssignments   AfterSalePolicyVersionAssignment[]
+  activeAfterSalePolicies      AfterSaleActivePolicyAssignment[]
+  afterSaleItems               AfterSaleItem[]
+  shareLinks                   ShareLink[]
 
   @@unique([storeId, code])
   @@unique([storeId, id])
@@ -791,6 +847,7 @@ model MediaAsset {
   page_module_media       PageModuleMedia[]
   product_media           ProductMedia[]
   sku_media               SkuMedia[]
+  shareLinkLocalizations  ShareLinkLocalization[]
 
   @@unique([storeId, id])
   @@unique([storeId, objectKey])
@@ -979,36 +1036,43 @@ model ProductVersion {
 }
 
 model Product {
-  id                           String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId                      String                     @map("store_id") @db.Uuid
-  code                         String                     @db.VarChar(64)
-  brandId                      String                     @map("brand_id") @db.Uuid
-  mainCategoryId               String                     @map("main_category_id") @db.Uuid
-  attributeTemplateVersionId   String?                    @map("attribute_template_version_id") @db.Uuid
-  status                       ProductStatus              @default(DRAFT)
-  enabled                      Boolean                    @default(true)
-  scheduledPublishAt           DateTime?                  @map("scheduled_publish_at") @db.Timestamptz(6)
-  publishedAt                  DateTime?                  @map("published_at") @db.Timestamptz(6)
-  version                      Int                        @default(1)
-  deletedAt                    DateTime?                  @map("deleted_at") @db.Timestamptz(6)
-  createdAt                    DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy                    String?                    @map("created_by") @db.Uuid
-  updatedAt                    DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy                    String?                    @map("updated_by") @db.Uuid
+  id                           String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                      String                             @map("store_id") @db.Uuid
+  code                         String                             @db.VarChar(64)
+  brandId                      String                             @map("brand_id") @db.Uuid
+  mainCategoryId               String                             @map("main_category_id") @db.Uuid
+  attributeTemplateVersionId   String?                            @map("attribute_template_version_id") @db.Uuid
+  status                       ProductStatus                      @default(DRAFT)
+  enabled                      Boolean                            @default(true)
+  scheduledPublishAt           DateTime?                          @map("scheduled_publish_at") @db.Timestamptz(6)
+  publishedAt                  DateTime?                          @map("published_at") @db.Timestamptz(6)
+  version                      Int                                @default(1)
+  deletedAt                    DateTime?                          @map("deleted_at") @db.Timestamptz(6)
+  createdAt                    DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                    String?                            @map("created_by") @db.Uuid
+  updatedAt                    DateTime                           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy                    String?                            @map("updated_by") @db.Uuid
   compliance_records           ComplianceRecord[]
   product_attribute_values     ProductAttributeValue[]
   product_localizations        ProductLocalization[]
   product_media                ProductMedia[]
   product_secondary_categories ProductSecondaryCategory[]
   product_versions             ProductVersion[]
-  brands                       Brand                      @relation(fields: [storeId, brandId], references: [storeId, id], map: "products_brand_fkey")
-  categories                   Category                   @relation(fields: [storeId, mainCategoryId], references: [storeId, id], map: "products_main_category_fkey")
-  stores                       Store                      @relation(fields: [storeId], references: [id])
-  attribute_template_versions  AttributeTemplateVersion?  @relation(fields: [storeId, attributeTemplateVersionId], references: [storeId, id], map: "products_template_version_fkey")
+  brands                       Brand                              @relation(fields: [storeId, brandId], references: [storeId, id], map: "products_brand_fkey")
+  categories                   Category                           @relation(fields: [storeId, mainCategoryId], references: [storeId, id], map: "products_main_category_fkey")
+  stores                       Store                              @relation(fields: [storeId], references: [id])
+  attribute_template_versions  AttributeTemplateVersion?          @relation(fields: [storeId, attributeTemplateVersionId], references: [storeId, id], map: "products_template_version_fkey")
   skus                         Sku[]
   productSearchDocuments       ProductSearchDocument[]
   promotionTargets             PromotionTarget[]
   orderItems                   OrderItem[]
+  afterSalePolicyDraftProducts AfterSalePolicyDraftProduct[]
+  afterSalePolicyAssignments   AfterSalePolicyVersionAssignment[]
+  activeAfterSalePolicies      AfterSaleActivePolicyAssignment[]
+  afterSaleItems               AfterSaleItem[]
+  memberFavorites              MemberFavorite[]
+  memberProductViews           MemberProductView[]
+  shareLinks                   ShareLink[]
 
   @@unique([storeId, code])
   @@unique([storeId, id])
@@ -1074,9 +1138,14 @@ model Sku {
   promotionTargets          PromotionTarget[]
   cartItems                 CartItem[]
   orderItems                OrderItem[]
+  originalAfterSaleItems    AfterSaleItem[]            @relation("AfterSaleItemOriginalSku")
+  replacementAfterSaleItems AfterSaleItem[]            @relation("AfterSaleItemReplacementSku")
+  afterSaleInventoryActions AfterSaleInventoryAction[]
+  exchangeFulfillments      ExchangeFulfillment[]
 
   @@unique([storeId, code])
   @@unique([storeId, id])
+  @@unique([storeId, id, productId])
   @@unique([storeId, productId, optionCombinationHash])
   @@index([storeId, productId, status])
   @@map("skus")
@@ -1092,12 +1161,14 @@ model Warehouse {
   createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store            Store                      @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  localizations    WarehouseLocalization[]
-  balances         InventoryBalance[]
-  reservationItems InventoryReservationItem[]
-  shipments        Shipment[]
-  fulfillmentProfile WarehouseFulfillmentProfile?
+  store                     Store                        @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  localizations             WarehouseLocalization[]
+  balances                  InventoryBalance[]
+  reservationItems          InventoryReservationItem[]
+  shipments                 Shipment[]
+  fulfillmentProfile        WarehouseFulfillmentProfile?
+  afterSaleInventoryActions AfterSaleInventoryAction[]
+  exchangeFulfillments      ExchangeFulfillment[]
 
   @@unique([storeId, id])
   @@unique([storeId, code])
@@ -1106,22 +1177,22 @@ model Warehouse {
 }
 
 model WarehouseFulfillmentProfile {
-  storeId                  String   @map("store_id") @db.Uuid
-  warehouseId              String   @map("warehouse_id") @db.Uuid
-  contactNameCiphertext     String   @map("contact_name_ciphertext") @db.Text
-  phoneCiphertext           String   @map("phone_ciphertext") @db.Text
-  provinceCode              String   @map("province_code") @db.VarChar(32)
-  provinceName              String   @map("province_name") @db.VarChar(160)
-  districtCode              String   @map("district_code") @db.VarChar(32)
-  districtName              String   @map("district_name") @db.VarChar(160)
-  wardCode                  String   @map("ward_code") @db.VarChar(32)
-  wardName                  String   @map("ward_name") @db.VarChar(160)
-  detailCiphertext          String   @map("detail_ciphertext") @db.Text
-  enabled                   Boolean  @default(true)
-  version                   Int      @default(1)
-  updatedByAdminId          String   @map("updated_by_admin_id") @db.Uuid
-  createdAt                 DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                 DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  storeId               String   @map("store_id") @db.Uuid
+  warehouseId           String   @map("warehouse_id") @db.Uuid
+  contactNameCiphertext String   @map("contact_name_ciphertext") @db.Text
+  phoneCiphertext       String   @map("phone_ciphertext") @db.Text
+  provinceCode          String   @map("province_code") @db.VarChar(32)
+  provinceName          String   @map("province_name") @db.VarChar(160)
+  districtCode          String   @map("district_code") @db.VarChar(32)
+  districtName          String   @map("district_name") @db.VarChar(160)
+  wardCode              String   @map("ward_code") @db.VarChar(32)
+  wardName              String   @map("ward_name") @db.VarChar(160)
+  detailCiphertext      String   @map("detail_ciphertext") @db.Text
+  enabled               Boolean  @default(true)
+  version               Int      @default(1)
+  updatedByAdminId      String   @map("updated_by_admin_id") @db.Uuid
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   store        Store              @relation(fields: [storeId], references: [id], onDelete: Restrict)
   warehouse    Warehouse          @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict)
@@ -1186,10 +1257,11 @@ model InventoryOperation {
   sourceId       String?                @map("source_id") @db.Uuid
   createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  store                Store                  @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  admin                AdminUser?             @relation(fields: [adminId], references: [id], onDelete: Restrict)
-  movements            InventoryMovement[]
-  terminalReservations InventoryReservation[]
+  store                    Store                     @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  admin                    AdminUser?                @relation(fields: [adminId], references: [id], onDelete: Restrict)
+  movements                InventoryMovement[]
+  terminalReservations     InventoryReservation[]
+  afterSaleInventoryAction AfterSaleInventoryAction?
 
   @@unique([storeId, id])
   @@unique([storeId, operationKey])
@@ -1212,10 +1284,11 @@ model InventoryReservation {
   lastExpirationFailedAt  DateTime?                  @map("last_expiration_failed_at") @db.Timestamptz(6)
   lastExpirationErrorCode String?                    @map("last_expiration_error_code") @db.VarChar(64)
 
-  store             Store                      @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  terminalOperation InventoryOperation?        @relation(fields: [storeId, terminalOperationId], references: [storeId, id], onDelete: Restrict)
-  items             InventoryReservationItem[]
-  order             Order?
+  store               Store                      @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  terminalOperation   InventoryOperation?        @relation(fields: [storeId, terminalOperationId], references: [storeId, id], onDelete: Restrict)
+  items               InventoryReservationItem[]
+  order               Order?
+  exchangeFulfillment ExchangeFulfillment?
 
   @@unique([storeId, id])
   @@unique([storeId, reservationKey])
@@ -1270,6 +1343,800 @@ model InventoryMovement {
   @@index([storeId, balanceId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([storeId, operationId])
   @@map("inventory_movements")
+}
+
+model StoreAfterSaleSetting {
+  storeId                String    @id @map("store_id") @db.Uuid
+  enforcePolicySnapshots Boolean   @default(false) @map("enforce_policy_snapshots")
+  defaultPolicyId        String?   @map("default_policy_id") @db.Uuid
+  currentVersionId       String?   @map("current_version_id") @db.Uuid
+  readinessCheckedAt     DateTime? @map("readiness_checked_at") @db.Timestamptz(6)
+  readinessReadyAt       DateTime? @map("readiness_ready_at") @db.Timestamptz(6)
+  readinessHash          String?   @map("readiness_hash") @db.Char(64)
+  readinessCheckedBy     String?   @map("readiness_checked_by") @db.Uuid
+  version                Int       @default(1)
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy              String?   @map("updated_by") @db.Uuid
+
+  store            Store                   @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "store_after_sale_settings_store_id_fkey")
+  defaultPolicy    AfterSalePolicy?        @relation(fields: [storeId, defaultPolicyId], references: [storeId, id], onDelete: Restrict, map: "store_after_sale_settings_default_policy_fkey")
+  currentVersion   AfterSalePolicyVersion? @relation(fields: [storeId, currentVersionId, defaultPolicyId], references: [storeId, id, policyId], onDelete: Restrict, map: "store_after_sale_settings_current_version_fkey")
+  readinessChecker AdminUser?              @relation("StoreAfterSaleReadinessCheckedBy", fields: [readinessCheckedBy], references: [id], onDelete: Restrict, map: "store_after_sale_settings_readiness_actor_fkey")
+  updater          AdminUser?              @relation("StoreAfterSaleSettingUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict, map: "store_after_sale_settings_updated_actor_fkey")
+
+  @@map("store_after_sale_settings")
+}
+
+model AfterSalePolicy {
+  id               String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId          String                @map("store_id") @db.Uuid
+  code             String                @db.VarChar(64)
+  status           AfterSalePolicyStatus @default(DRAFT)
+  categoryId       String?               @map("category_id") @db.Uuid
+  currentVersionId String?               @map("current_version_id") @db.Uuid
+  draftPayload     Json                  @map("draft_payload")
+  draftHash        String                @map("draft_hash") @db.Char(64)
+  version          Int                   @default(1)
+  createdBy        String                @map("created_by") @db.Uuid
+  updatedBy        String                @map("updated_by") @db.Uuid
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store              Store                              @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_policies_store_id_fkey")
+  category           Category?                          @relation(fields: [storeId, categoryId], references: [storeId, id], onDelete: Restrict, map: "after_sale_policies_category_fkey")
+  currentVersion     AfterSalePolicyVersion?            @relation("AfterSalePolicyCurrentVersion", fields: [storeId, currentVersionId, id], references: [storeId, id, policyId], onDelete: Restrict, map: "after_sale_policies_current_version_fkey")
+  creator            AdminUser                          @relation("AfterSalePolicyCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict, map: "after_sale_policies_created_by_fkey")
+  updater            AdminUser                          @relation("AfterSalePolicyUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict, map: "after_sale_policies_updated_by_fkey")
+  versions           AfterSalePolicyVersion[]           @relation("AfterSalePolicyVersions")
+  draftProducts      AfterSalePolicyDraftProduct[]
+  activeAssignments  AfterSaleActivePolicyAssignment[]
+  orderItemSnapshots OrderItemAfterSalePolicySnapshot[]
+  storeSettings      StoreAfterSaleSetting[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, code])
+  @@index([storeId, status, code])
+  @@map("after_sale_policies")
+}
+
+model AfterSalePolicyVersion {
+  id                      String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                 String              @map("store_id") @db.Uuid
+  policyId                String              @map("policy_id") @db.Uuid
+  versionNumber           Int                 @map("version_number")
+  effectiveAt             DateTime            @map("effective_at") @db.Timestamptz(6)
+  requestWindowDays       Int                 @map("request_window_days")
+  returnWindowDays        Int                 @map("return_window_days")
+  allowedTypes            AfterSaleType[]     @map("allowed_types")
+  returnShippingPayer     ReturnShippingPayer @map("return_shipping_payer")
+  unopenedRequired        Boolean             @map("unopened_required")
+  hygieneRestricted       Boolean             @map("hygiene_restricted")
+  damagedException        Boolean             @map("damaged_exception")
+  wrongItemException      Boolean             @map("wrong_item_exception")
+  defectException         Boolean             @map("defect_exception")
+  exchangeSameProductOnly Boolean             @default(true) @map("exchange_same_product_only")
+  exchangeAttributeCode   String?             @map("exchange_attribute_code") @db.VarChar(64)
+  conditionRules          Json                @map("condition_rules")
+  payload                 Json
+  payloadHash             String              @map("payload_hash") @db.Char(64)
+  publishedBy             String              @map("published_by") @db.Uuid
+  publishedAt             DateTime            @default(now()) @map("published_at") @db.Timestamptz(6)
+
+  store              Store                              @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_policy_versions_store_id_fkey")
+  policy             AfterSalePolicy                    @relation("AfterSalePolicyVersions", fields: [storeId, policyId], references: [storeId, id], onDelete: Restrict, map: "after_sale_policy_versions_policy_fkey")
+  publisher          AdminUser                          @relation(fields: [publishedBy], references: [id], onDelete: Restrict, map: "after_sale_policy_versions_published_by_fkey")
+  currentForPolicies AfterSalePolicy[]                  @relation("AfterSalePolicyCurrentVersion")
+  localizations      AfterSalePolicyLocalization[]
+  assignments        AfterSalePolicyVersionAssignment[]
+  activeAssignments  AfterSaleActivePolicyAssignment[]
+  orderItemSnapshots OrderItemAfterSalePolicySnapshot[]
+  storeSettings      StoreAfterSaleSetting[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, id, policyId])
+  @@unique([storeId, policyId, versionNumber])
+  @@index([storeId, policyId, publishedAt(sort: Desc)])
+  @@map("after_sale_policy_versions")
+}
+
+model AfterSalePolicyLocalization {
+  storeId           String   @map("store_id") @db.Uuid
+  policyVersionId   String   @map("policy_version_id") @db.Uuid
+  locale            Locale
+  name              String   @db.VarChar(160)
+  summary           String   @db.VarChar(1000)
+  buyerInstructions String   @map("buyer_instructions") @db.Text
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store         Store                  @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_policy_localizations_store_id_fkey")
+  policyVersion AfterSalePolicyVersion @relation(fields: [storeId, policyVersionId], references: [storeId, id], onDelete: Restrict, map: "after_sale_policy_localizations_version_fkey")
+
+  @@id([storeId, policyVersionId, locale])
+  @@map("after_sale_policy_localizations")
+}
+
+model AfterSalePolicyDraftProduct {
+  storeId   String   @map("store_id") @db.Uuid
+  policyId  String   @map("policy_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store   Store           @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_policy_draft_products_store_id_fkey")
+  policy  AfterSalePolicy @relation(fields: [storeId, policyId], references: [storeId, id], onDelete: Restrict, map: "after_sale_policy_draft_products_policy_fkey")
+  product Product         @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict, map: "after_sale_policy_draft_products_product_fkey")
+
+  @@id([storeId, policyId, productId])
+  @@map("after_sale_policy_draft_products")
+}
+
+model AfterSalePolicyVersionAssignment {
+  id              String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId         String                    @map("store_id") @db.Uuid
+  policyId        String                    @map("policy_id") @db.Uuid
+  policyVersionId String                    @map("policy_version_id") @db.Uuid
+  targetType      AfterSalePolicyTargetType @map("target_type")
+  productId       String?                   @map("product_id") @db.Uuid
+  categoryId      String?                   @map("category_id") @db.Uuid
+  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store             Store                             @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_policy_version_assignments_store_id_fkey")
+  policyVersion     AfterSalePolicyVersion            @relation(fields: [storeId, policyVersionId, policyId], references: [storeId, id, policyId], onDelete: Restrict, map: "after_sale_policy_version_assignments_version_fkey")
+  product           Product?                          @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict, map: "after_sale_policy_version_assignments_product_fkey")
+  category          Category?                         @relation(fields: [storeId, categoryId], references: [storeId, id], onDelete: Restrict, map: "after_sale_policy_version_assignments_category_fkey")
+  activeProjections AfterSaleActivePolicyAssignment[]
+
+  @@unique([storeId, id])
+  @@index([storeId, policyVersionId, targetType])
+  @@map("after_sale_policy_version_assignments")
+}
+
+model AfterSaleActivePolicyAssignment {
+  id              String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId         String                    @map("store_id") @db.Uuid
+  targetType      AfterSalePolicyTargetType @map("target_type")
+  productId       String?                   @map("product_id") @db.Uuid
+  categoryId      String?                   @map("category_id") @db.Uuid
+  policyId        String                    @map("policy_id") @db.Uuid
+  policyVersionId String                    @map("policy_version_id") @db.Uuid
+  assignmentId    String                    @map("assignment_id") @db.Uuid
+  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store         Store                            @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_active_policy_assignments_store_id_fkey")
+  policy        AfterSalePolicy                  @relation(fields: [storeId, policyId], references: [storeId, id], onDelete: Restrict, map: "after_sale_active_policy_assignments_policy_fkey")
+  policyVersion AfterSalePolicyVersion           @relation(fields: [storeId, policyVersionId, policyId], references: [storeId, id, policyId], onDelete: Restrict, map: "after_sale_active_policy_assignments_version_fkey")
+  assignment    AfterSalePolicyVersionAssignment @relation(fields: [storeId, assignmentId], references: [storeId, id], onDelete: Restrict, map: "after_sale_active_policy_assignments_assignment_fkey")
+  product       Product?                         @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict, map: "after_sale_active_policy_assignments_product_fkey")
+  category      Category?                        @relation(fields: [storeId, categoryId], references: [storeId, id], onDelete: Restrict, map: "after_sale_active_policy_assignments_category_fkey")
+
+  @@unique([storeId, id])
+  @@index([storeId, policyId])
+  @@map("after_sale_active_policy_assignments")
+}
+
+model OrderItemAfterSalePolicySnapshot {
+  storeId             String   @map("store_id") @db.Uuid
+  orderId             String   @map("order_id") @db.Uuid
+  orderItemId         String   @map("order_item_id") @db.Uuid
+  policyId            String   @map("policy_id") @db.Uuid
+  policyVersionId     String   @map("policy_version_id") @db.Uuid
+  policyCode          String   @map("policy_code") @db.VarChar(64)
+  policyVersionNumber Int      @map("policy_version_number")
+  payload             Json
+  payloadHash         String   @map("payload_hash") @db.Char(64)
+  capturedAt          DateTime @default(now()) @map("captured_at") @db.Timestamptz(6)
+
+  store         Store                  @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "order_item_after_sale_policy_snapshots_store_id_fkey")
+  orderItem     OrderItem              @relation(fields: [storeId, orderId, orderItemId], references: [storeId, orderId, id], onDelete: Restrict, map: "order_item_after_sale_policy_snapshots_order_item_fkey")
+  policy        AfterSalePolicy        @relation(fields: [storeId, policyId], references: [storeId, id], onDelete: Restrict, map: "order_item_after_sale_policy_snapshots_policy_fkey")
+  policyVersion AfterSalePolicyVersion @relation(fields: [storeId, policyVersionId, policyId], references: [storeId, id, policyId], onDelete: Restrict, map: "order_item_after_sale_policy_snapshots_version_policy_fkey")
+
+  @@id([storeId, orderItemId])
+  @@index([storeId, orderId])
+  @@map("order_item_after_sale_policy_snapshots")
+}
+
+model AfterSale {
+  id                     String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                String           @map("store_id") @db.Uuid
+  orderId                String           @map("order_id") @db.Uuid
+  memberId               String           @map("member_id") @db.Uuid
+  publicCaseNumber       String           @unique @map("public_case_number") @db.VarChar(64)
+  type                   AfterSaleType
+  status                 AfterSaleStatus  @default(PENDING_REVIEW)
+  source                 AfterSaleSource
+  reasonCode             String           @map("reason_code") @db.VarChar(64)
+  reasonDetailCiphertext String?          @map("reason_detail_ciphertext") @db.Text
+  reviewResumeStatus     AfterSaleStatus? @map("review_resume_status")
+  reviewReason           String?          @map("review_reason") @db.VarChar(500)
+  policySnapshot         Json?            @map("policy_snapshot")
+  policyHash             String?          @map("policy_hash") @db.Char(64)
+  legacyPolicyReview     Boolean          @default(false) @map("legacy_policy_review")
+  returnDeadlineAt       DateTime?        @map("return_deadline_at") @db.Timestamptz(6)
+  returnExpiredAt        DateTime?        @map("return_expired_at") @db.Timestamptz(6)
+  requestedItemVnd       BigInt           @default(0) @map("requested_item_vnd")
+  requestedShippingVnd   BigInt           @default(0) @map("requested_shipping_vnd")
+  requestedOtherVnd      BigInt           @default(0) @map("requested_other_vnd")
+  requestedTotalVnd      BigInt           @default(0) @map("requested_total_vnd")
+  approvedItemVnd        BigInt           @default(0) @map("approved_item_vnd")
+  approvedShippingVnd    BigInt           @default(0) @map("approved_shipping_vnd")
+  approvedOtherVnd       BigInt           @default(0) @map("approved_other_vnd")
+  approvedTotalVnd       BigInt           @default(0) @map("approved_total_vnd")
+  currency               String           @default("VND") @db.Char(3)
+  version                Int              @default(1)
+  idempotencyKeyHash     String           @map("idempotency_key_hash") @db.Char(64)
+  requestHash            String           @map("request_hash") @db.Char(64)
+  initiatedBy            String           @map("initiated_by") @db.Uuid
+  reviewedBy             String?          @map("reviewed_by") @db.Uuid
+  reviewedAt             DateTime?        @map("reviewed_at") @db.Timestamptz(6)
+  completedAt            DateTime?        @map("completed_at") @db.Timestamptz(6)
+  correlationId          String           @map("correlation_id") @db.VarChar(128)
+  createdAt              DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store            Store                      @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sales_store_id_fkey")
+  order            Order                      @relation(fields: [storeId, orderId, memberId], references: [storeId, id, memberId], onDelete: Restrict, map: "after_sales_order_owner_fkey")
+  reviewer         AdminUser?                 @relation("AfterSaleReviewedBy", fields: [reviewedBy], references: [id], onDelete: Restrict, map: "after_sales_reviewed_by_fkey")
+  items            AfterSaleItem[]
+  transitions      AfterSaleTransition[]
+  operations       AfterSaleOperation[]
+  legacyDecision   AfterSaleLegacyDecision?
+  orderAllocations AfterSaleOrderAllocation[]
+  inspections      AfterSaleInspection[]
+  evidenceFiles    AfterSaleEvidenceFile[]
+  settlements      AfterSaleSettlement[]
+  returnShipments  AfterSaleReturnShipment[]
+  shipments        Shipment[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, id, orderId])
+  @@unique([storeId, id, memberId])
+  @@unique([storeId, id, orderId, memberId])
+  @@unique([storeId, idempotencyKeyHash])
+  @@index([storeId, memberId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([storeId, status, updatedAt, id])
+  @@map("after_sales")
+}
+
+model AfterSaleItem {
+  id                  String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId             String                          @map("store_id") @db.Uuid
+  afterSaleId         String                          @map("after_sale_id") @db.Uuid
+  orderId             String                          @map("order_id") @db.Uuid
+  orderItemId         String                          @map("order_item_id") @db.Uuid
+  requestedQuantity   Int                             @map("requested_quantity")
+  approvedQuantity    Int                             @default(0) @map("approved_quantity")
+  receivedQuantity    Int                             @default(0) @map("received_quantity")
+  acceptedQuantity    Int                             @default(0) @map("accepted_quantity")
+  rejectedQuantity    Int                             @default(0) @map("rejected_quantity")
+  restockableQuantity Int                             @default(0) @map("restockable_quantity")
+  restoredQuantity    Int                             @default(0) @map("restored_quantity")
+  requestedItemVnd    BigInt                          @map("requested_item_vnd")
+  approvedItemVnd     BigInt                          @default(0) @map("approved_item_vnd")
+  skuId               String                          @map("sku_id") @db.Uuid
+  productId           String                          @map("product_id") @db.Uuid
+  brandId             String                          @map("brand_id") @db.Uuid
+  categoryId          String                          @map("category_id") @db.Uuid
+  skuCode             String                          @map("sku_code") @db.VarChar(64)
+  productName         String                          @map("product_name") @db.VarChar(240)
+  optionSnapshot      Json                            @map("option_snapshot")
+  unitPriceVnd        BigInt                          @map("unit_price_vnd")
+  condition           String?                         @db.VarChar(64)
+  disposition         AfterSaleInspectionDisposition?
+  inspectionVersion   Int                             @default(0) @map("inspection_version")
+  inspectedBy         String?                         @map("inspected_by") @db.Uuid
+  replacementSkuId    String?                         @map("replacement_sku_id") @db.Uuid
+  replacementQuantity Int                             @default(0) @map("replacement_quantity")
+  createdAt           DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store                 Store                           @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_items_store_id_fkey")
+  afterSale             AfterSale                       @relation(fields: [storeId, afterSaleId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "after_sale_items_case_order_fkey")
+  orderItem             OrderItem                       @relation(fields: [storeId, orderId, orderItemId], references: [storeId, orderId, id], onDelete: Restrict, map: "after_sale_items_order_item_fkey")
+  sku                   Sku                             @relation("AfterSaleItemOriginalSku", fields: [storeId, skuId], references: [storeId, id], onDelete: Restrict, map: "after_sale_items_sku_fkey")
+  product               Product                         @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict, map: "after_sale_items_product_fkey")
+  brand                 Brand                           @relation(fields: [storeId, brandId], references: [storeId, id], onDelete: Restrict, map: "after_sale_items_brand_fkey")
+  category              Category                        @relation(fields: [storeId, categoryId], references: [storeId, id], onDelete: Restrict, map: "after_sale_items_category_fkey")
+  replacementSku        Sku?                            @relation("AfterSaleItemReplacementSku", fields: [storeId, replacementSkuId, productId], references: [storeId, id, productId], onDelete: Restrict, map: "after_sale_items_replacement_sku_fkey")
+  inspector             AdminUser?                      @relation("AfterSaleItemInspectedBy", fields: [inspectedBy], references: [id], onDelete: Restrict, map: "after_sale_items_inspected_by_fkey")
+  inspectionAllocations AfterSaleInspectionAllocation[]
+  inventoryActions      AfterSaleInventoryAction[]
+  exchangeFulfillments  ExchangeFulfillment[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, id, afterSaleId])
+  @@unique([storeId, afterSaleId, orderItemId])
+  @@index([storeId, orderId, orderItemId])
+  @@map("after_sale_items")
+}
+
+model AfterSaleTransition {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId       String           @map("store_id") @db.Uuid
+  afterSaleId   String           @map("after_sale_id") @db.Uuid
+  fromStatus    AfterSaleStatus? @map("from_status")
+  toStatus      AfterSaleStatus  @map("to_status")
+  event         String           @db.VarChar(64)
+  actorType     AuditActorType   @map("actor_type")
+  actorId       String           @map("actor_id") @db.Uuid
+  reason        String?          @db.VarChar(500)
+  correlationId String           @map("correlation_id") @db.VarChar(128)
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_transitions_store_id_fkey")
+  afterSale AfterSale @relation(fields: [storeId, afterSaleId], references: [storeId, id], onDelete: Restrict, map: "after_sale_transitions_case_fkey")
+
+  @@unique([storeId, id])
+  @@index([storeId, afterSaleId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("after_sale_transitions")
+}
+
+model AfterSaleOperation {
+  id                 String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId            String                   @map("store_id") @db.Uuid
+  afterSaleId        String                   @map("after_sale_id") @db.Uuid
+  operation          String                   @db.VarChar(64)
+  idempotencyKeyHash String                   @map("idempotency_key_hash") @db.Char(64)
+  requestHash        String                   @map("request_hash") @db.Char(64)
+  status             AfterSaleOperationStatus @default(PENDING)
+  resultSummary      Json?                    @map("result_summary")
+  errorCode          String?                  @map("error_code") @db.VarChar(64)
+  attemptCount       Int                      @default(0) @map("attempt_count")
+  version            Int                      @default(1)
+  createdAt          DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_operations_store_id_fkey")
+  afterSale AfterSale @relation(fields: [storeId, afterSaleId], references: [storeId, id], onDelete: Restrict, map: "after_sale_operations_case_fkey")
+
+  @@unique([storeId, id])
+  @@unique([storeId, operation, idempotencyKeyHash])
+  @@index([storeId, afterSaleId, createdAt(sort: Desc)])
+  @@map("after_sale_operations")
+}
+
+model AfterSaleLegacyDecision {
+  id                    String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId               String                      @map("store_id") @db.Uuid
+  afterSaleId           String                      @map("after_sale_id") @db.Uuid
+  decision              AfterSaleLegacyDecisionType
+  adminId               String                      @map("admin_id") @db.Uuid
+  reason                String                      @db.VarChar(500)
+  policyBasisCiphertext String                      @map("policy_basis_ciphertext") @db.Text
+  payload               Json
+  payloadHash           String                      @map("payload_hash") @db.Char(64)
+  decidedAt             DateTime                    @default(now()) @map("decided_at") @db.Timestamptz(6)
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_legacy_decisions_store_id_fkey")
+  afterSale AfterSale @relation(fields: [storeId, afterSaleId], references: [storeId, id], onDelete: Restrict, map: "after_sale_legacy_decisions_case_fkey")
+  admin     AdminUser @relation(fields: [adminId], references: [id], onDelete: Restrict, map: "after_sale_legacy_decisions_admin_fkey")
+
+  @@unique([storeId, id])
+  @@unique([storeId, afterSaleId])
+  @@map("after_sale_legacy_decisions")
+}
+
+model AfterSaleOrderAllocation {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId            String   @map("store_id") @db.Uuid
+  afterSaleId        String   @map("after_sale_id") @db.Uuid
+  orderId            String   @map("order_id") @db.Uuid
+  shippingFeeVnd     BigInt   @default(0) @map("shipping_fee_vnd")
+  remoteSurchargeVnd BigInt   @default(0) @map("remote_surcharge_vnd")
+  otherVnd           BigInt   @default(0) @map("other_vnd")
+  allocatedAt        DateTime @default(now()) @map("allocated_at") @db.Timestamptz(6)
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_order_allocations_store_id_fkey")
+  afterSale AfterSale @relation(fields: [storeId, afterSaleId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "after_sale_order_allocations_case_order_fkey")
+
+  @@unique([storeId, id])
+  @@unique([storeId, orderId])
+  @@unique([storeId, afterSaleId, orderId])
+  @@map("after_sale_order_allocations")
+}
+
+model AfterSaleInspection {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId           String   @map("store_id") @db.Uuid
+  afterSaleId       String   @map("after_sale_id") @db.Uuid
+  inspectionVersion Int      @map("inspection_version")
+  adminId           String   @map("admin_id") @db.Uuid
+  reason            String   @db.VarChar(500)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store       Store                           @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_inspections_store_id_fkey")
+  afterSale   AfterSale                       @relation(fields: [storeId, afterSaleId], references: [storeId, id], onDelete: Restrict, map: "after_sale_inspections_case_fkey")
+  admin       AdminUser                       @relation(fields: [adminId], references: [id], onDelete: Restrict, map: "after_sale_inspections_admin_fkey")
+  allocations AfterSaleInspectionAllocation[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, id, afterSaleId])
+  @@unique([storeId, afterSaleId, inspectionVersion])
+  @@map("after_sale_inspections")
+}
+
+model AfterSaleInspectionAllocation {
+  id              String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId         String                         @map("store_id") @db.Uuid
+  inspectionId    String                         @map("inspection_id") @db.Uuid
+  afterSaleId     String                         @map("after_sale_id") @db.Uuid
+  afterSaleItemId String                         @map("after_sale_item_id") @db.Uuid
+  disposition     AfterSaleInspectionDisposition
+  quantity        Int
+  createdAt       DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store      Store               @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_inspection_allocations_store_id_fkey")
+  inspection AfterSaleInspection @relation(fields: [storeId, inspectionId, afterSaleId], references: [storeId, id, afterSaleId], onDelete: Restrict, map: "after_sale_inspection_allocations_inspection_fkey")
+  item       AfterSaleItem       @relation(fields: [storeId, afterSaleItemId, afterSaleId], references: [storeId, id, afterSaleId], onDelete: Restrict, map: "after_sale_inspection_allocations_item_fkey")
+
+  @@unique([storeId, id])
+  @@unique([storeId, inspectionId, afterSaleItemId, disposition])
+  @@index([storeId, afterSaleId, afterSaleItemId])
+  @@map("after_sale_inspection_allocations")
+}
+
+model AfterSaleEvidenceFile {
+  id                     String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                String                  @map("store_id") @db.Uuid
+  memberId               String                  @map("member_id") @db.Uuid
+  uploadSessionId        String                  @map("upload_session_id") @db.Uuid
+  afterSaleId            String?                 @map("after_sale_id") @db.Uuid
+  objectKey              String?                 @unique @map("object_key") @db.Text
+  derivativeObjectKeys   Json?                   @map("derivative_object_keys")
+  scanTemporaryObjectKey String?                 @map("scan_temporary_object_key") @db.Text
+  mimeType               String                  @map("mime_type") @db.VarChar(64)
+  byteSize               BigInt                  @map("byte_size")
+  checksumSha256         String                  @map("checksum_sha256") @db.Char(64)
+  originalFilename       String?                 @map("original_filename") @db.VarChar(255)
+  status                 AfterSaleEvidenceStatus @default(PENDING)
+  scanResultCode         String?                 @map("scan_result_code") @db.VarChar(64)
+  claimDeadlineAt        DateTime?               @map("claim_deadline_at") @db.Timestamptz(6)
+  claimedAt              DateTime?               @map("claimed_at") @db.Timestamptz(6)
+  retentionDeadlineAt    DateTime?               @map("retention_deadline_at") @db.Timestamptz(6)
+  legalHoldActive        Boolean                 @default(false) @map("legal_hold_active")
+  heldAt                 DateTime?               @map("held_at") @db.Timestamptz(6)
+  heldBy                 String?                 @map("held_by") @db.Uuid
+  holdReason             String?                 @map("hold_reason") @db.VarChar(500)
+  deleteAttemptCount     Int                     @default(0) @map("delete_attempt_count")
+  nextDeleteAttemptAt    DateTime?               @map("next_delete_attempt_at") @db.Timestamptz(6)
+  deleteErrorCode        String?                 @map("delete_error_code") @db.VarChar(64)
+  deletedAt              DateTime?               @map("deleted_at") @db.Timestamptz(6)
+  version                Int                     @default(1)
+  createdAt              DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store       Store                         @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_evidence_files_store_id_fkey")
+  member      Member                        @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict, map: "after_sale_evidence_files_member_fkey")
+  afterSale   AfterSale?                    @relation(fields: [storeId, afterSaleId, memberId], references: [storeId, id, memberId], onDelete: Restrict, map: "after_sale_evidence_files_case_member_fkey")
+  holder      AdminUser?                    @relation("AfterSaleEvidenceHeldBy", fields: [heldBy], references: [id], onDelete: Restrict, map: "after_sale_evidence_files_held_by_fkey")
+  transitions AfterSaleEvidenceTransition[]
+
+  @@unique([storeId, id])
+  @@index([storeId, memberId, uploadSessionId])
+  @@index([storeId, afterSaleId, createdAt])
+  @@index([status, nextDeleteAttemptAt])
+  @@map("after_sale_evidence_files")
+}
+
+model AfterSaleEvidenceTransition {
+  id             String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId        String                   @map("store_id") @db.Uuid
+  evidenceFileId String                   @map("evidence_file_id") @db.Uuid
+  fromStatus     AfterSaleEvidenceStatus? @map("from_status")
+  toStatus       AfterSaleEvidenceStatus  @map("to_status")
+  event          String                   @db.VarChar(64)
+  actorType      AuditActorType           @map("actor_type")
+  actorId        String                   @map("actor_id") @db.Uuid
+  errorCode      String?                  @map("error_code") @db.VarChar(64)
+  createdAt      DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store        Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_evidence_transitions_store_id_fkey")
+  evidenceFile AfterSaleEvidenceFile @relation(fields: [storeId, evidenceFileId], references: [storeId, id], onDelete: Restrict, map: "after_sale_evidence_transitions_file_fkey")
+
+  @@unique([storeId, id])
+  @@index([storeId, evidenceFileId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("after_sale_evidence_transitions")
+}
+
+model AfterSaleSettlement {
+  id                         String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                    String                    @map("store_id") @db.Uuid
+  afterSaleId                String                    @map("after_sale_id") @db.Uuid
+  orderId                    String                    @map("order_id") @db.Uuid
+  paymentAttemptId           String?                   @map("payment_attempt_id") @db.Uuid
+  publicSettlementNumber     String                    @unique @map("public_settlement_number") @db.VarChar(64)
+  method                     AfterSaleSettlementMethod
+  status                     AfterSaleSettlementStatus @default(PENDING)
+  amountVnd                  BigInt                    @map("amount_vnd")
+  currency                   String                    @default("VND") @db.Char(3)
+  idempotencyKeyHash         String                    @map("idempotency_key_hash") @db.Char(64)
+  requestHash                String                    @map("request_hash") @db.Char(64)
+  requestedBy                String                    @map("requested_by") @db.Uuid
+  confirmedBy                String?                   @map("confirmed_by") @db.Uuid
+  transferReferenceDigest    String?                   @map("transfer_reference_digest") @db.Char(64)
+  transferEvidenceCiphertext String?                   @map("transfer_evidence_ciphertext") @db.Text
+  version                    Int                       @default(1)
+  requestedAt                DateTime                  @default(now()) @map("requested_at") @db.Timestamptz(6)
+  confirmedAt                DateTime?                 @map("confirmed_at") @db.Timestamptz(6)
+  completedAt                DateTime?                 @map("completed_at") @db.Timestamptz(6)
+  updatedAt                  DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store          Store             @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_settlements_store_id_fkey")
+  afterSale      AfterSale         @relation(fields: [storeId, afterSaleId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "after_sale_settlements_case_order_fkey")
+  paymentAttempt PaymentAttempt?   @relation(fields: [storeId, paymentAttemptId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "after_sale_settlements_payment_fkey")
+  requester      AdminUser         @relation("AfterSaleSettlementRequestedBy", fields: [requestedBy], references: [id], onDelete: Restrict, map: "after_sale_settlements_requested_by_fkey")
+  confirmer      AdminUser?        @relation("AfterSaleSettlementConfirmedBy", fields: [confirmedBy], references: [id], onDelete: Restrict, map: "after_sale_settlements_confirmed_by_fkey")
+  refunds        AfterSaleRefund[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, id, afterSaleId, orderId, paymentAttemptId, amountVnd])
+  @@unique([storeId, method, idempotencyKeyHash])
+  @@index([storeId, afterSaleId, status])
+  @@map("after_sale_settlements")
+}
+
+model AfterSaleRefund {
+  storeId          String   @map("store_id") @db.Uuid
+  settlementId     String   @map("settlement_id") @db.Uuid
+  afterSaleId      String   @map("after_sale_id") @db.Uuid
+  orderId          String   @map("order_id") @db.Uuid
+  paymentAttemptId String   @map("payment_attempt_id") @db.Uuid
+  refundId         String   @map("refund_id") @db.Uuid
+  amountVnd        BigInt   @map("amount_vnd")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store      Store               @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_refunds_store_id_fkey")
+  settlement AfterSaleSettlement @relation(fields: [storeId, settlementId, afterSaleId, orderId, paymentAttemptId, amountVnd], references: [storeId, id, afterSaleId, orderId, paymentAttemptId, amountVnd], onDelete: Restrict, map: "after_sale_refunds_settlement_fkey")
+  refund     Refund              @relation(fields: [storeId, refundId, paymentAttemptId, orderId, amountVnd], references: [storeId, id, paymentAttemptId, orderId, amountVnd], onDelete: Restrict, map: "after_sale_refunds_refund_fkey")
+
+  @@id([storeId, settlementId, refundId])
+  @@unique([storeId, refundId])
+  @@index([storeId, afterSaleId])
+  @@map("after_sale_refunds")
+}
+
+model AfterSaleInventoryAction {
+  id                   String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId              String                         @map("store_id") @db.Uuid
+  afterSaleId          String                         @map("after_sale_id") @db.Uuid
+  afterSaleItemId      String                         @map("after_sale_item_id") @db.Uuid
+  orderId              String                         @map("order_id") @db.Uuid
+  inspectionVersion    Int                            @map("inspection_version")
+  warehouseId          String                         @map("warehouse_id") @db.Uuid
+  skuId                String                         @map("sku_id") @db.Uuid
+  disposition          AfterSaleInspectionDisposition
+  actionType           AfterSaleInventoryActionType   @map("action_type")
+  quantity             Int
+  inventoryOperationId String                         @map("inventory_operation_id") @db.Uuid
+  createdAt            DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store              Store              @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_inventory_actions_store_id_fkey")
+  item               AfterSaleItem      @relation(fields: [storeId, afterSaleItemId, afterSaleId], references: [storeId, id, afterSaleId], onDelete: Restrict, map: "after_sale_inventory_actions_item_fkey")
+  warehouse          Warehouse          @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict, map: "after_sale_inventory_actions_warehouse_fkey")
+  sku                Sku                @relation(fields: [storeId, skuId], references: [storeId, id], onDelete: Restrict, map: "after_sale_inventory_actions_sku_fkey")
+  inventoryOperation InventoryOperation @relation(fields: [storeId, inventoryOperationId], references: [storeId, id], onDelete: Restrict, map: "after_sale_inventory_actions_operation_fkey")
+
+  @@unique([storeId, id])
+  @@unique([storeId, afterSaleItemId, inspectionVersion, actionType])
+  @@unique([storeId, inventoryOperationId])
+  @@index([storeId, afterSaleId])
+  @@map("after_sale_inventory_actions")
+}
+
+model AfterSaleReturnShipment {
+  id                   String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId              String                        @map("store_id") @db.Uuid
+  afterSaleId          String                        @map("after_sale_id") @db.Uuid
+  orderId              String                        @map("order_id") @db.Uuid
+  memberId             String                        @map("member_id") @db.Uuid
+  carrierName          String                        @map("carrier_name") @db.VarChar(160)
+  trackingNumberDigest String                        @map("tracking_number_digest") @db.Char(64)
+  trackingNumberMasked String                        @map("tracking_number_masked") @db.VarChar(64)
+  status               AfterSaleReturnShipmentStatus @default(SUBMITTED)
+  submittedBy          String                        @map("submitted_by") @db.Uuid
+  submittedAt          DateTime                      @default(now()) @map("submitted_at") @db.Timestamptz(6)
+  receivedAt           DateTime?                     @map("received_at") @db.Timestamptz(6)
+  version              Int                           @default(1)
+  updatedAt            DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_return_shipments_store_id_fkey")
+  afterSale AfterSale @relation(fields: [storeId, afterSaleId, orderId, memberId], references: [storeId, id, orderId, memberId], onDelete: Restrict, map: "after_sale_return_shipments_case_owner_fkey")
+  submitter Member    @relation(fields: [storeId, submittedBy], references: [storeId, id], onDelete: Restrict, map: "after_sale_return_shipments_submitter_fkey")
+
+  @@unique([storeId, id])
+  @@unique([storeId, afterSaleId, trackingNumberDigest])
+  @@index([storeId, status, updatedAt])
+  @@map("after_sale_return_shipments")
+}
+
+model ExchangeFulfillment {
+  id                 String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId            String                    @map("store_id") @db.Uuid
+  afterSaleId        String                    @map("after_sale_id") @db.Uuid
+  afterSaleItemId    String                    @map("after_sale_item_id") @db.Uuid
+  orderId            String                    @map("order_id") @db.Uuid
+  productId          String                    @map("product_id") @db.Uuid
+  replacementSkuId   String                    @map("replacement_sku_id") @db.Uuid
+  warehouseId        String                    @map("warehouse_id") @db.Uuid
+  reservationId      String?                   @map("reservation_id") @db.Uuid
+  outboundShipmentId String?                   @map("outbound_shipment_id") @db.Uuid
+  status             ExchangeFulfillmentStatus @default(PENDING)
+  version            Int                       @default(1)
+  reservedAt         DateTime?                 @map("reserved_at") @db.Timestamptz(6)
+  shippedAt          DateTime?                 @map("shipped_at") @db.Timestamptz(6)
+  deliveredAt        DateTime?                 @map("delivered_at") @db.Timestamptz(6)
+  createdAt          DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store            Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "exchange_fulfillments_store_id_fkey")
+  item             AfterSaleItem         @relation(fields: [storeId, afterSaleItemId, afterSaleId], references: [storeId, id, afterSaleId], onDelete: Restrict, map: "exchange_fulfillments_item_fkey")
+  replacementSku   Sku                   @relation(fields: [storeId, replacementSkuId, productId], references: [storeId, id, productId], onDelete: Restrict, map: "exchange_fulfillments_replacement_sku_fkey")
+  warehouse        Warehouse             @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict, map: "exchange_fulfillments_warehouse_fkey")
+  reservation      InventoryReservation? @relation(fields: [storeId, reservationId], references: [storeId, id], onDelete: Restrict, map: "exchange_fulfillments_reservation_fkey")
+  outboundShipment Shipment?             @relation(fields: [storeId, outboundShipmentId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "exchange_fulfillments_shipment_fkey")
+
+  @@unique([storeId, id])
+  @@unique([storeId, afterSaleItemId])
+  @@unique([storeId, reservationId])
+  @@unique([storeId, outboundShipmentId])
+  @@index([storeId, afterSaleId, status])
+  @@map("exchange_fulfillments")
+}
+
+model MemberFavorite {
+  storeId   String   @map("store_id") @db.Uuid
+  memberId  String   @map("member_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store   Store   @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "member_favorites_store_id_fkey")
+  member  Member  @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict, map: "member_favorites_member_fkey")
+  product Product @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict, map: "member_favorites_product_fkey")
+
+  @@id([storeId, memberId, productId])
+  @@index([storeId, memberId, createdAt(sort: Desc), productId])
+  @@map("member_favorites")
+}
+
+model MemberProductView {
+  storeId       String   @map("store_id") @db.Uuid
+  memberId      String   @map("member_id") @db.Uuid
+  productId     String   @map("product_id") @db.Uuid
+  firstViewedAt DateTime @default(now()) @map("first_viewed_at") @db.Timestamptz(6)
+  lastViewedAt  DateTime @default(now()) @map("last_viewed_at") @db.Timestamptz(6)
+
+  store   Store   @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "member_product_views_store_id_fkey")
+  member  Member  @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict, map: "member_product_views_member_fkey")
+  product Product @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict, map: "member_product_views_product_fkey")
+
+  @@id([storeId, memberId, productId])
+  @@index([storeId, memberId, lastViewedAt(sort: Desc), productId])
+  @@map("member_product_views")
+}
+
+model PrivacyRequest {
+  id                    String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId               String               @map("store_id") @db.Uuid
+  memberId              String               @map("member_id") @db.Uuid
+  publicNumber          String               @unique @map("public_number") @db.VarChar(64)
+  type                  PrivacyRequestType
+  status                PrivacyRequestStatus @default(SUBMITTED)
+  version               Int                  @default(1)
+  descriptionCiphertext String               @map("description_ciphertext") @db.Text
+  idempotencyKeyHash    String               @map("idempotency_key_hash") @db.Char(64)
+  requestHash           String               @map("request_hash") @db.Char(64)
+  createdAt             DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store       Store                      @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "privacy_requests_store_id_fkey")
+  member      Member                     @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict, map: "privacy_requests_member_fkey")
+  transitions PrivacyRequestTransition[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, id, memberId])
+  @@unique([storeId, memberId, idempotencyKeyHash])
+  @@index([storeId, memberId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("privacy_requests")
+}
+
+model PrivacyRequestTransition {
+  id               String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId          String                @map("store_id") @db.Uuid
+  privacyRequestId String                @map("privacy_request_id") @db.Uuid
+  memberId         String                @map("member_id") @db.Uuid
+  fromStatus       PrivacyRequestStatus? @map("from_status")
+  toStatus         PrivacyRequestStatus  @map("to_status")
+  event            String                @db.VarChar(64)
+  actorType        AuditActorType        @map("actor_type")
+  actorId          String                @map("actor_id") @db.Uuid
+  reason           String?               @db.VarChar(500)
+  correlationId    String                @map("correlation_id") @db.VarChar(128)
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store          Store          @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "privacy_request_transitions_store_id_fkey")
+  privacyRequest PrivacyRequest @relation(fields: [storeId, privacyRequestId, memberId], references: [storeId, id, memberId], onDelete: Restrict, map: "privacy_request_transitions_request_owner_fkey")
+
+  @@unique([storeId, id])
+  @@index([storeId, privacyRequestId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("privacy_request_transitions")
+}
+
+model ShareLink {
+  id                     String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                String          @map("store_id") @db.Uuid
+  shortCode              String          @unique @map("short_code") @db.VarChar(128)
+  targetType             ShareTargetType @map("target_type")
+  locale                 Locale
+  sourceCode             String?         @map("source_code") @db.VarChar(64)
+  brandId                String?         @map("brand_id") @db.Uuid
+  categoryId             String?         @map("category_id") @db.Uuid
+  productId              String?         @map("product_id") @db.Uuid
+  promotionId            String?         @map("promotion_id") @db.Uuid
+  couponId               String?         @map("coupon_id") @db.Uuid
+  verifiedCampaignId     String?         @map("verified_campaign_id") @db.VarChar(128)
+  verifiedPromotionId    String?         @map("verified_promotion_id") @db.Uuid
+  createdByMemberId      String?         @map("created_by_member_id") @db.Uuid
+  miniAppPath            String          @map("mini_app_path") @db.VarChar(512)
+  attributionTokenDigest String?         @map("attribution_token_digest") @db.Char(64)
+  expiresAt              DateTime?       @map("expires_at") @db.Timestamptz(6)
+  createdAt              DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store             Store                   @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "share_links_store_id_fkey")
+  brand             Brand?                  @relation(fields: [storeId, brandId], references: [storeId, id], onDelete: Restrict, map: "share_links_brand_fkey")
+  category          Category?               @relation(fields: [storeId, categoryId], references: [storeId, id], onDelete: Restrict, map: "share_links_category_fkey")
+  product           Product?                @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict, map: "share_links_product_fkey")
+  promotion         Promotion?              @relation("ShareLinkPromotion", fields: [storeId, promotionId], references: [storeId, id], onDelete: Restrict, map: "share_links_promotion_fkey")
+  coupon            Coupon?                 @relation(fields: [storeId, couponId], references: [storeId, id], onDelete: Restrict, map: "share_links_coupon_fkey")
+  verifiedPromotion Promotion?              @relation("ShareLinkVerifiedPromotion", fields: [storeId, verifiedPromotionId], references: [storeId, id], onDelete: Restrict, map: "share_links_verified_promotion_fkey")
+  createdByMember   Member?                 @relation(fields: [storeId, createdByMemberId], references: [storeId, id], onDelete: Restrict, map: "share_links_member_fkey")
+  localizations     ShareLinkLocalization[]
+  interactions      ShareInteraction[]
+
+  @@unique([storeId, id])
+  @@index([storeId, targetType, createdAt(sort: Desc)])
+  @@map("share_links")
+}
+
+model ShareLinkLocalization {
+  storeId                 String   @map("store_id") @db.Uuid
+  shareLinkId             String   @map("share_link_id") @db.Uuid
+  locale                  Locale
+  title                   String   @db.VarChar(240)
+  summary                 String   @db.VarChar(500)
+  publishedImageObjectKey String   @map("published_image_object_key") @db.Text
+  sourceMediaId           String?  @map("source_media_id") @db.Uuid
+  targetVersion           Int      @map("target_version")
+  payloadHash             String   @map("payload_hash") @db.Char(64)
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store       Store       @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "share_link_localizations_store_id_fkey")
+  shareLink   ShareLink   @relation(fields: [storeId, shareLinkId], references: [storeId, id], onDelete: Restrict, map: "share_link_localizations_link_fkey")
+  sourceMedia MediaAsset? @relation(fields: [storeId, sourceMediaId], references: [storeId, id], onDelete: Restrict, map: "share_link_localizations_media_fkey")
+
+  @@id([storeId, shareLinkId, locale])
+  @@map("share_link_localizations")
+}
+
+model ShareInteraction {
+  id                 String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId            String                @map("store_id") @db.Uuid
+  shareLinkId        String                @map("share_link_id") @db.Uuid
+  memberId           String?               @map("member_id") @db.Uuid
+  event              ShareInteractionEvent
+  source             String                @db.VarChar(64)
+  deviceCategory     String?               @map("device_category") @db.VarChar(32)
+  outcomeTokenDigest String?               @unique @map("outcome_token_digest") @db.Char(64)
+  outcomeExpiresAt   DateTime?             @map("outcome_expires_at") @db.Timestamptz(6)
+  createdAt          DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "share_interactions_store_id_fkey")
+  shareLink ShareLink @relation(fields: [storeId, shareLinkId], references: [storeId, id], onDelete: Restrict, map: "share_interactions_link_fkey")
+  member    Member?   @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict, map: "share_interactions_member_fkey")
+
+  @@unique([storeId, id])
+  @@index([storeId, shareLinkId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("share_interactions")
 }
 
 model ProductSearchDocument {
@@ -1350,11 +2217,13 @@ model Promotion {
   createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store         Store              @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  createdBy     AdminUser          @relation("PromotionCreatedBy", fields: [createdByAdminId], references: [id], onDelete: Restrict)
-  updatedBy     AdminUser          @relation("PromotionUpdatedBy", fields: [updatedByAdminId], references: [id], onDelete: Restrict)
-  activeVersion PromotionVersion?  @relation("PromotionActiveVersion", fields: [storeId, activeVersionId], references: [storeId, id], onDelete: Restrict)
-  versions      PromotionVersion[] @relation("PromotionVersions")
+  store              Store              @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  createdBy          AdminUser          @relation("PromotionCreatedBy", fields: [createdByAdminId], references: [id], onDelete: Restrict)
+  updatedBy          AdminUser          @relation("PromotionUpdatedBy", fields: [updatedByAdminId], references: [id], onDelete: Restrict)
+  activeVersion      PromotionVersion?  @relation("PromotionActiveVersion", fields: [storeId, activeVersionId], references: [storeId, id], onDelete: Restrict)
+  versions           PromotionVersion[] @relation("PromotionVersions")
+  shareLinks         ShareLink[]        @relation("ShareLinkPromotion")
+  verifiedShareLinks ShareLink[]        @relation("ShareLinkVerifiedPromotion")
 
   @@unique([storeId, id])
   @@unique([storeId, code])
@@ -1474,6 +2343,7 @@ model Coupon {
   store            Store            @relation(fields: [storeId], references: [id], onDelete: Restrict)
   promotionVersion PromotionVersion @relation(fields: [storeId, promotionVersionId], references: [storeId, id], onDelete: Restrict)
   memberCoupons    MemberCoupon[]
+  shareLinks       ShareLink[]
 
   @@unique([storeId, id])
   @@unique([storeId, code])
@@ -1582,12 +2452,12 @@ model AdministrativeArea {
   createdAt     DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store             Store                @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  parent            AdministrativeArea?  @relation("AdministrativeAreaHierarchy", fields: [storeId, parentCode], references: [storeId, code], onDelete: Restrict, onUpdate: Cascade)
-  children          AdministrativeArea[] @relation("AdministrativeAreaHierarchy")
-  provinceAddresses Address[]            @relation("AddressProvinceArea")
-  districtAddresses Address[]            @relation("AddressDistrictArea")
-  wardAddresses     Address[]            @relation("AddressWardArea")
+  store                     Store                         @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  parent                    AdministrativeArea?           @relation("AdministrativeAreaHierarchy", fields: [storeId, parentCode], references: [storeId, code], onDelete: Restrict, onUpdate: Cascade)
+  children                  AdministrativeArea[]          @relation("AdministrativeAreaHierarchy")
+  provinceAddresses         Address[]                     @relation("AddressProvinceArea")
+  districtAddresses         Address[]                     @relation("AddressDistrictArea")
+  wardAddresses             Address[]                     @relation("AddressWardArea")
   warehouseProfileProvinces WarehouseFulfillmentProfile[] @relation("WarehouseProfileProvinceArea")
   warehouseProfileDistricts WarehouseFulfillmentProfile[] @relation("WarehouseProfileDistrictArea")
   warehouseProfileWards     WarehouseFulfillmentProfile[] @relation("WarehouseProfileWardArea")
@@ -1677,8 +2547,10 @@ model Order {
   shippingQuotes     ShippingQuote[]
   shipments          Shipment[]
   shippingOperations ShippingOperation[]
+  afterSales         AfterSale[]
 
   @@unique([storeId, id])
+  @@unique([storeId, id, memberId])
   @@unique([storeId, orderNumber])
   @@unique([storeId, reservationId])
   @@index([storeId, memberId, createdAt(sort: Desc), id(sort: Desc)])
@@ -1711,13 +2583,15 @@ model OrderItem {
   heightMillimeters Int?     @map("height_millimeters")
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  store         Store          @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  order         Order          @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
-  sku           Sku            @relation(fields: [storeId, skuId], references: [storeId, id], onDelete: Restrict)
-  product       Product        @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict)
-  brand         Brand          @relation(fields: [storeId, brandId], references: [storeId, id], onDelete: Restrict)
-  category      Category       @relation(fields: [storeId, categoryId], references: [storeId, id], onDelete: Restrict)
-  shipmentItems ShipmentItem[]
+  store                    Store                              @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order                    Order                              @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  sku                      Sku                                @relation(fields: [storeId, skuId], references: [storeId, id], onDelete: Restrict)
+  product                  Product                            @relation(fields: [storeId, productId], references: [storeId, id], onDelete: Restrict)
+  brand                    Brand                              @relation(fields: [storeId, brandId], references: [storeId, id], onDelete: Restrict)
+  category                 Category                           @relation(fields: [storeId, categoryId], references: [storeId, id], onDelete: Restrict)
+  shipmentItems            ShipmentItem[]
+  afterSalePolicySnapshots OrderItemAfterSalePolicySnapshot[]
+  afterSaleItems           AfterSaleItem[]
 
   @@unique([storeId, id])
   @@unique([storeId, orderId, id])
@@ -1871,11 +2745,12 @@ model PaymentAttempt {
   createdAt                DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store       Store               @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  order       Order               @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
-  channel     StorePaymentChannel @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
-  transitions PaymentTransition[]
-  refunds     Refund[]
+  store                Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order                Order                 @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  channel              StorePaymentChannel   @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
+  transitions          PaymentTransition[]
+  refunds              Refund[]
+  afterSaleSettlements AfterSaleSettlement[]
 
   @@unique([storeId, id])
   @@unique([storeId, id, orderId])
@@ -1962,13 +2837,15 @@ model Refund {
   createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store          Store              @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  order          Order              @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
-  paymentAttempt PaymentAttempt     @relation(fields: [storeId, paymentAttemptId, orderId], references: [storeId, id, orderId], onDelete: Restrict)
-  requester      AdminUser          @relation(fields: [requestedBy], references: [id], onDelete: Restrict)
-  transitions    RefundTransition[]
+  store            Store              @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order            Order              @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  paymentAttempt   PaymentAttempt     @relation(fields: [storeId, paymentAttemptId, orderId], references: [storeId, id, orderId], onDelete: Restrict)
+  requester        AdminUser          @relation(fields: [requestedBy], references: [id], onDelete: Restrict)
+  transitions      RefundTransition[]
+  afterSaleRefunds AfterSaleRefund[]
 
   @@unique([storeId, id])
+  @@unique([storeId, id, paymentAttemptId, orderId, amountVnd])
   @@unique([storeId, paymentAttemptId, idempotencyKeyHash])
   @@unique([storeId, paymentAttemptId, providerRefundId])
   @@index([storeId, orderId, requestedAt(sort: Desc), id(sort: Desc)])
@@ -2031,39 +2908,43 @@ model ShippingQuote {
 }
 
 model Shipment {
-  id                        String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId                   String         @map("store_id") @db.Uuid
-  orderId                   String         @map("order_id") @db.Uuid
-  warehouseId               String         @map("warehouse_id") @db.Uuid
-  channelId                 String         @map("channel_id") @db.Uuid
-  publicShipmentNumber      String         @unique @map("public_shipment_number") @db.VarChar(64)
-  status                    ShipmentStatus @default(CREATION_PENDING)
-  version                   Int            @default(1)
-  clientOrderCode           String         @map("client_order_code") @db.VarChar(64)
-  providerShipmentId        String?        @map("provider_shipment_id") @db.VarChar(160)
-  serviceCode               String         @map("service_code") @db.VarChar(64)
-  providerServiceId         Int?           @map("provider_service_id")
-  providerServiceTypeId     Int?           @map("provider_service_type_id")
-  codAmountVnd              BigInt         @default(0) @map("cod_amount_vnd")
-  addressSnapshotCiphertext String         @map("address_snapshot_ciphertext") @db.Text
-  parcelSnapshot            Json           @map("parcel_snapshot")
-  labelMetadata             Json?          @map("label_metadata")
-  createdOperationId        String?        @unique @map("created_operation_id") @db.Uuid
-  cancelledOperationId      String?        @unique @map("cancelled_operation_id") @db.Uuid
-  providerCreatedAt         DateTime?      @map("provider_created_at") @db.Timestamptz(6)
-  pickedUpAt                DateTime?      @map("picked_up_at") @db.Timestamptz(6)
-  deliveredAt               DateTime?      @map("delivered_at") @db.Timestamptz(6)
-  returnedAt                DateTime?      @map("returned_at") @db.Timestamptz(6)
-  createdAt                 DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                 DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                        String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                   String          @map("store_id") @db.Uuid
+  orderId                   String          @map("order_id") @db.Uuid
+  warehouseId               String          @map("warehouse_id") @db.Uuid
+  channelId                 String          @map("channel_id") @db.Uuid
+  publicShipmentNumber      String          @unique @map("public_shipment_number") @db.VarChar(64)
+  purpose                   ShipmentPurpose @default(ORDER_OUTBOUND)
+  afterSaleId               String?         @map("after_sale_id") @db.Uuid
+  status                    ShipmentStatus  @default(CREATION_PENDING)
+  version                   Int             @default(1)
+  clientOrderCode           String          @map("client_order_code") @db.VarChar(64)
+  providerShipmentId        String?         @map("provider_shipment_id") @db.VarChar(160)
+  serviceCode               String          @map("service_code") @db.VarChar(64)
+  providerServiceId         Int?            @map("provider_service_id")
+  providerServiceTypeId     Int?            @map("provider_service_type_id")
+  codAmountVnd              BigInt          @default(0) @map("cod_amount_vnd")
+  addressSnapshotCiphertext String          @map("address_snapshot_ciphertext") @db.Text
+  parcelSnapshot            Json            @map("parcel_snapshot")
+  labelMetadata             Json?           @map("label_metadata")
+  createdOperationId        String?         @unique @map("created_operation_id") @db.Uuid
+  cancelledOperationId      String?         @unique @map("cancelled_operation_id") @db.Uuid
+  providerCreatedAt         DateTime?       @map("provider_created_at") @db.Timestamptz(6)
+  pickedUpAt                DateTime?       @map("picked_up_at") @db.Timestamptz(6)
+  deliveredAt               DateTime?       @map("delivered_at") @db.Timestamptz(6)
+  returnedAt                DateTime?       @map("returned_at") @db.Timestamptz(6)
+  createdAt                 DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store      Store                @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  order      Order                @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
-  warehouse  Warehouse            @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict)
-  channel    StoreShippingChannel @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
-  items      ShipmentItem[]
-  events     TrackingEvent[]
-  operations ShippingOperation[]
+  store                Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order                Order                 @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  warehouse            Warehouse             @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict)
+  channel              StoreShippingChannel  @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
+  items                ShipmentItem[]
+  events               TrackingEvent[]
+  operations           ShippingOperation[]
+  afterSale            AfterSale?            @relation(fields: [storeId, afterSaleId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "shipments_after_sale_fkey")
+  exchangeFulfillments ExchangeFulfillment[]
 
   @@unique([storeId, id])
   @@unique([storeId, id, orderId])
@@ -2198,6 +3079,205 @@ model InboxMessage {
   @@unique([source, channelId, environment, externalMessageKey])
   @@index([storeId, status, receivedAt, id])
   @@map("inbox_messages")
+}
+
+enum AfterSaleType {
+  REFUND_ONLY
+  RETURN_REFUND
+  EXCHANGE
+  MERCHANT_REFUND
+
+  @@map("after_sale_type")
+}
+
+enum AfterSaleStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  CANCELLED
+  RETURN_PENDING
+  RETURN_IN_TRANSIT
+  INSPECTION_PENDING
+  REFUND_PENDING
+  REFUND_PROCESSING
+  REFUNDED
+  EXCHANGE_PENDING
+  EXCHANGE_IN_TRANSIT
+  REVIEW_REQUIRED
+  COMPLETED
+
+  @@map("after_sale_status")
+}
+
+enum AfterSaleSource {
+  MEMBER
+  ADMIN
+
+  @@map("after_sale_source")
+}
+
+enum AfterSalePolicyStatus {
+  DRAFT
+  ACTIVE
+  DISABLED
+
+  @@map("after_sale_policy_status")
+}
+
+enum AfterSalePolicyTargetType {
+  PRODUCT
+  CATEGORY
+  STORE_DEFAULT
+
+  @@map("after_sale_policy_target_type")
+}
+
+enum ReturnShippingPayer {
+  BUYER
+  MERCHANT
+  CONDITIONAL
+
+  @@map("return_shipping_payer")
+}
+
+enum AfterSaleInspectionDisposition {
+  PENDING
+  RESTOCK_SELLABLE
+  QUARANTINE
+  SCRAP
+  RETURN_TO_MEMBER
+
+  @@map("after_sale_inspection_disposition")
+}
+
+enum AfterSaleOperationStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REVIEW_REQUIRED
+
+  @@map("after_sale_operation_status")
+}
+
+enum AfterSaleEvidenceStatus {
+  PENDING
+  READY_UNCLAIMED
+  READY
+  FAILED
+  QUARANTINED
+  DELETION_PENDING
+  DELETED
+  DELETE_FAILED
+
+  @@map("after_sale_evidence_status")
+}
+
+enum AfterSaleSettlementMethod {
+  ONLINE_ORIGINAL
+  COD_OFFLINE
+  NO_PAYOUT
+
+  @@map("after_sale_settlement_method")
+}
+
+enum AfterSaleSettlementStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  REVIEW_REQUIRED
+  CANCELLED
+
+  @@map("after_sale_settlement_status")
+}
+
+enum AfterSaleInventoryActionType {
+  RESTOCK_SELLABLE
+  QUARANTINE
+  SCRAP
+  RETURN_TO_MEMBER
+
+  @@map("after_sale_inventory_action_type")
+}
+
+enum AfterSaleReturnShipmentStatus {
+  SUBMITTED
+  IN_TRANSIT
+  DELIVERED
+  REJECTED
+  UNKNOWN
+
+  @@map("after_sale_return_shipment_status")
+}
+
+enum ExchangeFulfillmentStatus {
+  PENDING
+  RESERVED
+  IN_TRANSIT
+  DELIVERED
+  CANCELLED
+  REVIEW_REQUIRED
+
+  @@map("exchange_fulfillment_status")
+}
+
+enum AfterSaleLegacyDecisionType {
+  APPROVE
+  REJECT
+
+  @@map("after_sale_legacy_decision_type")
+}
+
+enum PrivacyRequestType {
+  ACCESS
+  CORRECTION
+  DELETION
+  ANONYMIZATION
+  ACCOUNT_CLOSURE
+
+  @@map("privacy_request_type")
+}
+
+enum PrivacyRequestStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  ACTION_REQUIRED
+  IN_PROGRESS
+  COMPLETED
+  REJECTED
+  CANCELLED
+
+  @@map("privacy_request_status")
+}
+
+enum ShareTargetType {
+  STORE
+  BRAND
+  CATEGORY
+  PRODUCT
+  PROMOTION
+  COUPON
+
+  @@map("share_target_type")
+}
+
+enum ShareInteractionEvent {
+  INITIATED
+  COMPLETED
+  CANCELLED
+  OPENED
+  FALLBACK_OPENED
+
+  @@map("share_interaction_event")
+}
+
+enum ShipmentPurpose {
+  ORDER_OUTBOUND
+  AFTER_SALE_RETURN
+  EXCHANGE_OUTBOUND
+
+  @@map("shipment_purpose")
 }
 
 enum InventoryMovementType {

@@ -2,14 +2,15 @@
 
 > 状态：已批准
 >
-> 版本：0.2
+> 版本：0.4
 >
-> 日期：2026-07-23
+> 日期：2026-07-27
 >
 > 依据：`REQUIREMENTS.md` V2.0、`AGENTS.md`
 
 批准记录：用户于 2026-07-17 批准本架构，授权先实施 P0 计划的 M0；用户于
-2026-07-23 批准 M4 专项计划，地址、服务端结算、订单、COD 与配送策略按本文边界实施。
+2026-07-23 批准 M4 专项计划，地址、服务端结算、订单、COD 与配送策略按本文边界实施；用户于
+2026-07-27 先批准 M6 双轨契约冻结，随后授权 M6.2 数据/RLS/迁移实施，外部上线门禁保持不变。
 
 ## 1. 决策范围
 
@@ -234,6 +235,56 @@ docs/
   公开退款事实。三语 UI 不展示原始 payload、密钥、完整供应商引用或管理员内部原因。
 - 当前对账能力仅为逐笔权威查询、本地转换/异常和死信视图。Zalo 商户结算文件、手续费、日界线、
   GHN COD 回款及差异处置材料未提供，保持外部 `BLOCKED/NOT_RUN`，不得称为日结对账完成。
+
+### M6.1 已冻结售后、会员与主动分享边界
+
+- 售后是独立聚合，不把售后状态写入 `orders.status`，也不让退款、供应商或物流状态直接决定售后
+  终态。线上退款复用 M5 `refunds`、容量 guard 和 outbox；COD 使用独立、双人复核的受审线下
+  结算事实，不能伪装成线上退款。
+- 退款成功、返件签收、质检结论和库存恢复是独立事实。仅已消费订单行中实际验收且判定可再次
+  销售的数量，才能使用稳定 operation key 恢复一次库存；退款或物流退回本身不恢复库存。
+- P0 换货只允许同 SPU、相同数量、仅政策允许属性不同、等价 SKU 且不自动处理价差。返件与换货
+  出库必须使用显式 `AFTER_SALE_RETURN`/`EXCHANGE_OUTBOUND` 目的，不能触发原订单
+  `SHIP/DELIVER`。
+- 新订单行需要保存已发布售后政策版本、规范 JSON 和摘要快照；历史无快照订单进入
+  `status=REVIEW_REQUIRED` 且标记 `legacy_policy_review=true`，不得使用当前政策伪造回填；
+  `LEGACY_REVIEW_REQUIRED` 不是独立状态枚举。
+- 收藏和浏览历史按商城及认证会员隔离；匿名访问不写会员历史。分享服务只接受目标类型、公开
+  code、locale 和受限来源参数，服务端解析当前商城已发布对象，不接受任意 URL、展示文案、图片、
+  内部 ID、`store_id` 或会员标识。
+- Zalo 分享仅由用户点击触发，使用 `getShareableLink` 后调用 `openShareSheet`；浏览器兜底固定
+  allowlist origin，并防止 XSS/open redirect。M6 持久化最小、可查询的隐私请求受理事实，但提交
+  不代表访问/删除/匿名化/注销完成；管理员履约、导出和执行仍属于 M7。
+- M6.1 当时仅冻结数据字典、权限、OpenAPI、严格 DTO 和纯领域规则，未创建 Prisma schema、迁移、
+  运行时 API、worker、UI 或外部集成；该阶段的历史完成证据保持不变，后续数据实施见下节。
+
+### M6.2 已实施售后、会员与分享数据边界
+
+- 十一段前向迁移建立 30 个商城模型/表、Prisma 复合关系、30 表 FORCE RLS、会员 owner scope、
+  只追加事实、列级最小授权和 12 项只登记不自动赋予生产角色的 STORE 权限。定向数据库 38/38 与
+  35 段 M2-to-current、重复部署、M6/M5 down/重新前滚及 `55000` 门禁演练已通过。
+- 数据库把政策、不可变版本/assignment、订单行快照及 canonical payload/hash 精确绑定；只有商城
+  enforcement 已启用时，deferred commit guard 才要求订单行同事务存在快照。M6.2 不创建生产政策，
+  所有商城 enforcement 保持 OFF，checkout resolver/writer、readiness API 和受审启用命令尚未实现。
+- 初始第六段 `20260727115000_m62_integrity_closeout` 要求普通售后从 `PENDING_REVIEW`、legacy 售后从
+  `REVIEW_REQUIRED` 安全初态开始；legacy 决定绑定当前管理员、未受污染的初态和唯一受审转换。
+  售后状态只能由只追加 transition 原子投影，运行角色不能直接改 header 状态。后续五段前向修复
+  统一请求/批准容量、immutable order allocation、M5/M6 advisory/order/payment 锁序、definer
+  fail-closed actor scope，并只让已批准或已有副作用的案例持续占用订单级批准额度。
+- 同 case settlement 在锁定售后聚合后校验允许状态、容量、ONLINE M5 Refund 精确链接及 COD 非空
+  digest/加密凭证/异人确认。返件提交、到期、raw shipment、验收、库存恢复和换货履约共享聚合锁，
+  使拒绝、到期、转退款与副作用并发串行；库存恢复还绑定原订单已消费 reservation、唯一 RESTORE
+  movement 和累计验收容量，换货每次 UPDATE 都重新核对聚合状态。
+- 凭证使用严格 staged/scan/claim/hold/delete 状态机、NULL-safe CLEAN 校验、到期重试门禁和自动
+  append-only transition。跨 RLS 读取所需 trigger function 固定 definer owner/search path，且 PUBLIC
+  与 runtime 的直接 EXECUTE 均撤销。这些 guard 不替代 M6.3/M6.4 的领域命令、幂等、审计和外部协调。
+- M5 `shipments` 已新增 `purpose` 与售后复合关联；旧数据和普通建单默认 `ORDER_OUTBOUND`，数据库
+  在锁定售后聚合后校验 purpose、case type 和允许状态，并阻止 reject/convert 后留下晚到运单。既有
+  M5 查询、命令、callback 和 worker 尚未全面 purpose-aware，
+  M6.3 创建任何返件/换货运单前必须分流，且只有 `ORDER_OUTBOUND` 可推进原订单 `SHIP/DELIVER`。
+- M6.2 没有开放售后、收藏、历史、隐私或分享的买家/管理员运行时，也没有 worker、UI、对象存储/
+  扫描、真实 COD/GHN/Zalo 调用或生产 rollout。表存在只表示数据事实基础完成；M6.3 尚未开始，
+  M5.5-M5.7、整个 M5 和 P0 的外部上线门禁保持不变。
 
 ## 7. 身份、安全与隐私
 

@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   copyFile,
   cp,
@@ -51,6 +51,20 @@ const M5_MIGRATIONS = [
   '20260726120000_m55_payment_callback_channel_resolver',
   '20260726130000_m56_shipping_fulfillment_facts',
   '20260727001000_m57_refund_review_capacity_guard',
+] as const;
+
+const M6_MIGRATIONS = [
+  '20260727110000_m62_after_sales_member_share_foundation',
+  '20260727111000_m62_permission_catalog',
+  '20260727112000_m62_integrity_and_snapshot_guards',
+  '20260727113000_m62_integrity_forward_fix',
+  '20260727114000_m62_runtime_member_scope',
+  '20260727115000_m62_integrity_closeout',
+  '20260727116000_m62_capacity_allocation_closeout',
+  '20260727117000_m62_capacity_allocation_runtime_fix',
+  '20260727118000_m62_capacity_allocation_expression_fix',
+  '20260727119000_m62_order_lock_order_closeout',
+  '20260727120000_m62_capacity_scope_and_approval_occupancy_fix',
 ] as const;
 
 type MigrationRecord = {
@@ -227,7 +241,29 @@ function runPrismaExpectFailure(args: string[], databaseUrl: URL, expectedMessag
   }
   const detail = `${result.stderr}\n${result.stdout}`;
   if (!detail.includes(expectedMessage)) {
-    fail(`Prisma failure did not contain the expected M5 rollback guard`);
+    fail(`Prisma failure did not contain the expected rollback guard`);
+  }
+}
+
+async function expectSqlState(
+  promise: Promise<unknown>,
+  expectedSqlState: string,
+  context: string,
+): Promise<void> {
+  let failure: unknown;
+  try {
+    await promise;
+  } catch (error) {
+    failure = error;
+  }
+  if (!failure) fail(`${context} unexpectedly succeeded`);
+  const candidate = failure as { code?: unknown; meta?: unknown };
+  const metadata =
+    typeof candidate.meta === 'object' && candidate.meta !== null
+      ? (candidate.meta as Record<string, unknown>)
+      : undefined;
+  if (candidate.code !== 'P2010' || metadata?.code !== expectedSqlState) {
+    fail(`${context} did not return SQLSTATE ${expectedSqlState}`);
   }
 }
 
@@ -247,20 +283,25 @@ async function migrationDirectories(): Promise<string[]> {
   return directories;
 }
 
-async function createM2MigrationTree(tempDirectory: string): Promise<string> {
-  const tempMigrationsRoot = join(tempDirectory, 'migrations');
+async function createMigrationTree(
+  tempDirectory: string,
+  treeName: string,
+  migrationNames: readonly string[],
+): Promise<string> {
+  const treeRoot = join(tempDirectory, treeName);
+  const tempMigrationsRoot = join(treeRoot, 'migrations');
   await mkdir(tempMigrationsRoot, { recursive: true });
-  await copyFile(join(PRISMA_ROOT, 'schema.prisma'), join(tempDirectory, 'schema.prisma'));
+  await copyFile(join(PRISMA_ROOT, 'schema.prisma'), join(treeRoot, 'schema.prisma'));
   await copyFile(
     join(MIGRATIONS_ROOT, 'migration_lock.toml'),
     join(tempMigrationsRoot, 'migration_lock.toml'),
   );
-  for (const migrationName of M2_MIGRATIONS) {
+  for (const migrationName of migrationNames) {
     await cp(join(MIGRATIONS_ROOT, migrationName), join(tempMigrationsRoot, migrationName), {
       recursive: true,
     });
   }
-  return join(tempDirectory, 'schema.prisma');
+  return join(treeRoot, 'schema.prisma');
 }
 
 async function expectedMigrationChecksums(
@@ -393,6 +434,9 @@ async function run(): Promise<void> {
   if (M2_MIGRATIONS.some((migrationName, index) => allMigrationNames[index] !== migrationName)) {
     fail('the tracked migration prefix no longer matches the approved M2 boundary');
   }
+  const m5BoundaryIndex = allMigrationNames.indexOf(M5_MIGRATIONS.at(-1) ?? '');
+  if (m5BoundaryIndex < 0) fail('the approved M5 boundary migration was not found');
+  const m5BoundaryMigrationNames = allMigrationNames.slice(0, m5BoundaryIndex + 1);
 
   const adminDatabaseUrl = new URL(ownerDatabaseUrl);
   adminDatabaseUrl.pathname = '/postgres';
@@ -420,7 +464,12 @@ async function run(): Promise<void> {
     tempDirectory = await mkdtemp(join(TMP_ROOT, 'm2-upgrade-'));
     assertPathWithin(TMP_ROOT, tempDirectory);
     await assertSafeTemporaryDirectory(tempDirectory);
-    const m2SchemaPath = await createM2MigrationTree(tempDirectory);
+    const m2SchemaPath = await createMigrationTree(tempDirectory, 'm2-boundary', M2_MIGRATIONS);
+    const m5SchemaPath = await createMigrationTree(
+      tempDirectory,
+      'm5-boundary',
+      m5BoundaryMigrationNames,
+    );
 
     validateScratchDatabaseName(scratchDatabaseName);
     scratchCreateAttempted = true;
@@ -445,9 +494,217 @@ async function run(): Promise<void> {
     const fingerprintSql = await readFile(FINGERPRINT_SQL_PATH, 'utf8');
     const beforeUpgradeFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
 
+    runPrisma(['migrate', 'deploy', '--schema', m5SchemaPath], scratchDatabaseUrl);
+    await assertMigrationState(scratchClient, m5BoundaryMigrationNames);
+    const m5HistoricalFacts = await scratchClient.$transaction(async (transaction) => {
+      const storeId = 'f2000000-0000-4000-8000-000000000001';
+      await transaction.$executeRaw`
+        SELECT set_config('app.store_id', ${storeId}, true)
+      `;
+      const admin = await transaction.adminUser.create({
+        data: {
+          displayName: 'M5 upgrade fixture admin',
+          email: 'm5-upgrade-fixture@example.test',
+          emailNormalized: 'm5-upgrade-fixture@example.test',
+          id: 'f2030000-0000-4000-8000-000000000099',
+          passwordHash: 'test-fixture-not-used',
+        },
+      });
+      const order = await transaction.order.create({
+        data: {
+          baseSubtotalVnd: 100_000,
+          couponDiscountVnd: 0,
+          currency: 'VND',
+          itemDiscountVnd: 0,
+          memberId: 'f2020000-0000-4000-8000-000000000001',
+          orderDiscountVnd: 0,
+          orderNumber: 'M5-UPGRADE-HISTORY',
+          payableVnd: 100_000,
+          paymentMethod: 'ONLINE',
+          paymentStatus: 'SUCCEEDED',
+          quoteHash: createHash('sha256').update('m5-upgrade-history-quote').digest('hex'),
+          remoteSurchargeVnd: 0,
+          shippingDiscountVnd: 0,
+          shippingFeeVnd: 0,
+          status: 'PENDING_FULFILLMENT',
+          storeId,
+        },
+      });
+      const warehouse = await transaction.warehouse.create({
+        data: { code: 'm5-upgrade-history', enabled: true, storeId },
+      });
+      await transaction.$executeRaw`
+        INSERT INTO store_zalo_apps (
+          store_id, environment, mini_app_id, enabled, created_at, updated_at
+        ) VALUES (${storeId}::uuid, 'TEST', 'm5-upgrade-history-app', false, now(), now())
+      `;
+      await transaction.$executeRaw`
+        INSERT INTO store_payment_channels (
+          store_id, deployment_environment, provider_environment, provider_code,
+          method_code, checkout_app_id, merchant_reference, private_key_secret_ref,
+          secret_fingerprint, key_version, status, payment_window_seconds, updated_at
+        ) VALUES (
+          ${storeId}::uuid, 'TEST', 'SANDBOX', 'ZALO_CHECKOUT_ZALOPAY',
+          'ZALOPAY_SANDBOX', 'm5-upgrade-history-app', 'm5-upgrade-history',
+          'test://m5-upgrade-history/private-key', ${'a'.repeat(64)}, 'test-v1',
+          'DISABLED', 900, now()
+        )
+      `;
+      await transaction.$executeRaw`
+        INSERT INTO store_shipping_channels (
+          store_id, provider_environment, provider_code, shop_id, token_secret_ref,
+          secret_fingerprint, key_version, status, origin_allowlist_key, updated_at
+        ) VALUES (
+          ${storeId}::uuid, 'SANDBOX', 'GHN', 'm5-upgrade-history-shop',
+          'test://m5-upgrade-history/token', ${'b'.repeat(64)}, 'test-v1',
+          'DISABLED', 'GHN_SANDBOX', now()
+        )
+      `;
+      const paymentChannel = await transaction.storePaymentChannel.findFirstOrThrow({
+        where: { checkoutAppId: 'm5-upgrade-history-app' },
+      });
+      const shippingChannel = await transaction.storeShippingChannel.findFirstOrThrow({
+        where: { shopId: 'm5-upgrade-history-shop' },
+      });
+      const payment = await transaction.paymentAttempt.create({
+        data: {
+          amountVnd: 100_000,
+          attemptSequence: 1,
+          channelId: paymentChannel.id,
+          correlationId: 'm5-upgrade-history-payment',
+          createIdempotencyKeyHash: createHash('sha256')
+            .update('m5-upgrade-history-payment-key')
+            .digest('hex'),
+          expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+          orderId: order.id,
+          providerOrderId: 'm5-upgrade-history-provider-order',
+          providerTransactionId: 'm5-upgrade-history-provider-transaction',
+          publicPaymentNumber: 'PAY-M5-UPGRADE-HISTORY',
+          status: 'SUCCEEDED',
+          storeId,
+          succeededAt: new Date(),
+        },
+      });
+      const refund = await transaction.refund.create({
+        data: {
+          amountVnd: 20_000,
+          idempotencyKeyHash: createHash('sha256')
+            .update('m5-upgrade-history-refund-key')
+            .digest('hex'),
+          orderId: order.id,
+          paymentAttemptId: payment.id,
+          publicRefundNumber: 'RFD-M5-UPGRADE-HISTORY',
+          reason: 'Preserve a real M5 refund while upgrading to M6',
+          requestedBy: admin.id,
+          status: 'REQUESTED',
+          storeId,
+        },
+      });
+      const shipmentId = randomUUID();
+      await transaction.$executeRaw`
+        INSERT INTO shipments (
+          id, store_id, order_id, warehouse_id, channel_id, public_shipment_number,
+          status, client_order_code, service_code, cod_amount_vnd,
+          address_snapshot_ciphertext, parcel_snapshot, updated_at
+        ) VALUES (
+          ${shipmentId}::uuid, ${storeId}::uuid, ${order.id}::uuid, ${warehouse.id}::uuid,
+          ${shippingChannel.id}::uuid, 'SHP-M5-UPGRADE-HISTORY', 'CREATION_PENDING',
+          'M5-UPGRADE-HISTORY', 'standard', 0, 'test-ciphertext',
+          '{"heightCm":10,"lengthCm":10,"weightGram":500,"widthCm":10}'::jsonb, now()
+        )
+      `;
+      return {
+        adminId: admin.id,
+        orderId: order.id,
+        paymentChannelId: paymentChannel.id,
+        paymentId: payment.id,
+        refundId: refund.id,
+        shipmentId,
+        shippingChannelId: shippingChannel.id,
+        storeId,
+        warehouseId: warehouse.id,
+      };
+    });
+
     const fullSchemaPath = join(PRISMA_ROOT, 'schema.prisma');
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
+    const upgradedM5Facts = await scratchClient.$queryRaw<
+      Array<{
+        after_sale_id: string | null;
+        purpose: string;
+        refund_amount_vnd: bigint;
+        refund_status: string;
+        shipment_status: string;
+      }>
+    >`
+      SELECT shipment.after_sale_id, shipment.purpose::text AS purpose,
+        shipment.status::text AS shipment_status, refund.amount_vnd AS refund_amount_vnd,
+        refund.status::text AS refund_status
+      FROM shipments shipment
+      JOIN refunds refund ON refund.id = ${m5HistoricalFacts.refundId}::uuid
+      WHERE shipment.id = ${m5HistoricalFacts.shipmentId}::uuid
+    `;
+    if (
+      upgradedM5Facts.length !== 1 ||
+      upgradedM5Facts[0]?.after_sale_id !== null ||
+      upgradedM5Facts[0]?.purpose !== 'ORDER_OUTBOUND' ||
+      upgradedM5Facts[0]?.shipment_status !== 'CREATION_PENDING' ||
+      upgradedM5Facts[0]?.refund_amount_vnd !== 20_000n ||
+      upgradedM5Facts[0]?.refund_status !== 'REQUESTED'
+    ) {
+      fail('M5 refund or shipment facts changed while upgrading to M6');
+    }
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`
+        SELECT set_config('app.store_id', ${m5HistoricalFacts.storeId}, true)
+      `;
+      // The isolated scratch cleanup must remove its own immutable M5 fixtures
+      // before exercising the M5 down boundary.
+      await transaction.$executeRawUnsafe(
+        'ALTER TABLE "refunds" DISABLE TRIGGER "refunds_no_delete"',
+      );
+      await transaction.$executeRawUnsafe(
+        'ALTER TABLE "shipments" DISABLE TRIGGER "shipments_no_delete"',
+      );
+      await transaction.$executeRawUnsafe(
+        'ALTER TABLE "payment_attempts" DISABLE TRIGGER "payment_attempts_no_delete"',
+      );
+      await transaction.$executeRawUnsafe(
+        'ALTER TABLE "store_payment_channels" DISABLE TRIGGER "store_payment_channels_no_delete"',
+      );
+      await transaction.$executeRawUnsafe(
+        'ALTER TABLE "store_shipping_channels" DISABLE TRIGGER "store_shipping_channels_no_delete"',
+      );
+      await transaction.$executeRaw`DELETE FROM refunds WHERE id = ${m5HistoricalFacts.refundId}::uuid`;
+      await transaction.$executeRaw`DELETE FROM shipments WHERE id = ${m5HistoricalFacts.shipmentId}::uuid`;
+      await transaction.$executeRaw`DELETE FROM payment_attempts WHERE id = ${m5HistoricalFacts.paymentId}::uuid`;
+      await transaction.$executeRaw`DELETE FROM orders WHERE id = ${m5HistoricalFacts.orderId}::uuid`;
+      await transaction.$executeRaw`DELETE FROM store_payment_channels WHERE id = ${m5HistoricalFacts.paymentChannelId}::uuid`;
+      await transaction.$executeRaw`DELETE FROM store_shipping_channels WHERE id = ${m5HistoricalFacts.shippingChannelId}::uuid`;
+      await transaction.$executeRaw`
+        DELETE FROM store_zalo_apps
+        WHERE store_id = ${m5HistoricalFacts.storeId}::uuid
+          AND environment = 'TEST' AND mini_app_id = 'm5-upgrade-history-app'
+      `;
+      await transaction.$executeRaw`DELETE FROM warehouses WHERE id = ${m5HistoricalFacts.warehouseId}::uuid`;
+      await transaction.$executeRaw`DELETE FROM admin_users WHERE id = ${m5HistoricalFacts.adminId}::uuid`;
+      await transaction.$executeRawUnsafe(
+        'ALTER TABLE "refunds" ENABLE TRIGGER "refunds_no_delete"',
+      );
+      await transaction.$executeRawUnsafe(
+        'ALTER TABLE "shipments" ENABLE TRIGGER "shipments_no_delete"',
+      );
+      await transaction.$executeRawUnsafe(
+        'ALTER TABLE "payment_attempts" ENABLE TRIGGER "payment_attempts_no_delete"',
+      );
+      await transaction.$executeRawUnsafe(
+        'ALTER TABLE "store_payment_channels" ENABLE TRIGGER "store_payment_channels_no_delete"',
+      );
+      await transaction.$executeRawUnsafe(
+        'ALTER TABLE "store_shipping_channels" ENABLE TRIGGER "store_shipping_channels_no_delete"',
+      );
+    });
     const afterUpgradeFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterUpgradeFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during the M3 upgrade');
@@ -464,6 +721,79 @@ async function run(): Promise<void> {
       ['db', 'execute', '--file', ASSERTIONS_SQL_PATH, '--schema', fullSchemaPath],
       scratchDatabaseUrl,
     );
+
+    for (const migrationName of [...M6_MIGRATIONS].reverse()) {
+      runPrisma(
+        [
+          'db',
+          'execute',
+          '--file',
+          join(MIGRATIONS_ROOT, migrationName, 'down.sql'),
+          '--schema',
+          fullSchemaPath,
+        ],
+        scratchDatabaseUrl,
+      );
+    }
+    const m6DownState = await scratchClient.$queryRaw<
+      Array<{
+        m6_enum_types: bigint;
+        m6_permissions: bigint;
+        m6_tables: bigint;
+        shipment_m6_columns: bigint;
+      }>
+    >`
+      SELECT
+        (SELECT count(*) FROM permissions WHERE code LIKE 'store.after-sales.%')
+          AS m6_permissions,
+        (SELECT count(*) FROM pg_type
+          WHERE typtype = 'e' AND typname = ANY(ARRAY[
+            'after_sale_type', 'after_sale_status', 'after_sale_source',
+            'after_sale_policy_status', 'after_sale_policy_target_type',
+            'return_shipping_payer', 'after_sale_inspection_disposition',
+            'after_sale_operation_status', 'after_sale_evidence_status',
+            'after_sale_settlement_method', 'after_sale_settlement_status',
+            'after_sale_inventory_action_type', 'after_sale_return_shipment_status',
+            'exchange_fulfillment_status', 'after_sale_legacy_decision_type',
+            'privacy_request_type', 'privacy_request_status', 'share_target_type',
+            'share_interaction_event', 'shipment_purpose'
+          ])) AS m6_enum_types,
+        (SELECT count(*) FROM pg_class relation
+          JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+          WHERE namespace.nspname = 'public' AND relation.relkind IN ('r', 'p')
+            AND relation.relname = ANY(ARRAY[
+              'store_after_sale_settings', 'after_sale_policies',
+              'after_sale_policy_versions', 'after_sale_policy_localizations',
+              'after_sale_policy_draft_products', 'after_sale_policy_version_assignments',
+              'after_sale_active_policy_assignments',
+              'order_item_after_sale_policy_snapshots', 'after_sales', 'after_sale_items',
+              'after_sale_transitions', 'after_sale_operations',
+              'after_sale_legacy_decisions', 'after_sale_order_allocations',
+              'after_sale_inspections', 'after_sale_inspection_allocations',
+              'after_sale_evidence_files', 'after_sale_evidence_transitions',
+              'after_sale_settlements', 'after_sale_refunds',
+              'after_sale_inventory_actions', 'after_sale_return_shipments',
+              'exchange_fulfillments', 'member_favorites', 'member_product_views',
+              'privacy_requests', 'privacy_request_transitions', 'share_links',
+              'share_link_localizations', 'share_interactions'
+            ])) AS m6_tables,
+        (SELECT count(*) FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'shipments'
+            AND column_name IN ('purpose', 'after_sale_id')) AS shipment_m6_columns
+    `;
+    if (
+      m6DownState[0]?.m6_tables !== 0n ||
+      m6DownState[0]?.m6_permissions !== 0n ||
+      m6DownState[0]?.m6_enum_types !== 0n ||
+      m6DownState[0]?.shipment_m6_columns !== 0n
+    ) {
+      fail('M6.2 down exercise did not restore the M5 schema boundary');
+    }
+
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations"
+      WHERE migration_name = ANY(${[...M6_MIGRATIONS]})
+    `;
 
     for (const migrationName of [...M5_MIGRATIONS].reverse()) {
       runPrisma(
@@ -505,10 +835,186 @@ async function run(): Promise<void> {
     `;
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
-    const afterM5ForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
-    if (afterM5ForwardRepairFingerprint !== beforeUpgradeFingerprint) {
-      fail('M1/M2 fixture fingerprint changed during the M5 forward repair exercise');
+    const afterForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
+    if (afterForwardRepairFingerprint !== beforeUpgradeFingerprint) {
+      fail('M1/M2 fixture fingerprint changed during the M5/M6 forward repair exercise');
     }
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`
+        SELECT
+          set_config('app.store_id', 'f2000000-0000-4000-8000-000000000001', true),
+          set_config('app.actor_type', 'member', true),
+          set_config('app.actor_id', 'f2020000-0000-4000-8000-000000000001', true)
+      `;
+      await transaction.$executeRaw`
+        INSERT INTO member_favorites (store_id, member_id, product_id, created_at)
+        VALUES (
+          'f2000000-0000-4000-8000-000000000001',
+          'f2020000-0000-4000-8000-000000000001',
+          'f2400000-0000-4000-8000-000000000001',
+          '2026-07-27 02:00:00+00'
+        )
+      `;
+      await transaction.$executeRaw`
+        INSERT INTO privacy_requests (
+          id, store_id, member_id, public_number, type, description_ciphertext,
+          idempotency_key_hash, request_hash, created_at, updated_at
+        ) VALUES (
+          'f2c00000-0000-4000-8000-000000000001',
+          'f2000000-0000-4000-8000-000000000001',
+          'f2020000-0000-4000-8000-000000000001',
+          'PRV-M62DOWNGUARD0001',
+          'ACCESS',
+          'encrypted-migration-rollback-fixture',
+          repeat('a', 64),
+          repeat('b', 64),
+          '2026-07-27 02:00:00+00',
+          '2026-07-27 02:00:00+00'
+        )
+      `;
+    });
+    await expectSqlState(
+      scratchClient.$executeRaw`SELECT app_security.assert_m62_rollback_safe()`,
+      '55000',
+      'M6.2 rollback guard',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(
+          MIGRATIONS_ROOT,
+          '20260727120000_m62_capacity_scope_and_approval_occupancy_fix',
+          'down.sql',
+        ),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.2 foundation rollback is unsafe after business facts exist',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260727119000_m62_order_lock_order_closeout', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.2 foundation rollback is unsafe after business facts exist',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260727118000_m62_capacity_allocation_expression_fix', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.2 foundation rollback is unsafe after business facts exist',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260727117000_m62_capacity_allocation_runtime_fix', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.2 foundation rollback is unsafe after business facts exist',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260727116000_m62_capacity_allocation_closeout', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.2 foundation rollback is unsafe after business facts exist',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260727115000_m62_integrity_closeout', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.2 integrity closeout rollback is unsafe after business facts exist',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260727114000_m62_runtime_member_scope', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.2 runtime member scope rollback is unsafe after business facts exist',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260727113000_m62_integrity_forward_fix', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.2 integrity forward-fix rollback is unsafe after business facts exist',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260727112000_m62_integrity_and_snapshot_guards', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.2 integrity rollback is unsafe after business facts exist',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260727111000_m62_permission_catalog', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.2 permission rollback is unsafe after business facts exist',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260727110000_m62_after_sales_member_share_foundation', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.2 foundation rollback is unsafe after business facts exist',
+    );
 
     await scratchClient.$transaction(async (transaction) => {
       await transaction.$executeRaw`
@@ -597,14 +1103,14 @@ async function run(): Promise<void> {
           createIdempotencyKeyHash: createHash('sha256')
             .update('m57-rollback-guard-payment-key')
             .digest('hex'),
-          expiresAt: new Date('2026-07-27T01:00:00.000Z'),
+          expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
           orderId: refundGuardOrder.id,
           providerOrderId: 'm57-rollback-guard-order',
           providerTransactionId: 'm57-rollback-guard-transaction',
           publicPaymentNumber: 'PAY-M57-ROLLBACK-GUARD',
           status: 'SUCCEEDED',
           storeId: 'f2000000-0000-4000-8000-000000000001',
-          succeededAt: new Date('2026-07-27T00:00:00.000Z'),
+          succeededAt: new Date(),
         },
       });
       await transaction.refund.create({
@@ -672,8 +1178,20 @@ async function run(): Promise<void> {
       scratchDatabaseUrl,
       'M5 permission rollback is unsafe after channel or business facts exist',
     );
+
+    await scratchClient.$disconnect();
+    scratchClient = undefined;
+    await dropScratchDatabase(adminClient, scratchDatabaseName);
+    validateScratchDatabaseName(scratchDatabaseName);
+    await adminClient.$executeRawUnsafe(`CREATE DATABASE "${scratchDatabaseName}"`);
+    runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
+    scratchClient = new PrismaClient({ datasourceUrl: scratchDatabaseUrl.toString() });
+    await scratchClient.$connect();
+    await assertScratchConnection(scratchClient, scratchDatabaseName);
+    await assertMigrationState(scratchClient, allMigrationNames);
+
     console.log(
-      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, M5 down/forward repair and rollback guards`,
+      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair and rollback guards`,
     );
   } catch (error) {
     primaryError = asError(error);
