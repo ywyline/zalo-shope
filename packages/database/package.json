@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@prisma/client": "6.19.3",
+    "@zalo-shop/contracts": "workspace:*",
     "@zalo-shop/domain": "workspace:*",
     "@zalo-shop/security": "workspace:*"
   },

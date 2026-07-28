@@ -1,10 +1,10 @@
 # M6 售后、会员、内容与主动分享专项实施计划
 
-> 状态：已批准；M6.1 契约冻结已完成；M6.2 数据/RLS/迁移已完成；M6.3 未开始
+> 状态：已批准；M6.1、M6.2、M6.3-A、M6.3-B0 与 B1 已完成；B2-B7、UI 与生产启用未授权；M6 整体未完成
 >
-> 版本：0.3
+> 版本：0.7
 >
-> 日期：2026-07-27
+> 日期：2026-07-29
 >
 > 依赖：`REQUIREMENTS.md`、`AGENTS.md`、`docs/plans/p0-development-plan.md`、
 > `docs/architecture/system-architecture.md`、`docs/plans/m5-implementation-plan.md`、
@@ -36,10 +36,47 @@ M6.2 批准与完成记录（2026-07-27）：用户随后明确授权按本计�
 隐私和运单 purpose guard。初始第六段 `20260727115000_m62_integrity_closeout` 收口 legacy 初态/决定、
 settlement 聚合锁、返件/凭证/COD、库存、换货、共享 shipment 并发及 definer ACL；后续五段前向修复
 补齐请求/批准容量、immutable order allocation、M5/M6 退款锁序、definer fail-closed scope 与批准占用。
-定向数据库 38/38、完整 integration 26 个文件/201 项与 35 段 M2-to-current、重复部署、M6/M5 down/重新前滚及 `55000`
-门禁演练已通过；仓库级 `verify` 保持 51 个文件/352 项单元测试通过。M6.3 运行时 API/worker/UI 尚未
-开始；所有商城政策快照 enforcement 保持 OFF，没有生产政策、checkout 快照 writer/readiness 命令、
-生产角色自动扩权或真实外部调用。
+定向数据库 38/38、完整 integration 26 个文件/202 项与 35 段 M2-to-current、重复部署、M6/M5 down/重新前滚及 `55000`
+门禁演练已通过；仓库级 `verify` 保持 51 个文件/352 项单元测试通过。M6.2 完成当时 M6.3 运行时
+API/worker/UI 尚未开始；所有商城政策快照 enforcement 保持 OFF，没有生产政策、checkout 快照
+writer/readiness 命令、生产角色自动扩权或真实外部调用。
+
+M6.3 授权与拆分记录（2026-07-28）：用户要求按仓库严谨工作流继续下一阶段，明确授权进入路线图中
+唯一未开始的 M6.3。为使 checkout、物流和售后资金域分别取得可回滚证据，M6.3 先实施 M6.3-A
+前置安全收口，再实施 M6.3-B 售后申请/审核/返件/结算协调；详细目标、非目标、涉及文件、兼容、
+回滚、风险和验收见 `docs/plans/m6.3-implementation-plan.md`。该拆分不扩大授权，也不放宽 M5/P0
+外部上线门禁。
+
+M6.3-A 实现与门禁进度（2026-07-28）：checkout 已在订单事务内按商品覆盖、最近主类目祖先和
+商城默认解析不可变政策，并仅在逐商城 enforcement 启用时写入完整订单行快照；readiness hash
+绑定权威活动投影与版本化 runtime capability。`GET/PUT /v1/admin/after-sale-settings` 已实现
+商城/Header/查询一致性、独立读/强制权限、近期 MFA、确认词、
+AccessReason（平台跨商城时强制）、expected version、24 小时商城幂等、精确 before/after 审计与
+串行化重试。既有订单物流查询、命令、callback、worker
+和供应商事实已按本地可信 purpose 分流，只有 `ORDER_OUTBOUND` 可推进原订单。四段前向迁移补齐
+最近祖先数据库 guard、既有商城稳定 OFF 行、受限 settings 行锁和新增商城自动 OFF provisioning。
+最终物流复核还关闭了创建/取消竞态：provider reference 待写回保持可重试，并以真实数据库证明
+两类非订单 purpose 更新自身事实时不改变原订单 status/version/transitions。
+定向 unit 55/55、M6.2 数据库 39/39、M4 15/15、M5.6 13/13、完整 integration 26 个文件/206 项，
+以及 39 段 M2→当前、重复部署、fresh、down/重新前滚和 `55000` 演练已通过。`verify`（54 个文件/
+381 项单元测试）、21/21 E2E、交付候选 Gitleaks、`git diff --check` 与生产依赖 high 门禁均通过；
+审计另有 3 项 React Router moderate 公告并已明确结转。M6.3-A 完成当时 M6.3-B1-B7 运行时均未
+开始；详见 `docs/reports/m6.3-a-completion-report.md`。
+
+M6.3-B 写路径前置差异审查已完成。用户于 2026-07-28 接受返件 member transition、SYSTEM actor、
+ONLINE Refund 原子协调设计、验收/库存切片边界及多政策/金额/证据等推荐默认值，并只授权实施
+`docs/plans/m6.3-b0-decision-plan.md` 的 B0 契约与前向修复。B0 已完成，适用门禁和残余风险见
+`docs/reports/m6.3-b0-completion-report.md`；B0 完成当时 B1-B7 仍未开始、未授权。
+
+M6.3-B1 授权与实现记录（授权 2026-07-28，实施收口 2026-07-29）：用户在了解风险后明确
+“按照建议执行”，只授权
+`GET /v1/after-sales`、`GET /v1/after-sales/{afterSaleId}`、`GET /v1/admin/after-sales` 与
+`GET /v1/admin/after-sales/{afterSaleId}`。四个只读接口现已实现：会员显式绑定商城+本人，管理员要求
+`store.after-sales.read` 并绑定目标商城，两者叠加 FORCE RLS；响应采用严格 Prisma `select` 和 schema
+allowlist。列表在 `REPEATABLE READ` 中先取 `limit + 1` 个 page key，再按白名单 ID 投影，使用数据库
+六位微秒 `(timestamp,id)` tuple seek；`c1_` 游标由 1–3 把 HMAC key ring 签发/轮换。Redis 读限流、
+`Retry-After`、correlation ID 与 `Cache-Control: private, no-store` 同步落地。B1 只提供读取，不授权
+B2-B7、UI、生产政策/启用、供应商调用、部署或发布。
 
 ## 2. 目标与非目标
 
@@ -174,7 +211,17 @@ settlement 聚合锁、返件/凭证/COD、库存、换货、共享 shipment 并
 
 ### M6.3：售后申请、审核、退货与结算协调
 
-- 买家提交/取消、管理员审核、返件登记、验收和售后时间线。
+实施顺序细分为 M6.3-A 前置安全收口和 M6.3-B 售后运行时；当前 M6.3-A 与 M6.3-B0 已完成，B1
+四个只读接口已实现，B2-B7 后续运行时仍未开始、未授权。A/B0/B1 的局部交付也不代表 M6.3 完成，详见
+`docs/plans/m6.3-implementation-plan.md`。
+
+- B1 只读列表/详情使用严格响应投影和三语历史政策回退；不得因 RLS 没有列级保护而使用宽
+  `include`。会员排序固定 `created_at DESC, id DESC`，管理员固定
+  `updated_at DESC, id DESC`，两阶段 `limit + 1` 分页保留 PostgreSQL `timestamptz(6)` 微秒精度。
+- B1 游标绑定商城、主体、资源、规范筛选、微秒排序键、ID 与过期时间；独立 HMAC key ring 的第一把
+  签发、全部验证。会员/管理员读限流分别 60/120 次每 60 秒且绑定商城+主体，成功响应 no-store。
+- 买家提交/取消、管理员审核、返件登记与可信物流事实、待验收读取和售后时间线；完整返件验收写路径
+  及 exactly-once 库存恢复属于 M6.4。
 - ONLINE 通过内部原语关联 M5 Refund，并消费成功/失败/取消/不确定权威结果；COD 使用可从退款响应
   取得公开号的双人确认线下结算事实。
 - 所有命令使用商城范围幂等键、expected version、固定锁序和有界串行化重试。
@@ -227,14 +274,18 @@ settlement 聚合锁、返件/凭证/COD、库存、换货、共享 shipment 并
 ## 6. 迁移、兼容和回滚
 
 - M6 使用新增表和 nullable/default 安全的向前迁移；不改写 M4/M5 历史订单、退款、运单或库存流水。
-- 新运单目的默认 `ORDER_OUTBOUND`，确保旧数据不被改写。M6.2 数据库已约束 purpose 与售后类型，
-  但既有 M5 订单物流查询、命令、callback 和 worker 尚未全面按 purpose 分流；M6.3 创建售后运单前
-  必须显式过滤 `ORDER_OUTBOUND`，非订单 purpose 只能由售后协调器处理且不得推进原订单。
+- 新运单目的默认 `ORDER_OUTBOUND`，确保旧数据不被改写。M6.3-A 已让既有 M5 订单物流查询、
+  命令、callback、worker 和供应商事实显式传递本地可信 purpose；订单 API 固定只处理
+  `ORDER_OUTBOUND`，非订单 purpose 不生成原订单 `SHIP/DELIVER` 事件且不能复用旧建单 worker。
 - M6.2 已通过明确本地数据库 drop/recreate 后的 fresh deploy、M2-to-current、重复 deploy、
   down/重新前滚、RLS、列级权限和 PostgreSQL catalog 约束。`prisma migrate reset` 遇到
   `app_security` 残留对象的尝试不计成功证据；Prisma 无法表达的跨行容量 guard 使用审查过的原生 SQL。
 - `down.sql` 只允许无 M6 售后、结算、证据、库存、收藏/历史、隐私请求或分享事实的 local/test scratch。
   有事实时以 SQLSTATE `55000` 拒绝；生产只允许向前修复。
+- B1 的 `20260728110000_m63_b1_after_sale_admin_read_index` 只新增管理员无 status 列表所需的
+  `(store_id, updated_at DESC, id DESC)` 索引；应用回滚后可保留，删除时只执行其精确 `down.sql`。
+  Prisma 同时补记数据库从 M6.2 起已有的 `after_sale_refunds(store_id, settlement_id)` 唯一约束，
+  只修复 schema drift，不重复建迁移或改写业务事实。
 - 应用回滚可关闭新建售后/分享入口，但必须保留兼容 worker 处理已有退款、结算、库存预留和运单至终态。
 
 ## 7. 风险、外部依赖和停止条件
@@ -245,14 +296,16 @@ settlement 聚合锁、返件/凭证/COD、库存、换货、共享 shipment 并
   `REVIEW_REQUIRED`，不能使用永远成功的手工按钮。
 - M5 外部支付、退款、GHN、结算和 Zalo 宿主仍未验收。若真实契约改变 M6 假设，先更新本计划、
   数据字典、OpenAPI、迁移和安全测试。
-- M6.2 只交付数据事实边界。买家/管理员售后、收藏、历史、隐私和分享运行时均未交付；表和权限
-  目录存在不等于对应产品能力可用。
+- M6.2 只交付数据事实边界；其历史范围保持不变。当前后续运行时只新增 B1 会员/管理员售后列表与
+  详情，收藏、历史、隐私、分享以及售后申请/取消/审核/凭证/返件/退款/结算仍未交付；表、权限目录
+  或只读响应存在不等于写路径或完整产品能力可用。
 - 证据对象视为敏感且不可信；必须限制类型、magic bytes、大小、数量、扫描状态、保留期和下载授权。
   到期立即停止普通访问；无 legal hold 时幂等删除原件、衍生物与扫描临时对象，失败有界重试并告警；
   legal hold 只延迟删除，不延长普通访问，删除后仅保留受 RLS 保护的最小审计元数据。会员和普通
   管理员响应只投影 `PENDING/READY/UNAVAILABLE`，不得区分隔离、删除中、删除失败或已删除。
-- M6.2 完成后不自动进入 M6.3。M6.3 涉及 checkout 快照写入、售后资金/物流协调和运行时权限，
-  需依据本计划重新确认继续实施，并先关闭上述 enforcement 与 shipment purpose 风险。
+- M6.3-A 已按重新授权关闭 checkout enforcement 与既有 shipment purpose 前置风险；最终静态、
+  浏览器、交付候选敏感信息和生产依赖 high 门禁已通过，3 项 moderate 已明确结转。A 已完成，
+  但不自动进入 M6.3-B。
 
 ## 8. 测试与验收
 
@@ -262,6 +315,9 @@ settlement 聚合锁、返件/凭证/COD、库存、换货、共享 shipment 并
   返件不推进原订单、证据授权和旧订单 legacy review。
 - API 安全：商城/会员 IDOR、严格 DTO、金额/状态/退款/库存字段篡改、幂等键冲突、RBAC/MFA、
   凭证越权、凭证内部状态投影脱敏、分享目标投毒、XSS、open redirect、限流和错误脱敏。
+- B1 读取：四个 GET 的严格 select、双层 store/owner/RBAC + FORCE RLS、两阶段 `limit + 1`、六位
+  微秒 tuple seek、HMAC key ring 轮换/scope、三语回退、敏感字段不可达、60/120 限流、no-store 与
+  correlation。B1 无 UI，不能用既有浏览器 E2E 冒充售后 UI 或 Zalo 真机证据。
 - E2E：双商城三语仅退款、退货退款、换货、收藏、历史、隐私入口、六类分享目标和异常恢复。
 - 真机：Android/iPhone 中由用户主动分享并打开正确商城、语言和对象；Web 预览不替代宿主证据。
 - 阶段门禁：定向测试、`corepack pnpm verify`、相关集成/E2E、迁移演练、生产依赖审计、Gitleaks、

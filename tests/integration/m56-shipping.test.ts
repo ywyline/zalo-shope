@@ -14,7 +14,9 @@ import {
   adjustInventory,
   applyShippingProviderFact,
   createRuntimePrismaClient,
+  getShipmentProviderOperationRequest,
   PrismaClient,
+  recordShipmentCreated,
   recordShippingCallbackHint,
   recordShippingOperationError,
   reserveInventory,
@@ -828,6 +830,123 @@ describe('M5.6 GHN shipping primitives', () => {
     ).resolves.toMatchObject({ status: 'DELIVERED' });
   });
 
+  it('keeps non-order shipment facts isolated from the original order aggregate', async () => {
+    const cases = [
+      {
+        afterSaleStatus: 'APPROVED' as const,
+        afterSaleType: 'RETURN_REFUND' as const,
+        purpose: 'AFTER_SALE_RETURN' as const,
+        tag: 'RETURN',
+      },
+      {
+        afterSaleStatus: 'EXCHANGE_PENDING' as const,
+        afterSaleType: 'EXCHANGE' as const,
+        purpose: 'EXCHANGE_OUTBOUND' as const,
+        tag: 'EXCHANGE',
+      },
+    ];
+
+    for (const fixture of cases) {
+      const afterSale = await owner.$transaction(async (transaction) => {
+        await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+        try {
+          return await transaction.afterSale.create({
+            data: {
+              correlationId: `m56-purpose-${fixture.tag.toLowerCase()}-${suffix}`,
+              idempotencyKeyHash: digest(`purpose-idempotency-${fixture.tag}-${suffix}`),
+              initiatedBy: memberId,
+              legacyPolicyReview: true,
+              memberId,
+              orderId,
+              publicCaseNumber: `ASC-M56${fixture.tag}${suffix}`.toUpperCase(),
+              reasonCode: 'M56_SHIPPING_PURPOSE_REGRESSION',
+              requestHash: digest(`purpose-request-${fixture.tag}-${suffix}`),
+              source: 'MEMBER',
+              status: fixture.afterSaleStatus,
+              storeId: BEAUTY_STORE_ID,
+              type: fixture.afterSaleType,
+            },
+          });
+        } finally {
+          await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+        }
+      });
+      const providerShipmentId = `GHN-M63-${fixture.tag}-${suffix}`;
+      const shipment = await owner.shipment.create({
+        data: {
+          addressSnapshotCiphertext: 'encrypted-after-sale-address',
+          afterSaleId: afterSale.id,
+          channelId,
+          clientOrderCode: `SHP-M63-${fixture.tag}-${suffix}`,
+          orderId,
+          parcelSnapshot: { height_cm: 1, length_cm: 1, weight_grams: 1, width_cm: 1 },
+          providerShipmentId,
+          publicShipmentNumber: `SHP-M63-${fixture.tag}-${suffix}`,
+          purpose: fixture.purpose,
+          serviceCode: 'GHN:53320:2',
+          status: 'PENDING_PICKUP',
+          storeId: BEAUTY_STORE_ID,
+          warehouseId,
+        },
+      });
+      const operation = await owner.shippingOperation.create({
+        data: {
+          channelId,
+          correlationId: `m56-purpose-operation-${fixture.tag.toLowerCase()}-${suffix}`,
+          idempotencyKeyHash: digest(`purpose-operation-idempotency-${fixture.tag}-${suffix}`),
+          operationType: 'QUERY_TRACKING',
+          orderId,
+          requestHash: digest(`purpose-operation-request-${fixture.tag}-${suffix}`),
+          shipmentId: shipment.id,
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+      const [orderBefore, transitionCountBefore] = await Promise.all([
+        owner.order.findUniqueOrThrow({ where: { id: orderId } }),
+        owner.orderTransition.count({ where: { orderId } }),
+      ]);
+
+      await applyShippingProviderFact(runtime, context(), {
+        fact: {
+          occurredAt: new Date(),
+          providerShipmentId,
+          providerStatus: 'transporting',
+          status: 'IN_TRANSIT',
+        },
+        operationId: operation.id,
+        operationType: 'QUERY_TRACKING',
+        purpose: fixture.purpose,
+        shipmentId: shipment.id,
+        source: 'QUERY',
+      });
+
+      const [updatedShipment, trackingEvents, updatedOperation, orderAfter, transitionCountAfter] =
+        await Promise.all([
+          owner.shipment.findUniqueOrThrow({ where: { id: shipment.id } }),
+          owner.trackingEvent.findMany({ where: { shipmentId: shipment.id } }),
+          owner.shippingOperation.findUniqueOrThrow({ where: { id: operation.id } }),
+          owner.order.findUniqueOrThrow({ where: { id: orderId } }),
+          owner.orderTransition.count({ where: { orderId } }),
+        ]);
+      expect(updatedShipment).toMatchObject({
+        providerShipmentId,
+        purpose: fixture.purpose,
+        status: 'IN_TRANSIT',
+        version: shipment.version + 1,
+      });
+      expect(trackingEvents).toHaveLength(1);
+      expect(trackingEvents[0]).toMatchObject({
+        providerStatus: 'transporting',
+        source: 'QUERY',
+        status: 'IN_TRANSIT',
+      });
+      expect(updatedOperation).toMatchObject({ errorCode: null, status: 'SUCCEEDED' });
+      expect(orderAfter.status).toBe(orderBefore.status);
+      expect(orderAfter.version).toBe(orderBefore.version);
+      expect(transitionCountAfter).toBe(transitionCountBefore);
+    }
+  });
+
   it('replays a cancellation after its first request increments the shipment version', async () => {
     const idempotencyKey = `m56-cancel-${suffix}`;
     const first = await requestShipmentOperation(runtime, context(), {
@@ -851,6 +970,96 @@ describe('M5.6 GHN shipping primitives', () => {
         where: { aggregateId: shipmentId, eventType: 'shipment.cancel.requested' },
       }),
     ).resolves.toBe(1);
+  });
+
+  it('retries cancellation until an in-flight creation records its provider reference', async () => {
+    const raceMember = await owner.member.create({ data: { storeId: BEAUTY_STORE_ID } });
+    const raceOrder = await owner.order.create({
+      data: {
+        baseSubtotalVnd: 100_000,
+        couponDiscountVnd: 0,
+        currency: 'VND',
+        itemDiscountVnd: 0,
+        memberId: raceMember.id,
+        orderDiscountVnd: 0,
+        orderNumber: `M56-CANCEL-RACE-${suffix}`,
+        payableVnd: 100_000,
+        paymentMethod: 'COD',
+        paymentStatus: 'PENDING',
+        quoteHash: digest(`cancel-race-quote-${suffix}`),
+        remoteSurchargeVnd: 0,
+        shippingDiscountVnd: 0,
+        shippingFeeVnd: 0,
+        status: 'PENDING_FULFILLMENT',
+        storeId: BEAUTY_STORE_ID,
+      },
+    });
+    const raceShipment = await owner.shipment.create({
+      data: {
+        addressSnapshotCiphertext: 'encrypted-cancel-race-address',
+        channelId,
+        clientOrderCode: `SHP-CANCEL-RACE-${suffix}`,
+        orderId: raceOrder.id,
+        parcelSnapshot: { height_cm: 1, length_cm: 1, weight_grams: 1, width_cm: 1 },
+        publicShipmentNumber: `SHP-CANCEL-RACE-${suffix}`,
+        purpose: 'ORDER_OUTBOUND',
+        serviceCode: 'GHN:53320:2',
+        status: 'CREATION_PENDING',
+        storeId: BEAUTY_STORE_ID,
+        warehouseId,
+      },
+    });
+    const createOperation = await owner.shippingOperation.create({
+      data: {
+        channelId,
+        correlationId: `m56-cancel-race-create-${suffix}`,
+        idempotencyKeyHash: digest(`cancel-race-create-idempotency-${suffix}`),
+        operationType: 'CREATE',
+        orderId: raceOrder.id,
+        requestHash: digest(`cancel-race-create-request-${suffix}`),
+        shipmentId: raceShipment.id,
+        storeId: BEAUTY_STORE_ID,
+      },
+    });
+    await owner.shipment.update({
+      data: { createdOperationId: createOperation.id },
+      where: { id: raceShipment.id },
+    });
+    const cancel = await requestShipmentOperation(runtime, context(), {
+      expectedVersion: raceShipment.version,
+      idempotencyKey: `m56-cancel-race-${suffix}`,
+      operationType: 'CANCEL',
+      reason: 'Cancel while the provider creation call is still in flight',
+      shipmentId: raceShipment.id,
+    });
+
+    await expect(
+      getShipmentProviderOperationRequest(runtime, context(), raceShipment.id, cancel.operationId),
+    ).rejects.toMatchObject({ code: 'SHIPMENT_PROVIDER_REFERENCE_PENDING' });
+
+    const providerShipmentId = `GHN-CANCEL-RACE-${suffix}`;
+    await recordShipmentCreated(runtime, context(), {
+      fact: {
+        clientOrderCode: raceShipment.clientOrderCode,
+        providerShipmentId,
+        providerStatus: 'ready_to_pick',
+        status: 'PENDING_PICKUP',
+      },
+      operationId: createOperation.id,
+      purpose: 'ORDER_OUTBOUND',
+      shipmentId: raceShipment.id,
+    });
+
+    await expect(
+      getShipmentProviderOperationRequest(runtime, context(), raceShipment.id, cancel.operationId),
+    ).resolves.toMatchObject({
+      operationId: cancel.operationId,
+      operationStatus: 'PENDING',
+      operationType: 'CANCEL',
+      providerShipmentId,
+      purpose: 'ORDER_OUTBOUND',
+      shipmentId: raceShipment.id,
+    });
   });
 
   it('allows only one active shipment under concurrent inserts', async () => {

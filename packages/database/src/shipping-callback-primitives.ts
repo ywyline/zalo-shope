@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { PrismaClient } from '@prisma/client';
-import type { StoreContext } from '@zalo-shop/domain';
+import type { ShipmentPurpose, StoreContext } from '@zalo-shop/domain';
 
 import { withStoreTransaction } from './index';
 import {
@@ -95,6 +95,7 @@ export async function resolveShippingCallbackChannel(
 export type ShippingCallbackHintResult = Readonly<{
   duplicate: boolean;
   queryScheduled: boolean;
+  purpose?: ShipmentPurpose;
   shipmentId?: string;
 }>;
 
@@ -168,7 +169,13 @@ export function recordShippingCallbackHint(
     }
 
     const shipment = await transaction.shipment.findFirst({
-      select: { channelId: true, id: true, orderId: true, providerShipmentId: true },
+      select: {
+        channelId: true,
+        id: true,
+        orderId: true,
+        providerShipmentId: true,
+        purpose: true,
+      },
       where: {
         channelId: input.channelId,
         ...(input.clientOrderCode ? { clientOrderCode: input.clientOrderCode } : {}),
@@ -262,6 +269,7 @@ export function recordShippingCallbackHint(
     `;
     return {
       duplicate: inbox.replayed,
+      purpose: shipment.purpose,
       queryScheduled: true,
       shipmentId: shipment.id,
     };

@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import {
   ConflictException,
   ForbiddenException,
@@ -16,7 +14,7 @@ import {
   hasPermission,
   type StoreContext,
 } from '@zalo-shop/domain';
-import { redactSensitiveData } from '@zalo-shop/logger';
+import { redactSensitiveData, resolveCorrelationId } from '@zalo-shop/logger';
 
 import { AuthService } from '../auth/auth.service';
 import { DATABASE_CLIENT } from '../auth/auth.tokens';
@@ -25,6 +23,7 @@ type StoreRegistryEntry = { code: string; default_locale: 'en' | 'vi' | 'zh'; id
 export type AdminHeaders = {
   accessReason?: string;
   accessToken: string;
+  correlationId?: string;
   storeCode: string;
 };
 
@@ -306,7 +305,12 @@ export class AdminService {
     storeId: string,
     requiredPermission: string,
   ): Promise<StoreContext> {
-    const principal = await this.auth.authenticateAccessToken(headers.accessToken);
+    const correlationId = resolveCorrelationId(headers.correlationId);
+    const principal = await this.auth.authenticateAccessToken(
+      headers.accessToken,
+      undefined,
+      correlationId,
+    );
     if (principal.actorType !== 'admin') throw new ForbiddenException('Access denied');
     const stores = await this.database.$queryRaw<StoreRegistryEntry[]>`
       SELECT * FROM app_security.resolve_active_store(${headers.storeCode.trim()})
@@ -316,7 +320,7 @@ export class AdminService {
     const context = createStoreContext({
       ...(headers.accessReason === undefined ? {} : { accessReason: headers.accessReason }),
       actor: { id: principal.subjectId, type: 'admin' },
-      correlationId: randomUUID(),
+      correlationId,
       locale: store.default_locale,
       storeCode: store.code,
       storeId,
@@ -360,7 +364,11 @@ export class AdminService {
     requiredPermission: string,
     maxMfaAgeMs = 10 * 60 * 1_000,
   ): Promise<StoreContext> {
-    const principal = await this.auth.authenticateAccessToken(headers.accessToken);
+    const principal = await this.auth.authenticateAccessToken(
+      headers.accessToken,
+      undefined,
+      resolveCorrelationId(headers.correlationId),
+    );
     if (principal.actorType !== 'admin') throw new ForbiddenException('Access denied');
     const session = await this.database.adminSession.findUnique({
       select: { expiresAt: true, mfaVerifiedAt: true, revokedAt: true },

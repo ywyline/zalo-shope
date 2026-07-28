@@ -79,14 +79,15 @@ export async function mapShippingFailure(
     throw new OutboxHandlerError(code, disposition);
   }
   if (error instanceof ShippingCommandError) {
+    if (error.code === 'SHIPMENT_NOT_FOUND' || error.code === 'SHIPMENT_OPERATION_NOT_FOUND') {
+      throw new OutboxHandlerError(error.code, 'PERMANENT');
+    }
     const disposition =
-      error.code === 'SHIPMENT_NOT_FOUND' || error.code === 'SHIPMENT_OPERATION_NOT_FOUND'
-        ? 'PERMANENT'
-        : 'REVIEW_REQUIRED';
+      error.code === 'SHIPMENT_PROVIDER_REFERENCE_PENDING' ? 'RETRYABLE' : 'REVIEW_REQUIRED';
     await recordShippingOperationError(database, context, {
       errorCode: error.code,
       operationId,
-      status: disposition === 'PERMANENT' ? 'FAILED' : 'REVIEW_REQUIRED',
+      status: disposition === 'RETRYABLE' ? 'PENDING' : 'REVIEW_REQUIRED',
     });
     throw new OutboxHandlerError(error.code, disposition);
   }

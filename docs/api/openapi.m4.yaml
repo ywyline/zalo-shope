@@ -151,7 +151,9 @@ paths:
       summary: 以接受的报价幂等创建 COD 订单
       description: >-
         同一数据库事务内重验报价、锁定库存、创建 ACTIVE 预留、订单/行/快照/转换、
-        核销真实会员券、转换匹配购物车并保存幂等响应。相同键不同请求返回冲突。
+        核销真实会员券、转换匹配购物车并保存幂等响应。售后政策 enforcement OFF 时不写政策
+        快照；ON 时按商品、最近主类目祖先、商城默认优先级冻结每个订单行的政策，缺失或漂移则
+        整单回滚。相同键不同请求返回冲突。
       security: [{ StoreCode: [], MemberBearer: [] }]
       parameters:
         - $ref: '#/components/parameters/StoreCode'
@@ -529,6 +531,8 @@ components:
               type: string
               enum:
                 - ADDRESS_REGION_INVALID
+                - AFTER_SALE_POLICY_NOT_READY
+                - AFTER_SALE_POLICY_SNAPSHOT_INVALID
                 - CHECKOUT_CONCURRENT_CONFLICT
                 - COD_ONLY_IN_M4
                 - COD_UNAVAILABLE

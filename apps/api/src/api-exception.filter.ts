@@ -13,6 +13,14 @@ type HttpResponse = {
   status(code: number): { json(body: unknown): void };
 };
 
+function retryAfterSeconds(exception: unknown): number | undefined {
+  if (exception === null || typeof exception !== 'object') return undefined;
+  const value = (exception as { retryAfterSeconds?: unknown }).retryAfterSeconds;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 3_600
+    ? value
+    : undefined;
+}
+
 function errorCode(status: number): string {
   if (status === 400) return 'INPUT_INVALID';
   if (status === 401) return 'AUTHENTICATION_FAILED';
@@ -26,6 +34,12 @@ function errorCode(status: number): string {
 
 const stableConflictReasonCodes = new Set([
   'ADDRESS_REGION_INVALID',
+  'AFTER_SALE_POLICY_NOT_READY',
+  'AFTER_SALE_POLICY_SNAPSHOT_INVALID',
+  'AFTER_SALE_SETTINGS_CONCURRENT_CONFLICT',
+  'AFTER_SALE_SETTINGS_IDEMPOTENCY_CONFLICT',
+  'AFTER_SALE_SETTINGS_IDEMPOTENCY_INVALID',
+  'AFTER_SALE_SETTINGS_VERSION_CONFLICT',
   'AVAILABLE_INSUFFICIENT',
   'CART_LINE_CONFLICT',
   'CHECKOUT_CONCURRENT_CONFLICT',
@@ -93,6 +107,8 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const code = errorCode(status);
     const reason = reasonCode(exception, status);
     response.header('x-correlation-id', correlationId);
+    const retryAfter = status === 429 ? retryAfterSeconds(exception) : undefined;
+    if (retryAfter !== undefined) response.header('retry-after', String(retryAfter));
     response.status(status).json({
       code,
       correlation_id: correlationId,

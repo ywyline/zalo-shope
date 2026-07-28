@@ -627,22 +627,70 @@ describe('M5.7 refund API and database invariants', () => {
   it('takes the shared M6 advisory lock before M5 order and payment locks', async () => {
     const { order, payment } = await createSucceededPayment('m62-lock-order', 100_000);
     const afterSaleId = randomUUID();
+    const afterSaleItemId = randomUUID();
+    const brandId = randomUUID();
+    const legacyDecisionId = randomUUID();
+    const productId = randomUUID();
+    const skuId = randomUUID();
     const digest = (value: string) => createHash('sha256').update(value).digest('hex');
     const publicCaseNumber = `ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`;
     await owner.$transaction(async (transaction) => {
       await setAdminContext(transaction);
+      const [category] = await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM categories
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+        ORDER BY id
+        LIMIT 1
+      `;
+      if (!category) throw new Error('M5.7 lock-order category fixture is unavailable');
+      const skuCode = `m57-lock-${skuId.slice(0, 8)}`;
+      await transaction.$executeRaw`INSERT INTO brands (id, store_id, code, updated_at)
+        VALUES (${brandId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${`m57-lock-${brandId.slice(0, 8)}`}, now())`;
+      await transaction.$executeRaw`INSERT INTO products
+        (id, store_id, code, brand_id, main_category_id, updated_at)
+        VALUES (${productId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${`m57-lock-${productId.slice(0, 8)}`}, ${brandId}::uuid,
+          ${category.id}::uuid, now())`;
+      await transaction.$executeRaw`INSERT INTO skus
+        (id, store_id, product_id, code, sale_price_vnd, option_combination_key,
+          option_combination_hash, updated_at)
+        VALUES (${skuId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${productId}::uuid,
+          ${skuCode}, 50000, 'm57-lock-order', ${digest(`sku-${skuId}`)}, now())`;
+      await transaction.$executeRaw`INSERT INTO order_items
+        (store_id, order_id, sku_id, product_id, brand_id, category_id, sku_code,
+          product_name, brand_name, option_snapshot, unit_price_vnd, quantity,
+          subtotal_vnd, payable_vnd)
+        VALUES (${BEAUTY_STORE_ID}::uuid, ${order.id}::uuid, ${skuId}::uuid,
+          ${productId}::uuid, ${brandId}::uuid, ${category.id}::uuid, ${skuCode},
+          'M5.7 lock-order product', 'M5.7 lock-order brand', '{}'::jsonb,
+          50000, 2, 100000, 100000)`;
+      const [orderItem] = await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM order_items
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND order_id = ${order.id}::uuid
+        LIMIT 1
+      `;
+      if (!orderItem) throw new Error('M5.7 lock-order order-item fixture is unavailable');
       await transaction.$executeRaw`INSERT INTO after_sales
         (id, store_id, order_id, member_id, public_case_number, type, status, source,
-          reason_code, policy_snapshot, policy_hash, legacy_policy_review,
-          requested_other_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
-          initiated_by, correlation_id, updated_at)
+          reason_code, legacy_policy_review, requested_item_vnd, requested_other_vnd,
+          requested_total_vnd, idempotency_key_hash, request_hash, initiated_by,
+          correlation_id, updated_at)
         VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${order.id}::uuid,
           ${fixture.memberId}::uuid,
           ${publicCaseNumber},
-          'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'm57-m62-lock-order',
-          '{}'::jsonb, ${digest(`policy-${afterSaleId}`)}, false, 60000, 60000,
+          'REFUND_ONLY', 'REVIEW_REQUIRED', 'ADMIN', 'm57-m62-lock-order', true,
+          50000, 50000, 100000,
           ${digest(`case-key-${afterSaleId}`)}, ${digest(`case-request-${afterSaleId}`)},
           ${fixture.adminId}::uuid, ${`m57-${afterSaleId}`}, now())`;
+      await transaction.$executeRaw`INSERT INTO after_sale_items
+        (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+          requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+          product_name, option_snapshot, unit_price_vnd, updated_at)
+        VALUES (${afterSaleItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${afterSaleId}::uuid, ${order.id}::uuid, ${orderItem.id}::uuid, 1, 50000,
+          ${skuId}::uuid, ${productId}::uuid, ${brandId}::uuid, ${category.id}::uuid,
+          ${skuCode}, 'M5.7 lock-order product', '{}'::jsonb, 50000, now())`;
     });
 
     const advisoryReady = createDeferred<number>();
@@ -677,18 +725,30 @@ describe('M5.7 refund API and database invariants', () => {
         if (!backend) throw new Error('M6 approval backend PID is unavailable');
         approvalPid.resolve(backend.pid);
         await setAdminContext(transaction);
+        await transaction.$executeRaw`UPDATE after_sale_items
+          SET approved_quantity = 1, approved_item_vnd = 50000, updated_at = now()
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleItemId}::uuid`;
         await transaction.$executeRaw`UPDATE after_sales
-          SET approved_other_vnd = 60000, approved_total_vnd = 60000, updated_at = now()
+          SET approved_item_vnd = 50000, approved_other_vnd = 50000,
+            approved_total_vnd = 100000, updated_at = now()
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`;
         await transaction.$executeRaw`INSERT INTO after_sale_order_allocations
           (store_id, after_sale_id, order_id, other_vnd)
-          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid, ${order.id}::uuid, 60000)`;
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid, ${order.id}::uuid, 50000)`;
+        await transaction.$executeRaw`INSERT INTO after_sale_legacy_decisions
+          (id, store_id, after_sale_id, decision, admin_id, reason,
+            policy_basis_ciphertext, payload, payload_hash)
+          VALUES (${legacyDecisionId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${afterSaleId}::uuid, 'APPROVE', ${fixture.adminId}::uuid,
+            'M5.7 advisory lock-order legacy fixture', 'encrypted-test-policy-basis',
+            '{"basis":"m57-lock-order"}'::jsonb, ${digest(`legacy-${legacyDecisionId}`)})`;
         await transaction.$executeRaw`INSERT INTO after_sale_transitions
           (store_id, after_sale_id, from_status, to_status, event, actor_type, actor_id,
             correlation_id)
           VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
-            'PENDING_REVIEW', 'APPROVED', 'APPROVE', 'ADMIN', ${fixture.adminId}::uuid,
-            ${`m57-${randomUUID()}`})`;
+            'REVIEW_REQUIRED', 'APPROVED', 'LEGACY_APPROVE', 'ADMIN',
+            ${fixture.adminId}::uuid,
+            pg_catalog.current_setting('app.correlation_id', true))`;
       },
       { timeout: 15_000 },
     );

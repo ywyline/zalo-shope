@@ -21,6 +21,8 @@ vi.mock('@zalo-shop/database', async () => {
 });
 
 import {
+  ShippingCommandError,
+  SHIPMENT_CANCEL_EVENT_TYPE,
   SHIPMENT_CREATE_EVENT_TYPE,
   SHIPMENT_QUERY_EVENT_TYPE,
   type OutboxMessageRecord,
@@ -117,6 +119,7 @@ describe('shipment outbox handlers', () => {
         wardCode: '20308',
       },
       parcel: { heightCm: 8, lengthCm: 18, weightGrams: 250, widthCm: 12 },
+      purpose: 'ORDER_OUTBOUND',
       serviceCode: 'GHN:53320:2',
       shipmentId,
       status: 'CREATION_PENDING',
@@ -152,7 +155,7 @@ describe('shipment outbox handlers', () => {
     expect(databaseMocks.shipmentCreated).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
-      { fact, operationId, shipmentId },
+      { fact, operationId, purpose: 'ORDER_OUTBOUND', shipmentId },
     );
   });
 
@@ -182,6 +185,7 @@ describe('shipment outbox handlers', () => {
         wardCode: '20308',
       },
       parcel: { heightCm: 8, lengthCm: 18, weightGrams: 250, widthCm: 12 },
+      purpose: 'ORDER_OUTBOUND',
       serviceCode: 'GHN:53320:2',
       shipmentId,
       status: 'CREATION_PENDING',
@@ -219,6 +223,7 @@ describe('shipment outbox handlers', () => {
       operationStatus: 'PENDING',
       operationType: 'QUERY_TRACKING',
       providerShipmentId: 'GHN-TEST0001',
+      purpose: 'AFTER_SALE_RETURN',
       shipmentId,
       status: 'PENDING_PICKUP',
       storeId,
@@ -238,6 +243,7 @@ describe('shipment outbox handlers', () => {
       fact,
       operationId,
       operationType: 'QUERY_TRACKING',
+      purpose: 'AFTER_SALE_RETURN',
       shipmentId,
       source: 'QUERY',
     });
@@ -250,6 +256,7 @@ describe('shipment outbox handlers', () => {
       operationStatus: 'SUCCEEDED',
       operationType: 'QUERY_TRACKING',
       providerShipmentId: 'GHN-TEST0001',
+      purpose: 'ORDER_OUTBOUND',
       shipmentId,
       status: 'OUT_FOR_DELIVERY',
       storeId,
@@ -262,6 +269,77 @@ describe('shipment outbox handlers', () => {
     expect(resolve).not.toHaveBeenCalled();
     expect(databaseMocks.applyFact).not.toHaveBeenCalled();
   });
+
+  it('permanently rejects an orphaned operation without masking it with an impossible update', async () => {
+    databaseMocks.operationRequest.mockRejectedValue(
+      new ShippingCommandError('SHIPMENT_OPERATION_NOT_FOUND'),
+    );
+    const resolve = vi.fn();
+    const handler = new ShipmentProviderOperationHandler(SHIPMENT_CANCEL_EVENT_TYPE, {} as never, {
+      resolve,
+    });
+
+    await expect(handler.handle(message(SHIPMENT_CANCEL_EVENT_TYPE))).rejects.toMatchObject({
+      code: 'SHIPMENT_OPERATION_NOT_FOUND',
+      disposition: 'PERMANENT',
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(databaseMocks.applyFact).not.toHaveBeenCalled();
+    expect(databaseMocks.operationError).not.toHaveBeenCalled();
+  });
+
+  it('retries a cancel operation while the create worker is still writing the provider reference', async () => {
+    databaseMocks.operationRequest.mockRejectedValue(
+      new ShippingCommandError('SHIPMENT_PROVIDER_REFERENCE_PENDING'),
+    );
+    const resolve = vi.fn();
+    const handler = new ShipmentProviderOperationHandler(SHIPMENT_CANCEL_EVENT_TYPE, {} as never, {
+      resolve,
+    });
+
+    await expect(handler.handle(message(SHIPMENT_CANCEL_EVENT_TYPE))).rejects.toMatchObject({
+      code: 'SHIPMENT_PROVIDER_REFERENCE_PENDING',
+      disposition: 'RETRYABLE',
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(databaseMocks.applyFact).not.toHaveBeenCalled();
+    expect(databaseMocks.operationError).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      {
+        errorCode: 'SHIPMENT_PROVIDER_REFERENCE_PENDING',
+        operationId,
+        status: 'PENDING',
+      },
+    );
+  });
+
+  it.each(['AFTER_SALE_RETURN', 'EXCHANGE_OUTBOUND'] as const)(
+    'does not reuse the order-outbound create worker for %s',
+    async (purpose) => {
+      databaseMocks.creationRequest.mockResolvedValue({
+        operationId,
+        operationStatus: 'PENDING',
+        purpose,
+        shipmentId,
+        status: 'CREATION_PENDING',
+        storeId,
+      });
+      const resolve = vi.fn();
+      const handler = new ShipmentCreateRequestedHandler(
+        {} as never,
+        { resolve },
+        { PII_ENCRYPTION_KEY: key },
+      );
+
+      await expect(handler.handle(message(SHIPMENT_CREATE_EVENT_TYPE))).rejects.toMatchObject({
+        code: 'SHIPMENT_CREATE_PURPOSE_UNSUPPORTED',
+        disposition: 'PERMANENT',
+      });
+      expect(resolve).not.toHaveBeenCalled();
+      expect(databaseMocks.shipmentCreated).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects malformed outbox identity before any provider call', async () => {
     const handler = new ShipmentCreateRequestedHandler(

@@ -9,9 +9,11 @@ import {
 } from '@nestjs/common';
 import type { PrismaClient, StoreTransaction } from '@zalo-shop/database';
 import {
+  AfterSalePolicyRuntimeError,
   appendOutboxMessageInTransaction,
   InventoryPrimitiveError,
   reserveInventoryInTransaction,
+  writeCheckoutAfterSalePolicySnapshotsInTransaction,
   withStoreTransaction,
   type InventoryReservationResult,
 } from '@zalo-shop/database';
@@ -245,6 +247,9 @@ export class CheckoutService {
       }
       throw new ConflictException('CHECKOUT_CONCURRENT_CONFLICT');
     } catch (error) {
+      if (error instanceof AfterSalePolicyRuntimeError) {
+        throw new ConflictException(error.code);
+      }
       if (error instanceof InventoryPrimitiveError) throw new ConflictException(error.code);
       if (['40001', '40P01', 'P2028', 'P2034'].includes(databaseErrorCode(error) ?? '')) {
         throw new ConflictException('CHECKOUT_CONCURRENT_CONFLICT');
@@ -633,6 +638,12 @@ export class CheckoutService {
         status: request.payment_method === 'ONLINE' ? 'PENDING_PAYMENT' : 'PENDING_CONFIRMATION',
       },
     });
+    const policyLines: Array<{
+      categoryId: string;
+      orderId: string;
+      orderItemId: string;
+      productId: string;
+    }> = [];
     for (const item of request.items) {
       const sku = skus.find((candidate) => candidate.code === item.sku_code);
       const line = lines.get(item.sku_code);
@@ -641,7 +652,7 @@ export class CheckoutService {
       const productName = this.localized(product.product_localizations, request.locale, 'name');
       const brandName = this.localized(product.brands.brand_localizations, request.locale, 'name');
       const physical = this.requireSkuPhysicalProfile(sku);
-      await transaction.orderItem.create({
+      const orderItem = await transaction.orderItem.create({
         data: {
           brandId: product.brandId,
           brandName,
@@ -666,7 +677,17 @@ export class CheckoutService {
           widthMillimeters: physical.widthMillimeters,
         },
       });
+      policyLines.push({
+        categoryId: product.mainCategoryId,
+        orderId: order.id,
+        orderItemId: orderItem.id,
+        productId: product.id,
+      });
     }
+    await writeCheckoutAfterSalePolicySnapshotsInTransaction(transaction, {
+      lines: policyLines,
+      storeId: member.storeId,
+    });
     const addressPayload = {
       detail_ciphertext: address.detailCiphertext,
       district_code: address.districtCode,

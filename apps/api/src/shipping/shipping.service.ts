@@ -85,6 +85,7 @@ export class ShippingService {
     try {
       preparation = await getShippingQuotePreparation(this.database, context, {
         orderId: input.order_id,
+        purpose: 'ORDER_OUTBOUND',
         providerEnvironment: this.providerEnvironment(),
         ...(input.service_code ? { serviceCode: input.service_code } : {}),
       });
@@ -150,6 +151,7 @@ export class ShippingService {
           idempotencyKey,
           inspectionPolicy: input.inspection_policy,
           orderId,
+          purpose: 'ORDER_OUTBOUND',
           providerEnvironment: this.providerEnvironment(),
           reason: input.reason,
           serviceCode: input.service_code,
@@ -207,7 +209,7 @@ export class ShippingService {
     const shipment = await withStoreTransaction(this.database, context, async (transaction) => {
       const current = await transaction.shipment.findFirst({
         select: { id: true, providerShipmentId: true },
-        where: { id: shipmentId, storeId },
+        where: { id: shipmentId, purpose: 'ORDER_OUTBOUND', storeId },
       });
       if (!current?.providerShipmentId) throw new NotFoundException('Shipment not found');
       await this.admin.writeAudit(transaction, context, {
@@ -254,7 +256,11 @@ export class ShippingService {
     const shipment = await withStoreTransaction(this.database, context, (transaction) =>
       transaction.shipment.findFirst({
         include: { channel: true },
-        where: { id: claims.shipmentId, storeId: claims.storeId },
+        where: {
+          id: claims.shipmentId,
+          purpose: 'ORDER_OUTBOUND',
+          storeId: claims.storeId,
+        },
       }),
     );
     if (!shipment?.providerShipmentId) throw new NotFoundException('Shipment not found');
@@ -296,7 +302,11 @@ export class ShippingService {
       const shipment = await transaction.shipment.findFirst({
         include: { events: { orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }] } },
         orderBy: { createdAt: 'desc' },
-        where: { orderId: order.id, storeId: member.context.storeId },
+        where: {
+          orderId: order.id,
+          purpose: 'ORDER_OUTBOUND',
+          storeId: member.context.storeId,
+        },
       });
       if (!shipment) return { shipment: null };
       return {
@@ -331,7 +341,7 @@ export class ShippingService {
           operations: { orderBy: { createdAt: 'desc' }, take: 1 },
         },
         orderBy: { createdAt: 'desc' },
-        where: { orderId: order.id, storeId },
+        where: { orderId: order.id, purpose: 'ORDER_OUTBOUND', storeId },
       });
       if (!shipment) return { shipment: null };
       return {
@@ -373,6 +383,7 @@ export class ShippingService {
           expectedVersion: input.expected_version,
           idempotencyKey,
           operationType,
+          purpose: 'ORDER_OUTBOUND',
           reason: input.reason,
           shipmentId,
         }),

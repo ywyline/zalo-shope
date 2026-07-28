@@ -7,6 +7,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApiExceptionFilter } from './api-exception.filter';
+import { AfterSaleRateLimitException } from './after-sales/after-sales-rate-limiter';
 
 function harness(correlationId = 'm35-filter-test', requestId?: string) {
   const json = vi.fn();
@@ -48,6 +49,22 @@ describe('API conflict reason envelopes', () => {
     });
   });
 
+  it.each([
+    'AFTER_SALE_POLICY_NOT_READY',
+    'AFTER_SALE_POLICY_SNAPSHOT_INVALID',
+    'AFTER_SALE_SETTINGS_CONCURRENT_CONFLICT',
+    'AFTER_SALE_SETTINGS_IDEMPOTENCY_CONFLICT',
+    'AFTER_SALE_SETTINGS_IDEMPOTENCY_INVALID',
+    'AFTER_SALE_SETTINGS_VERSION_CONFLICT',
+  ])('returns the stable M6.3-A policy conflict %s', (reasonCode) => {
+    const test = harness();
+    new ApiExceptionFilter().catch(new ConflictException(reasonCode), test.host);
+
+    expect(test.json).toHaveBeenCalledWith(
+      expect.objectContaining({ details: { reason_code: reasonCode } }),
+    );
+  });
+
   it('does not echo arbitrary conflict messages', () => {
     const test = harness();
     new ApiExceptionFilter().catch(
@@ -85,6 +102,19 @@ describe('API conflict reason envelopes', () => {
       details: { reason_code: 'VERSION_CONFLICT' },
       message_key: 'error.conflict',
     });
+  });
+
+  it('adds Retry-After only for a bounded after-sale rate-limit exception', () => {
+    const limited = harness();
+    new ApiExceptionFilter().catch(new AfterSaleRateLimitException(37), limited.host);
+    expect(limited.header).toHaveBeenCalledWith('retry-after', '37');
+
+    const unrelated = harness();
+    new ApiExceptionFilter().catch(
+      Object.assign(new ConflictException('Conflict'), { retryAfterSeconds: 37 }),
+      unrelated.host,
+    );
+    expect(unrelated.header).not.toHaveBeenCalledWith('retry-after', expect.anything());
   });
 
   it('maps provider availability failures to the public 503 envelope', () => {

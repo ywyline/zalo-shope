@@ -298,6 +298,9 @@ importers:
       '@prisma/client':
         specifier: 6.19.3
         version: 6.19.3(prisma@6.19.3(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
+      '@zalo-shop/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@zalo-shop/domain':
         specifier: workspace:*
         version: link:../domain

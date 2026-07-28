@@ -26,7 +26,25 @@ const optionalStrongSecret = z.preprocess(
   z.string().min(32).optional(),
 );
 
+const localAfterSaleCursorHmacKey = 'bG9jYWxfYWZ0ZXJfc2FsZV9jdXJzb3JfaG1hY19rZXk';
+const testAfterSaleCursorHmacKey = 'dGVzdF9hZnRlcl9zYWxlX2N1cnNvcl9obWFjX2tleV8x';
+
+function isValidCursorHmacKeyRing(value: string): boolean {
+  const keys = value.split(',');
+  return (
+    keys.length >= 1 &&
+    keys.length <= 3 &&
+    new Set(keys).size === keys.length &&
+    keys.every((key) => {
+      if (!/^[A-Za-z0-9_-]{43,128}$/u.test(key)) return false;
+      const decoded = Buffer.from(key, 'base64url');
+      return decoded.length >= 32 && decoded.toString('base64url') === key;
+    })
+  );
+}
+
 const productionPlaceholderValues = {
+  AFTER_SALE_CURSOR_HMAC_KEYS: [localAfterSaleCursorHmacKey, testAfterSaleCursorHmacKey],
   AUTH_JWT_SECRET: [
     'local_jwt_secret_replace_before_shared_deployment',
     'test_jwt_secret_that_is_at_least_32_characters',
@@ -49,6 +67,9 @@ type ProductionPlaceholderField = keyof typeof productionPlaceholderValues;
 
 function isProductionPlaceholder(field: ProductionPlaceholderField, value: string): boolean {
   const placeholders = productionPlaceholderValues[field] as readonly string[];
+  if (field === 'AFTER_SALE_CURSOR_HMAC_KEYS') {
+    return value.split(',').some((key) => placeholders.includes(key));
+  }
   if (field === 'PII_ENCRYPTION_KEY') {
     const decodedValue = Buffer.from(value, 'base64');
     return placeholders.some((placeholder) =>
@@ -68,6 +89,14 @@ function isProductionPlaceholder(field: ProductionPlaceholderField, value: strin
 const runtimeConfigSchema = z
   .object({
     AUTH_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
+    AFTER_SALE_CURSOR_HMAC_KEYS: z
+      .string()
+      .default(localAfterSaleCursorHmacKey)
+      .refine(
+        isValidCursorHmacKeyRing,
+        'must contain one to three unique comma-separated base64url keys of at least 32 bytes',
+      ),
+    AFTER_SALE_CURSOR_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
     AUTH_JWT_AUDIENCE: z.string().min(3),
     AUTH_JWT_ISSUER: z.string().min(3),
     AUTH_JWT_SECRET: z.string().min(32),

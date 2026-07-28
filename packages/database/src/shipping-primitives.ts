@@ -6,6 +6,7 @@ import {
   ShipmentStateError,
   transitionOrderStatus,
   transitionShipmentStatus,
+  type ShipmentPurpose,
   type ShipmentStatus,
   type StoreContext,
 } from '@zalo-shop/domain';
@@ -23,6 +24,8 @@ export type ShippingCommandErrorCode =
   | 'SHIPMENT_CONFLICT'
   | 'SHIPMENT_FACT_INVALID'
   | 'SHIPMENT_OPERATION_NOT_FOUND'
+  | 'SHIPMENT_PROVIDER_REFERENCE_PENDING'
+  | 'SHIPMENT_PURPOSE_CONFLICT'
   | 'SHIPMENT_PHYSICAL_FACTS_INCOMPLETE'
   | 'SHIPMENT_ADDRESS_FACTS_INVALID'
   | 'WAREHOUSE_FULFILLMENT_PROFILE_UNAVAILABLE';
@@ -54,27 +57,37 @@ export type EncryptedShippingAddress = Readonly<{
   wardCode: string;
 }>;
 
-export type ShippingCreationRequest = Readonly<{
-  channel: ShippingChannelSnapshot;
-  clientOrderCode: string;
-  codAmountVnd: number;
-  destination: EncryptedShippingAddress;
-  inspectionPolicy: 'NO_INSPECTION' | 'ALLOW_INSPECTION_NO_TRY_ON';
-  items: readonly Readonly<{ name: string; quantity: number; skuCode: string }>[];
+type ShippingCreationRequestIdentity = Readonly<{
   operationId: string;
   operationStatus: string;
-  origin: EncryptedShippingAddress;
-  parcel: Readonly<{
-    heightCm: number;
-    lengthCm: number;
-    weightGrams: number;
-    widthCm: number;
-  }>;
-  serviceCode: string;
   shipmentId: string;
   status: ShipmentStatus;
   storeId: string;
 }>;
+
+export type ShippingCreationRequest =
+  | (ShippingCreationRequestIdentity &
+      Readonly<{
+        purpose: Exclude<ShipmentPurpose, 'ORDER_OUTBOUND'>;
+      }>)
+  | (ShippingCreationRequestIdentity &
+      Readonly<{
+        channel: ShippingChannelSnapshot;
+        clientOrderCode: string;
+        codAmountVnd: number;
+        destination: EncryptedShippingAddress;
+        inspectionPolicy: 'NO_INSPECTION' | 'ALLOW_INSPECTION_NO_TRY_ON';
+        items: readonly Readonly<{ name: string; quantity: number; skuCode: string }>[];
+        origin: EncryptedShippingAddress;
+        parcel: Readonly<{
+          heightCm: number;
+          lengthCm: number;
+          weightGrams: number;
+          widthCm: number;
+        }>;
+        purpose: 'ORDER_OUTBOUND';
+        serviceCode: string;
+      }>);
 
 export type ShippingQuotePreparation = Readonly<{
   channel: ShippingChannelSnapshot;
@@ -89,6 +102,7 @@ export type ShippingQuotePreparation = Readonly<{
     weightGrams: number;
     widthCm: number;
   }>;
+  purpose: 'ORDER_OUTBOUND';
   requestHash: string;
   serviceCode: string;
   storeId: string;
@@ -268,6 +282,12 @@ function commandResult(
   };
 }
 
+function assertOrderOutboundPurpose(purpose: ShipmentPurpose): asserts purpose is 'ORDER_OUTBOUND' {
+  if (purpose !== 'ORDER_OUTBOUND') {
+    throw new ShippingCommandError('SHIPMENT_PURPOSE_CONFLICT');
+  }
+}
+
 function physicalParcel(
   items: readonly Readonly<{
     heightMillimeters: number | null;
@@ -321,11 +341,13 @@ export function createShipmentCommand(
     idempotencyKey: string;
     inspectionPolicy: 'NO_INSPECTION' | 'ALLOW_INSPECTION_NO_TRY_ON';
     orderId: string;
+    purpose: 'ORDER_OUTBOUND';
     providerEnvironment: 'SANDBOX' | 'PRODUCTION';
     reason: string;
     serviceCode: string;
   }>,
 ): Promise<ShipmentCommandResult> {
+  assertOrderOutboundPurpose(input.purpose);
   return withStoreTransaction(
     client,
     context,
@@ -379,7 +401,11 @@ export function createShipmentCommand(
           throw new ShippingCommandError('SHIPMENT_CONFLICT');
         }
         const existingShipment = await transaction.shipment.findFirst({
-          where: { id: existingOperation.shipmentId, storeId: context.storeId },
+          where: {
+            id: existingOperation.shipmentId,
+            purpose: input.purpose,
+            storeId: context.storeId,
+          },
         });
         if (!existingShipment) throw new ShippingCommandError('SHIPMENT_CONFLICT');
         return commandResult(existingShipment, existingOperation, true);
@@ -406,6 +432,7 @@ export function createShipmentCommand(
       const active = await transaction.shipment.findFirst({
         where: {
           orderId: order.id,
+          purpose: input.purpose,
           status: { notIn: ['DELIVERED', 'RETURNED', 'CANCELLED'] },
           storeId: context.storeId,
         },
@@ -458,6 +485,7 @@ export function createShipmentCommand(
             width_cm: parcel.widthCm,
           },
           publicShipmentNumber,
+          purpose: input.purpose,
           serviceCode: input.serviceCode,
           status: 'CREATION_PENDING',
           storeId: context.storeId,
@@ -497,6 +525,7 @@ export function createShipmentCommand(
           afterData: {
             operation_id: operation.id,
             order_id: order.id,
+            purpose: shipment.purpose,
             shipment_id: shipment.id,
             status: shipment.status,
           },
@@ -518,10 +547,12 @@ export function getShippingQuotePreparation(
   context: StoreContext,
   input: Readonly<{
     orderId: string;
+    purpose: 'ORDER_OUTBOUND';
     providerEnvironment: 'SANDBOX' | 'PRODUCTION';
     serviceCode?: string;
   }>,
 ): Promise<ShippingQuotePreparation> {
+  assertOrderOutboundPurpose(input.purpose);
   return withStoreTransaction(client, context, async (transaction) => {
     const order = await transaction.order.findFirst({
       include: {
@@ -588,6 +619,7 @@ export function getShippingQuotePreparation(
       orderVersion: order.version,
       origin,
       parcel,
+      purpose: input.purpose,
       requestHash,
       serviceCode,
       storeId: context.storeId,
@@ -713,6 +745,16 @@ export function getShipmentCreationRequest(
     });
     const operation = shipment?.operations[0];
     if (!shipment || !operation) throw new ShippingCommandError('SHIPMENT_OPERATION_NOT_FOUND');
+    if (shipment.purpose !== 'ORDER_OUTBOUND') {
+      return {
+        operationId: operation.id,
+        operationStatus: operation.status,
+        purpose: shipment.purpose,
+        shipmentId: shipment.id,
+        status: shipment.status,
+        storeId: context.storeId,
+      };
+    }
     const parcel = parcelSnapshot(shipment.parcelSnapshot);
     return {
       channel: channelSnapshot(shipment.channel),
@@ -734,6 +776,7 @@ export function getShipmentCreationRequest(
         weightGrams: parcel.weightGrams,
         widthCm: parcel.widthCm,
       },
+      purpose: shipment.purpose,
       serviceCode: shipment.serviceCode,
       shipmentId: shipment.id,
       status: shipment.status,
@@ -791,12 +834,16 @@ export function applyShippingProviderFact(
     fact: ShippingProviderFactInput;
     operationId: string;
     operationType: 'CANCEL' | 'CREATE' | 'QUERY_TRACKING';
+    purpose?: ShipmentPurpose;
     shipmentId: string;
     source: 'QUERY' | 'RECONCILIATION';
   }>,
 ): Promise<ShipmentCommandResult> {
   return withStoreTransaction(client, context, async (transaction) => {
     const shipment = await lockShipmentAndOrder(transaction, context.storeId, input.shipmentId);
+    if (input.purpose !== undefined && shipment.purpose !== input.purpose) {
+      throw new ShippingCommandError('SHIPMENT_PURPOSE_CONFLICT');
+    }
     const operation = await transaction.shippingOperation.findFirst({
       where: { id: input.operationId, shipmentId: shipment.id, storeId: context.storeId },
     });
@@ -883,7 +930,7 @@ export function applyShippingProviderFact(
     }
     let currentOrderStatus = shipment.order.status;
     let transitionCreatedAt = new Date();
-    for (const event of orderEventsForShipmentStatus(nextStatus)) {
+    for (const event of orderEventsForShipmentStatus(shipment.purpose, nextStatus)) {
       if (event === 'SHIP' && ['SHIPPED', 'DELIVERED', 'COMPLETED'].includes(currentOrderStatus)) {
         continue;
       }
@@ -929,12 +976,15 @@ export function recordShipmentCreated(
   input: Readonly<{
     fact: ShippingProviderFactInput;
     operationId: string;
+    purpose: 'ORDER_OUTBOUND';
     shipmentId: string;
   }>,
 ): Promise<ShipmentCommandResult> {
+  assertOrderOutboundPurpose(input.purpose);
   return applyShippingProviderFact(client, context, {
     ...input,
     operationType: 'CREATE',
+    purpose: input.purpose,
     source: 'QUERY',
   });
 }
@@ -946,12 +996,17 @@ export function requestShipmentOperation(
     expectedVersion: number;
     idempotencyKey: string;
     operationType: 'CANCEL' | 'QUERY_TRACKING';
+    purpose?: ShipmentPurpose;
     reason: string;
     shipmentId: string;
   }>,
 ): Promise<ShipmentCommandResult> {
   return withStoreTransaction(client, context, async (transaction) => {
     const shipment = await lockShipmentAndOrder(transaction, context.storeId, input.shipmentId);
+    const expectedPurpose = input.purpose ?? 'ORDER_OUTBOUND';
+    if (shipment.purpose !== expectedPurpose) {
+      throw new ShippingCommandError('SHIPMENT_PURPOSE_CONFLICT');
+    }
     const requestHash = digest({
       expected_version: input.expectedVersion,
       operation_type: input.operationType,
@@ -1030,6 +1085,7 @@ export function requestShipmentOperation(
         afterData: {
           operation_id: operation.id,
           operation_type: input.operationType,
+          purpose: shipment.purpose,
           shipment_id: shipment.id,
         },
         correlationId: context.correlationId,
@@ -1059,6 +1115,7 @@ export function getShipmentProviderOperationRequest(
     operationStatus: string;
     operationType: 'CANCEL' | 'QUERY_TRACKING';
     providerShipmentId: string;
+    purpose: ShipmentPurpose;
     shipmentId: string;
     status: ShipmentStatus;
     storeId: string;
@@ -1074,8 +1131,14 @@ export function getShipmentProviderOperationRequest(
         storeId: context.storeId,
       },
     });
-    if (!operation?.shipment?.providerShipmentId) {
+    if (!operation) {
       throw new ShippingCommandError('SHIPMENT_OPERATION_NOT_FOUND');
+    }
+    if (!operation.shipment) {
+      throw new ShippingCommandError('SHIPMENT_OPERATION_NOT_FOUND');
+    }
+    if (!operation.shipment.providerShipmentId) {
+      throw new ShippingCommandError('SHIPMENT_PROVIDER_REFERENCE_PENDING');
     }
     return {
       channel: channelSnapshot(operation.channel),
@@ -1083,6 +1146,7 @@ export function getShipmentProviderOperationRequest(
       operationStatus: operation.status,
       operationType: operation.operationType as 'CANCEL' | 'QUERY_TRACKING',
       providerShipmentId: operation.shipment.providerShipmentId,
+      purpose: operation.shipment.purpose,
       shipmentId: operation.shipment.id,
       status: operation.shipment.status,
       storeId: context.storeId,

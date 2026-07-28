@@ -43,7 +43,8 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'corepack pnpm --filter @zalo-shop/api dev',
+      command: 'node ../../node_modules/tsx/dist/cli.mjs src/main.ts',
+      cwd: 'apps/api',
       env: { ...webServerEnvironment, API_PORT: e2eApiPort },
       name: 'API',
       reuseExistingServer: false,
@@ -53,8 +54,8 @@ export default defineConfig({
       url: `http://127.0.0.1:${e2eApiPort}/health/live`,
     },
     {
-      command:
-        'corepack pnpm --filter @zalo-shop/admin-web exec vite --host 127.0.0.1 --port 5173 --strictPort',
+      command: 'node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173 --strictPort',
+      cwd: 'apps/admin-web',
       env: {
         ...webServerEnvironment,
         VITE_API_BASE_URL: '/api',
@@ -68,7 +69,8 @@ export default defineConfig({
       url: 'http://127.0.0.1:5173/',
     },
     {
-      command: `corepack pnpm --filter @zalo-shop/mini-app exec vite --host 127.0.0.1 --port ${e2eBeautyMiniAppPort} --strictPort`,
+      command: `node node_modules/vite/bin/vite.js --host 127.0.0.1 --port ${e2eBeautyMiniAppPort} --strictPort`,
+      cwd: 'apps/mini-app',
       env: {
         ...webServerEnvironment,
         VITE_API_BASE_URL: '/api',
@@ -84,8 +86,8 @@ export default defineConfig({
       url: `http://127.0.0.1:${e2eBeautyMiniAppPort}/`,
     },
     {
-      command:
-        'corepack pnpm --filter @zalo-shop/mini-app exec vite --host 127.0.0.1 --port 5175 --strictPort',
+      command: 'node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5175 --strictPort',
+      cwd: 'apps/mini-app',
       env: {
         ...webServerEnvironment,
         VITE_API_BASE_URL: '/api',

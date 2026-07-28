@@ -7,18 +7,242 @@ const codeSchema = z
   .min(1)
   .max(64)
   .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
-const opaqueCursorSchema = z
+export const afterSaleCursorSchema = z
   .string()
   .min(23)
   .max(512)
   .regex(/^c1_[A-Za-z0-9_-]{20,509}$/);
 const paginationSchema = z.object({
-  cursor: opaqueCursorSchema.optional(),
+  cursor: afterSaleCursorSchema.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
+export const afterSaleCursorScopeSchema = z
+  .object({
+    expires_at_epoch_seconds: z.number().int().positive(),
+    filters_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    resource: z.enum([
+      'MEMBER_AFTER_SALES',
+      'ADMIN_AFTER_SALES',
+      'ADMIN_AFTER_SALE_POLICIES',
+      'ADMIN_AFTER_SALE_POLICY_VERSIONS',
+    ]),
+    sort_id: uuidSchema,
+    sort_key: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/),
+    store_id: uuidSchema,
+    subject_id: uuidSchema,
+    subject_type: z.enum(['MEMBER', 'ADMIN']),
+    version: z.literal(1),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const memberResource = input.resource === 'MEMBER_AFTER_SALES';
+    if (memberResource !== (input.subject_type === 'MEMBER')) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Cursor resource does not match its subject type',
+        path: ['subject_type'],
+      });
+    }
+  });
+
+export const afterSalePublicNumberSchema = z.string().regex(/^ASC-[A-Z0-9]{16,32}$/);
+export const afterSaleReasonDetailResponseSchema = z.string().min(10).max(2_000).nullable();
+
+export const AFTER_SALE_PUBLIC_CONFLICT_CODES = [
+  'AFTER_SALE_STATE_CONFLICT',
+  'AFTER_SALE_VERSION_CONFLICT',
+  'AFTER_SALE_IDEMPOTENCY_CONFLICT',
+  'AFTER_SALE_QUANTITY_EXCEEDS_AVAILABLE',
+  'AFTER_SALE_POLICY_MISMATCH',
+  'AFTER_SALE_RETURN_WINDOW_CLOSED',
+  'AFTER_SALE_REFUND_EXCEEDS_APPROVED',
+] as const;
+export const afterSalePublicConflictCodeSchema = z.enum(AFTER_SALE_PUBLIC_CONFLICT_CODES);
+
+export const AFTER_SALE_RATE_LIMIT_POLICY = {
+  admin_read: { limit: 120, scope: 'store_id:admin_id', window_seconds: 60 },
+  admin_write: { limit: 30, scope: 'store_id:admin_id', window_seconds: 60 },
+  member_read: { limit: 60, scope: 'store_id:member_id', window_seconds: 60 },
+  member_write: { limit: 10, scope: 'store_id:member_id', window_seconds: 60 },
+} as const;
+
 export const afterSaleTypeSchema = z.enum(AFTER_SALE_TYPES);
 export const afterSaleStatusSchema = z.enum(AFTER_SALE_STATUSES);
+const afterSaleWireDateTimeSchema = z.string().datetime({ offset: true });
+const afterSaleMoneyVndSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+const afterSaleTimelineEventSchema = z.enum([
+  'APPROVE',
+  'REJECT',
+  'CANCEL',
+  'START_RETURN',
+  'RETURN_EXPIRED',
+  'RETURN_SHIPPED',
+  'RETURN_RECEIVED',
+  'ACCEPT_INSPECTION',
+  'REJECT_INSPECTION',
+  'QUEUE_REFUND',
+  'REFUND_REQUESTED',
+  'REFUND_SUCCEEDED',
+  'REFUND_FAILED',
+  'REFUND_CANCELLED',
+  'CONVERT_EXCHANGE_TO_REFUND',
+  'EXCHANGE_SHIPPED',
+  'EXCHANGE_DELIVERED',
+  'REQUIRE_REVIEW',
+  'RESUME_REVIEW',
+  'REJECT_REVIEW',
+  'LEGACY_APPROVE',
+  'LEGACY_REJECT',
+  'COMPLETE',
+]);
+
+export const afterSaleItemResponseSchema = z
+  .object({
+    accepted_quantity: z.number().int().nonnegative(),
+    approved_quantity: z.number().int().nonnegative(),
+    order_item_id: uuidSchema,
+    received_quantity: z.number().int().nonnegative(),
+    rejected_quantity: z.number().int().nonnegative(),
+    replacement_sku_id: uuidSchema.nullable().optional(),
+    requested_quantity: z.number().int().positive(),
+    restockable_quantity: z.number().int().nonnegative(),
+    restored_quantity: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const afterSaleEvidenceResponseSchema = z
+  .object({
+    access_expires_at: afterSaleWireDateTimeSchema.nullable(),
+    evidence_id: uuidSchema,
+    status: z.enum(['PENDING', 'READY', 'UNAVAILABLE']),
+    version: z.number().int().positive(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if ((input.status === 'READY') !== (input.access_expires_at !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only ready evidence has an access expiry',
+        path: ['access_expires_at'],
+      });
+    }
+  });
+
+export const afterSaleTimelineResponseSchema = z
+  .object({
+    created_at: afterSaleWireDateTimeSchema,
+    event: afterSaleTimelineEventSchema,
+    status: afterSaleStatusSchema,
+  })
+  .strict();
+
+export const afterSaleSettlementResponseSchema = z
+  .object({
+    amount_vnd: afterSaleMoneyVndSchema,
+    created_at: afterSaleWireDateTimeSchema,
+    method: z.enum(['ONLINE_ORIGINAL', 'COD_OFFLINE', 'NO_PAYOUT']),
+    public_number: z.string().regex(/^AST-[A-Z0-9]{16,32}$/),
+    refund_public_number: z.string().max(64).nullable().optional(),
+    status: z.enum([
+      'PENDING',
+      'PROCESSING',
+      'SUCCEEDED',
+      'FAILED',
+      'REVIEW_REQUIRED',
+      'CANCELLED',
+    ]),
+    updated_at: afterSaleWireDateTimeSchema,
+  })
+  .strict();
+
+export const afterSaleReturnShipmentResponseSchema = z
+  .object({
+    carrier_name: z.string().min(2).max(160),
+    masked_tracking_number: z.string().min(2).max(160),
+    status: z.enum(['SUBMITTED', 'IN_TRANSIT', 'DELIVERED', 'REJECTED', 'UNKNOWN']),
+    submitted_at: afterSaleWireDateTimeSchema,
+  })
+  .strict();
+
+export const afterSalePolicySnapshotResponseSchema = z
+  .object({
+    buyer_instructions: z.string().max(2_000).nullable(),
+    legacy_policy_review: z.boolean(),
+    name: z.string().max(160).nullable(),
+    policy_code: codeSchema.nullable(),
+    policy_version_number: z.number().int().positive().nullable(),
+    resolved_locale: z.enum(['vi', 'zh', 'en']).nullable(),
+    summary: z.string().max(1_000).nullable(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const fields = [
+      input.buyer_instructions,
+      input.name,
+      input.policy_code,
+      input.policy_version_number,
+      input.resolved_locale,
+      input.summary,
+    ];
+    const allNull = fields.every((value) => value === null);
+    const allPresent = fields.every((value) => value !== null);
+    if ((input.legacy_policy_review && !allNull) || (!input.legacy_policy_review && !allPresent)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Policy snapshot fields must match the legacy flag',
+        path: ['legacy_policy_review'],
+      });
+    }
+  });
+
+export const afterSaleResponseSchema = z
+  .object({
+    approved_refund_vnd: afterSaleMoneyVndSchema,
+    created_at: afterSaleWireDateTimeSchema,
+    currency: z.literal('VND'),
+    evidence: z.array(afterSaleEvidenceResponseSchema).max(6),
+    evidence_count: z.number().int().min(0).max(6).optional(),
+    id: uuidSchema,
+    items: z.array(afterSaleItemResponseSchema),
+    order_id: uuidSchema,
+    policy_snapshot: afterSalePolicySnapshotResponseSchema,
+    public_number: afterSalePublicNumberSchema,
+    reason_code: codeSchema,
+    reason_detail: afterSaleReasonDetailResponseSchema,
+    return_deadline_at: afterSaleWireDateTimeSchema.nullable(),
+    return_shipments: z.array(afterSaleReturnShipmentResponseSchema),
+    settlements: z.array(afterSaleSettlementResponseSchema),
+    status: afterSaleStatusSchema,
+    timeline: z.array(afterSaleTimelineResponseSchema),
+    type: afterSaleTypeSchema,
+    updated_at: afterSaleWireDateTimeSchema,
+    version: z.number().int().positive(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (!input.policy_snapshot.legacy_policy_review && input.reason_detail === null) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only legacy after-sales may omit the reason detail',
+        path: ['reason_detail'],
+      });
+    }
+    if (input.evidence_count !== undefined && input.evidence_count !== input.evidence.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Evidence count must match the projected evidence',
+        path: ['evidence_count'],
+      });
+    }
+  });
+
+export const afterSalePageResponseSchema = z
+  .object({
+    items: z.array(afterSaleResponseSchema),
+    next_cursor: afterSaleCursorSchema.nullable(),
+  })
+  .strict();
 export const afterSaleIdParamsSchema = z.object({ afterSaleId: uuidSchema }).strict();
 export const afterSaleEvidenceIdParamsSchema = z
   .object({ afterSaleId: uuidSchema, evidenceId: uuidSchema })
@@ -35,6 +259,20 @@ export const afterSalePolicyVersionParamsSchema = z
   .object({ policyCode: codeSchema, versionNumber: z.coerce.number().int().positive() })
   .strict();
 export const afterSaleAdminStoreQuerySchema = z.object({ store_id: uuidSchema }).strict();
+export const afterSaleAdminReadQuerySchema = z
+  .object({ locale: z.enum(['vi', 'zh', 'en']).optional(), store_id: uuidSchema })
+  .strict();
+export const afterSaleMemberReadQuerySchema = z.object({}).strict();
+export const afterSaleStoreCodeHeaderSchema = z
+  .string()
+  .min(2)
+  .max(64)
+  .regex(/^[a-z][a-z0-9-]*$/u);
+export const afterSaleIdempotencyKeySchema = z
+  .string()
+  .min(16)
+  .max(128)
+  .regex(/^[!-~]+$/);
 
 export const afterSaleListQuerySchema = paginationSchema
   .extend({ status: afterSaleStatusSchema.optional(), type: afterSaleTypeSchema.optional() })
@@ -42,6 +280,7 @@ export const afterSaleListQuerySchema = paginationSchema
 
 export const adminAfterSaleListQuerySchema = paginationSchema
   .extend({
+    locale: z.enum(['vi', 'zh', 'en']).optional(),
     member_id: uuidSchema.optional(),
     order_id: uuidSchema.optional(),
     status: afterSaleStatusSchema.optional(),
@@ -159,68 +398,47 @@ export const afterSaleReturnShipmentRequestSchema = z
   })
   .strict();
 
-export const afterSaleReviewRequestSchema = z
+const afterSaleApprovedItemSchema = z
   .object({
-    confirmation_code: z.enum(['APPROVE_AFTER_SALE', 'REJECT_AFTER_SALE']),
-    decision: z.enum(['APPROVE', 'REJECT']),
-    expected_version: z.number().int().positive(),
-    reason: z.string().trim().min(10).max(500),
-  })
-  .strict()
-  .refine(
-    (input) =>
-      (input.decision === 'APPROVE' && input.confirmation_code === 'APPROVE_AFTER_SALE') ||
-      (input.decision === 'REJECT' && input.confirmation_code === 'REJECT_AFTER_SALE'),
-    { message: 'Confirmation does not match the decision', path: ['confirmation_code'] },
-  );
-
-const inspectionDispositionSchema = z
-  .object({
-    disposition: z.enum(['RESTOCK_SELLABLE', 'QUARANTINE', 'SCRAP', 'RETURN_TO_MEMBER']),
-    quantity: z.number().int().positive().max(1_000),
+    approved_quantity: z.number().int().min(0).max(1_000),
+    order_item_id: uuidSchema,
   })
   .strict();
 
-const inspectionItemSchema = z
-  .object({
-    dispositions: z.array(inspectionDispositionSchema).min(1).max(4),
-    order_item_id: uuidSchema,
-    received_quantity: z.number().int().positive().max(1_000),
-  })
-  .strict()
-  .superRefine((item, context) => {
-    const dispositions = item.dispositions.map((entry) => entry.disposition);
-    if (new Set(dispositions).size !== dispositions.length) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Dispositions must be unique',
-        path: ['dispositions'],
-      });
-    }
-    const allocatedQuantity = item.dispositions.reduce((sum, entry) => sum + entry.quantity, 0);
-    if (!Number.isSafeInteger(allocatedQuantity) || allocatedQuantity !== item.received_quantity) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Disposition quantities must equal the received quantity',
-        path: ['dispositions'],
-      });
-    }
-  });
-
-export const afterSaleInspectionRequestSchema = z
-  .object({
-    confirmation_code: z.literal('INSPECT_RETURN'),
-    expected_version: z.number().int().positive(),
-    items: z.array(inspectionItemSchema).min(1).max(20),
-    reason: z.string().trim().min(10).max(500),
-  })
-  .strict()
+export const afterSaleReviewRequestSchema = z
+  .discriminatedUnion('decision', [
+    z
+      .object({
+        confirmation_code: z.literal('APPROVE_AFTER_SALE'),
+        decision: z.literal('APPROVE'),
+        expected_version: z.number().int().positive(),
+        items: z.array(afterSaleApprovedItemSchema).min(1).max(20),
+        reason: z.string().trim().min(10).max(500),
+      })
+      .strict(),
+    z
+      .object({
+        confirmation_code: z.literal('REJECT_AFTER_SALE'),
+        decision: z.literal('REJECT'),
+        expected_version: z.number().int().positive(),
+        reason: z.string().trim().min(10).max(500),
+      })
+      .strict(),
+  ])
   .superRefine((input, context) => {
+    if (input.decision !== 'APPROVE') return;
     const ids = input.items.map((item) => item.order_item_id);
     if (new Set(ids).size !== ids.length) {
       context.addIssue({
         code: 'custom',
-        message: 'Inspection items must be unique',
+        message: 'Approved items must be unique',
+        path: ['items'],
+      });
+    }
+    if (!input.items.some((item) => item.approved_quantity > 0)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'At least one item quantity must be approved',
         path: ['items'],
       });
     }
@@ -328,15 +546,15 @@ const policyConditionRulesSchema = z
     }
   });
 
-export const afterSalePolicyDraftSchema = z
+const afterSalePolicyContentObjectSchema = z
   .object({
     allowed_types: z.array(afterSaleTypeSchema).min(1).max(4),
     category_id: uuidSchema.nullable(),
     condition_rules: policyConditionRulesSchema,
     damaged_exception: z.boolean(),
+    defect_exception: z.boolean(),
     exchange_attribute_code: codeSchema.nullable(),
     exchange_same_product_only: z.literal(true),
-    expected_version: z.number().int().min(0),
     hygiene_restricted: z.boolean(),
     localizations: z.array(policyLocalizationSchema).length(3),
     product_ids: z.array(uuidSchema).max(100),
@@ -344,40 +562,53 @@ export const afterSalePolicyDraftSchema = z
     return_shipping_payer: z.enum(['BUYER', 'MERCHANT', 'CONDITIONAL']),
     return_window_days: z.number().int().min(1).max(60),
     unopened_required: z.boolean(),
+    wrong_item_exception: z.boolean(),
   })
-  .strict()
-  .superRefine((input, context) => {
-    if (new Set(input.allowed_types).size !== input.allowed_types.length) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Allowed types must be unique',
-        path: ['allowed_types'],
-      });
-    }
-    if (new Set(input.product_ids).size !== input.product_ids.length) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Product IDs must be unique',
-        path: ['product_ids'],
-      });
-    }
-    const locales = input.localizations.map((item) => item.locale);
-    if (new Set(locales).size !== 3 || !locales.includes('vi')) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Exactly vi, zh and en are required',
-        path: ['localizations'],
-      });
-    }
-    const allowsExchange = input.allowed_types.includes('EXCHANGE');
-    if (allowsExchange !== (input.exchange_attribute_code !== null)) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Exchange policies require exactly one allowed attribute code',
-        path: ['exchange_attribute_code'],
-      });
-    }
-  });
+  .strict();
+
+function validateAfterSalePolicyContent(
+  input: z.infer<typeof afterSalePolicyContentObjectSchema>,
+  context: z.RefinementCtx,
+) {
+  if (new Set(input.allowed_types).size !== input.allowed_types.length) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Allowed types must be unique',
+      path: ['allowed_types'],
+    });
+  }
+  if (new Set(input.product_ids).size !== input.product_ids.length) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Product IDs must be unique',
+      path: ['product_ids'],
+    });
+  }
+  const locales = input.localizations.map((item) => item.locale);
+  if (new Set(locales).size !== 3 || !locales.includes('vi')) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Exactly vi, zh and en are required',
+      path: ['localizations'],
+    });
+  }
+  const allowsExchange = input.allowed_types.includes('EXCHANGE');
+  if (allowsExchange !== (input.exchange_attribute_code !== null)) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Exchange policies require exactly one allowed attribute code',
+      path: ['exchange_attribute_code'],
+    });
+  }
+}
+
+export const afterSalePolicyContentSchema = afterSalePolicyContentObjectSchema.superRefine(
+  validateAfterSalePolicyContent,
+);
+
+export const afterSalePolicyDraftSchema = afterSalePolicyContentObjectSchema
+  .extend({ expected_version: z.number().int().min(0) })
+  .superRefine(validateAfterSalePolicyContent);
 
 export const afterSalePolicyPublishSchema = z
   .object({
@@ -414,3 +645,9 @@ export const afterSaleSettingsEnforcementSchema = z
   );
 
 export type AfterSaleCreateRequest = z.infer<typeof afterSaleCreateRequestSchema>;
+export type AfterSaleListQuery = z.infer<typeof afterSaleListQuerySchema>;
+export type AdminAfterSaleListQuery = z.infer<typeof adminAfterSaleListQuerySchema>;
+export type AfterSaleAdminReadQuery = z.infer<typeof afterSaleAdminReadQuerySchema>;
+export type AfterSaleCursorScope = z.infer<typeof afterSaleCursorScopeSchema>;
+export type AfterSaleResponse = z.infer<typeof afterSaleResponseSchema>;
+export type AfterSalePageResponse = z.infer<typeof afterSalePageResponseSchema>;

@@ -18,11 +18,20 @@ describe('M5 shipment state machine', () => {
     );
   });
 
-  it('does not map refusal, return or exception to an order completion event', () => {
-    expect(orderEventsForShipmentStatus('IN_TRANSIT')).toEqual(['SHIP']);
-    expect(orderEventsForShipmentStatus('DELIVERED')).toEqual(['SHIP', 'DELIVER']);
-    expect(orderEventsForShipmentStatus('REFUSED')).toEqual([]);
-    expect(orderEventsForShipmentStatus('RETURNED')).toEqual([]);
-    expect(orderEventsForShipmentStatus('EXCEPTION')).toEqual([]);
+  it('maps only order outbound provider facts to original-order events', () => {
+    expect(orderEventsForShipmentStatus('ORDER_OUTBOUND', 'IN_TRANSIT')).toEqual(['SHIP']);
+    expect(orderEventsForShipmentStatus('ORDER_OUTBOUND', 'DELIVERED')).toEqual([
+      'SHIP',
+      'DELIVER',
+    ]);
+    expect(orderEventsForShipmentStatus('ORDER_OUTBOUND', 'REFUSED')).toEqual([]);
+    expect(orderEventsForShipmentStatus('ORDER_OUTBOUND', 'RETURNED')).toEqual([]);
+    expect(orderEventsForShipmentStatus('ORDER_OUTBOUND', 'EXCEPTION')).toEqual([]);
+
+    for (const purpose of ['AFTER_SALE_RETURN', 'EXCHANGE_OUTBOUND'] as const) {
+      expect(orderEventsForShipmentStatus(purpose, 'IN_TRANSIT')).toEqual([]);
+      expect(orderEventsForShipmentStatus(purpose, 'OUT_FOR_DELIVERY')).toEqual([]);
+      expect(orderEventsForShipmentStatus(purpose, 'DELIVERED')).toEqual([]);
+    }
   });
 });

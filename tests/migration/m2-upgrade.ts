@@ -65,6 +65,12 @@ const M6_MIGRATIONS = [
   '20260727118000_m62_capacity_allocation_expression_fix',
   '20260727119000_m62_order_lock_order_closeout',
   '20260727120000_m62_capacity_scope_and_approval_occupancy_fix',
+  '20260728100000_m63_policy_snapshot_category_resolution',
+  '20260728101000_m63_policy_settings_rows',
+  '20260728102000_m63_policy_settings_lock',
+  '20260728103000_m63_policy_settings_provisioning',
+  '20260728104000_m63_b0_after_sale_contract_guards',
+  '20260728110000_m63_b1_after_sale_admin_read_index',
 ] as const;
 
 type MigrationRecord = {
@@ -77,6 +83,17 @@ type MigrationRecord = {
 };
 
 type FingerprintRecord = { fingerprint: string };
+
+type IndexShapeRecord = {
+  access_method: string;
+  has_predicate: boolean;
+  index_keys: string[];
+  is_ready: boolean;
+  is_unique: boolean;
+  is_valid: boolean;
+  key_attribute_count: number;
+  total_attribute_count: number;
+};
 
 type OwnerPreflightRecord = {
   can_create_database: boolean;
@@ -362,6 +379,94 @@ async function fixtureFingerprint(
   return fingerprint;
 }
 
+async function assertIndexShape(
+  client: PrismaClientType,
+  input: Readonly<{
+    expectedKeys: readonly string[];
+    expectedUnique: boolean;
+    indexName: string;
+    shouldExist?: boolean;
+    tableName: string;
+  }>,
+): Promise<void> {
+  const records = await client.$queryRaw<IndexShapeRecord[]>`
+    SELECT
+      access_method.amname::text AS access_method,
+      index_record.indpred IS NOT NULL AS has_predicate,
+      index_record.indisready AS is_ready,
+      index_record.indisunique AS is_unique,
+      index_record.indisvalid AS is_valid,
+      index_record.indnkeyatts AS key_attribute_count,
+      index_record.indnatts AS total_attribute_count,
+      ARRAY(
+        SELECT
+          pg_catalog.pg_get_indexdef(
+            index_record.indexrelid,
+            key_option.key_number::integer,
+            true
+          ) || CASE
+            WHEN (key_option.option_bits::integer & 1) = 1 THEN ' DESC'
+            ELSE ''
+          END
+        FROM pg_catalog.unnest(index_record.indoption::smallint[])
+          WITH ORDINALITY AS key_option(option_bits, key_number)
+        ORDER BY key_option.key_number
+      ) AS index_keys
+    FROM pg_catalog.pg_index index_record
+    JOIN pg_catalog.pg_class index_relation
+      ON index_relation.oid = index_record.indexrelid
+    JOIN pg_catalog.pg_am access_method
+      ON access_method.oid = index_relation.relam
+    JOIN pg_catalog.pg_class table_relation
+      ON table_relation.oid = index_record.indrelid
+    JOIN pg_catalog.pg_namespace namespace
+      ON namespace.oid = table_relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND table_relation.relname = ${input.tableName}
+      AND index_relation.relname = ${input.indexName}
+  `;
+  const shouldExist = input.shouldExist ?? true;
+  if (!shouldExist) {
+    if (records.length !== 0) fail(`index still exists after rollback: ${input.indexName}`);
+    return;
+  }
+  const record = records[0];
+  if (
+    records.length !== 1 ||
+    !record ||
+    record.access_method !== 'btree' ||
+    record.has_predicate ||
+    !record.is_ready ||
+    !record.is_valid ||
+    record.is_unique !== input.expectedUnique ||
+    record.key_attribute_count !== input.expectedKeys.length ||
+    record.total_attribute_count !== record.key_attribute_count ||
+    record.index_keys.length !== input.expectedKeys.length ||
+    record.index_keys.some((key, index) => key !== input.expectedKeys[index])
+  ) {
+    fail(
+      `index shape differs from the approved migration: ${input.indexName}; ` +
+        `expected keys=${JSON.stringify(input.expectedKeys)}, unique=${String(input.expectedUnique)}, ` +
+        `btree=true, predicate=false, include=false; received=${JSON.stringify(record ?? null)}`,
+    );
+  }
+}
+
+async function assertM63B1ReadIndexes(client: PrismaClientType): Promise<void> {
+  await assertIndexShape(client, {
+    expectedKeys: ['store_id', 'updated_at DESC', 'id DESC'],
+    expectedUnique: false,
+    indexName: 'after_sales_store_id_updated_at_id_idx',
+    tableName: 'after_sales',
+  });
+  await assertIndexShape(client, {
+    expectedKeys: ['store_id', 'settlement_id'],
+    expectedUnique: true,
+    indexName: 'after_sale_refunds_store_id_settlement_id_key',
+    tableName: 'after_sale_refunds',
+  });
+}
+
 async function preflightOwner(client: PrismaClientType): Promise<void> {
   const records = await client.$queryRawUnsafe<OwnerPreflightRecord[]>(`
     SELECT
@@ -629,6 +734,7 @@ async function run(): Promise<void> {
     const fullSchemaPath = join(PRISMA_ROOT, 'schema.prisma');
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
+    await assertM63B1ReadIndexes(scratchClient);
     const upgradedM5Facts = await scratchClient.$queryRaw<
       Array<{
         after_sale_id: string | null;
@@ -712,6 +818,7 @@ async function run(): Promise<void> {
 
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
+    await assertM63B1ReadIndexes(scratchClient);
     const afterRepeatFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterRepeatFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during repeated deployment');
@@ -735,6 +842,13 @@ async function run(): Promise<void> {
         scratchDatabaseUrl,
       );
     }
+    await assertIndexShape(scratchClient, {
+      expectedKeys: ['store_id', 'updated_at DESC', 'id DESC'],
+      expectedUnique: false,
+      indexName: 'after_sales_store_id_updated_at_id_idx',
+      shouldExist: false,
+      tableName: 'after_sales',
+    });
     const m6DownState = await scratchClient.$queryRaw<
       Array<{
         m6_enum_types: bigint;
@@ -835,6 +949,7 @@ async function run(): Promise<void> {
     `;
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
+    await assertM63B1ReadIndexes(scratchClient);
     const afterForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterForwardRepairFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during the M5/M6 forward repair exercise');
@@ -874,10 +989,120 @@ async function run(): Promise<void> {
         )
       `;
     });
+    await scratchClient.$transaction(async (transaction) => {
+      const settingsGuardAdminId = 'f2030000-0000-4000-8000-000000000008';
+      await transaction.adminUser.create({
+        data: {
+          displayName: 'M6.3 settings rollback guard admin',
+          email: 'm63-settings-rollback-guard@example.test',
+          emailNormalized: 'm63-settings-rollback-guard@example.test',
+          id: settingsGuardAdminId,
+          passwordHash: 'test-fixture-not-used',
+        },
+      });
+      await transaction.$executeRaw`
+        SELECT
+          set_config('app.store_id', 'f2000000-0000-4000-8000-000000000001', true),
+          set_config('app.actor_type', 'admin', true),
+          set_config('app.actor_id', ${settingsGuardAdminId}, true),
+          set_config('app.correlation_id', 'm63-b0-rollback-guard', true)
+      `;
+      await transaction.$executeRaw`
+        UPDATE store_after_sale_settings
+        SET updated_by = ${settingsGuardAdminId}::uuid, version = 2, updated_at = now()
+        WHERE store_id = 'f2000000-0000-4000-8000-000000000001'::uuid
+      `;
+      const legacyGuardOrder = await transaction.order.create({
+        data: {
+          baseSubtotalVnd: 100_000,
+          couponDiscountVnd: 0,
+          currency: 'VND',
+          itemDiscountVnd: 0,
+          memberId: 'f2020000-0000-4000-8000-000000000001',
+          orderDiscountVnd: 0,
+          orderNumber: 'M63-B0-ROLLBACK-GUARD',
+          payableVnd: 100_000,
+          paymentMethod: 'ONLINE',
+          paymentStatus: 'SUCCEEDED',
+          quoteHash: createHash('sha256').update('m63-b0-rollback-guard').digest('hex'),
+          remoteSurchargeVnd: 0,
+          shippingDiscountVnd: 0,
+          shippingFeeVnd: 0,
+          status: 'PENDING_FULFILLMENT',
+          storeId: 'f2000000-0000-4000-8000-000000000001',
+        },
+      });
+      await transaction.$executeRaw`
+        INSERT INTO after_sales (
+          id, store_id, order_id, member_id, public_case_number, type, status, source,
+          reason_code, legacy_policy_review, idempotency_key_hash, request_hash,
+          initiated_by, correlation_id, updated_at
+        ) VALUES (
+          'f2d00000-0000-4000-8000-000000000001',
+          'f2000000-0000-4000-8000-000000000001',
+          ${legacyGuardOrder.id}::uuid,
+          'f2020000-0000-4000-8000-000000000001',
+          'ASC-M63B0ROLLBACK0001',
+          'REFUND_ONLY', 'REVIEW_REQUIRED', 'ADMIN', 'm63-b0-legacy-rollback-guard',
+          true,
+          ${createHash('sha256').update('m63-b0-rollback-key').digest('hex')},
+          ${createHash('sha256').update('m63-b0-rollback-request').digest('hex')},
+          ${settingsGuardAdminId}::uuid, 'm63-b0-rollback-guard', now()
+        )
+      `;
+    });
     await expectSqlState(
       scratchClient.$executeRaw`SELECT app_security.assert_m62_rollback_safe()`,
       '55000',
       'M6.2 rollback guard',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260728104000_m63_b0_after_sale_contract_guards', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.3-B0 rollback requires an empty local/test after-sale runtime scope',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260728103000_m63_policy_settings_provisioning', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.3 policy settings-provisioning rollback requires an empty local/test policy scope',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260728102000_m63_policy_settings_lock', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.3 policy settings-lock rollback requires an empty local/test policy scope',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260728101000_m63_policy_settings_rows', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'M6.3 policy settings-row rollback requires an empty local/test policy scope',
     );
     runPrismaExpectFailure(
       [
@@ -1189,6 +1414,7 @@ async function run(): Promise<void> {
     await scratchClient.$connect();
     await assertScratchConnection(scratchClient, scratchDatabaseName);
     await assertMigrationState(scratchClient, allMigrationNames);
+    await assertM63B1ReadIndexes(scratchClient);
 
     console.log(
       `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair and rollback guards`,

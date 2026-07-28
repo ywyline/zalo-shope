@@ -7,7 +7,10 @@ import {
 } from '@zalo-shop/database';
 import type { ShippingProviderResolver } from '@zalo-shop/integrations';
 
-import type { OutboxMessageHandler } from '../reliable-messaging/outbox-message-handler';
+import {
+  OutboxHandlerError,
+  type OutboxMessageHandler,
+} from '../reliable-messaging/outbox-message-handler';
 import {
   decryptShippingAddress,
   mapShippingFailure,
@@ -35,6 +38,9 @@ export class ShipmentCreateRequestedHandler implements OutboxMessageHandler {
         identity.shipmentId,
         identity.operationId,
       );
+      if (request.purpose !== 'ORDER_OUTBOUND') {
+        throw new OutboxHandlerError('SHIPMENT_CREATE_PURPOSE_UNSUPPORTED', 'PERMANENT');
+      }
       if (request.operationStatus !== 'PENDING' || request.status !== 'CREATION_PENDING') return;
       const provider = this.providers.resolve({ ...request.channel, storeId: request.storeId });
       const fact = await provider.createShipment({
@@ -52,6 +58,7 @@ export class ShipmentCreateRequestedHandler implements OutboxMessageHandler {
       await recordShipmentCreated(this.database, context, {
         fact,
         operationId: identity.operationId,
+        purpose: request.purpose,
         shipmentId: identity.shipmentId,
       });
     } catch (error) {

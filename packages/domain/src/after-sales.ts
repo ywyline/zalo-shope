@@ -1,3 +1,5 @@
+import type { ShipmentPurpose, ShipmentStatus } from './shipment';
+
 export const AFTER_SALE_TYPES = [
   'REFUND_ONLY',
   'RETURN_REFUND',
@@ -51,6 +53,58 @@ export type AfterSaleEvent =
   | 'LEGACY_REJECT'
   | 'COMPLETE';
 
+export const AFTER_SALE_ACTOR_TYPES = ['MEMBER', 'ADMIN', 'SYSTEM'] as const;
+export type AfterSaleActorType = (typeof AFTER_SALE_ACTOR_TYPES)[number];
+
+export const AFTER_SALE_SYSTEM_EVENTS = [
+  'RETURN_EXPIRED',
+  'REFUND_SUCCEEDED',
+  'REFUND_FAILED',
+  'REFUND_CANCELLED',
+  'REQUIRE_REVIEW',
+  'COMPLETE',
+] as const satisfies readonly AfterSaleEvent[];
+
+const afterSaleSystemEvents = new Set<AfterSaleEvent>(AFTER_SALE_SYSTEM_EVENTS);
+const afterSaleMemberEvents = new Set<AfterSaleEvent>(['CANCEL', 'START_RETURN']);
+
+export const AFTER_SALE_SYSTEM_SCOPE = 'after-sale-transition' as const;
+
+export type AfterSaleSystemContext = Readonly<{
+  actor: Readonly<{ id: string; type: 'system' }>;
+  correlationId: string;
+  storeId: string;
+  systemScope: typeof AFTER_SALE_SYSTEM_SCOPE;
+}>;
+
+export type AfterSaleSystemContextInput = {
+  actorId: string;
+  correlationId: string;
+  storeId: string;
+};
+
+function requireAfterSaleSystemContextValue(value: string): string {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    throw new AfterSaleInvariantError('AFTER_SALE_ACTOR_NOT_ALLOWED');
+  }
+  return normalized;
+}
+
+export function createAfterSaleSystemContext(
+  input: AfterSaleSystemContextInput,
+): AfterSaleSystemContext {
+  return Object.freeze({
+    actor: Object.freeze({
+      id: requireAfterSaleSystemContextValue(input.actorId),
+      type: 'system' as const,
+    }),
+    correlationId: requireAfterSaleSystemContextValue(input.correlationId),
+    storeId: requireAfterSaleSystemContextValue(input.storeId),
+    systemScope: AFTER_SALE_SYSTEM_SCOPE,
+  });
+}
+
 export type AfterSaleInvariantErrorCode =
   | 'AFTER_SALE_STATE_CONFLICT'
   | 'AFTER_SALE_QUANTITY_INVALID'
@@ -63,6 +117,10 @@ export type AfterSaleInvariantErrorCode =
   | 'AFTER_SALE_EXCHANGE_NOT_ALLOWED'
   | 'AFTER_SALE_RETURN_WINDOW_INVALID'
   | 'AFTER_SALE_RETURN_WINDOW_CLOSED'
+  | 'AFTER_SALE_ACTOR_NOT_ALLOWED'
+  | 'AFTER_SALE_POLICY_MISMATCH'
+  | 'AFTER_SALE_EVIDENCE_REQUIRED'
+  | 'AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE'
   | 'AFTER_SALE_EVIDENCE_ACCESS_DENIED'
   | 'AFTER_SALE_EVIDENCE_RETENTION_ACTIVE';
 
@@ -212,16 +270,53 @@ export type AfterSaleCommandTransition = {
   status: AfterSaleStatus;
 };
 
-export function transitionAfterSaleReturnShipment(
+export function assertAfterSaleEventActorAllowed(
+  actorType: AfterSaleActorType,
+  event: AfterSaleEvent,
+): void {
+  if (actorType === 'ADMIN') return;
+  const allowed =
+    actorType === 'MEMBER' ? afterSaleMemberEvents.has(event) : afterSaleSystemEvents.has(event);
+  if (!allowed) throw new AfterSaleInvariantError('AFTER_SALE_ACTOR_NOT_ALLOWED');
+}
+
+export function assertAfterSaleSystemEventAllowed(
+  context: AfterSaleSystemContext,
+  event: AfterSaleEvent,
+): void {
+  if (
+    context.actor.type !== 'system' ||
+    context.systemScope !== AFTER_SALE_SYSTEM_SCOPE ||
+    context.actor.id.trim().length === 0 ||
+    context.correlationId.trim().length === 0 ||
+    context.storeId.trim().length === 0
+  ) {
+    throw new AfterSaleInvariantError('AFTER_SALE_ACTOR_NOT_ALLOWED');
+  }
+  assertAfterSaleEventActorAllowed('SYSTEM', event);
+}
+
+export function assertAfterSaleReturnSubmissionAllowed(
+  type: AfterSaleType,
+  current: AfterSaleStatus,
+  timing: { nowEpochMs: number; returnDeadlineEpochMs: number },
+): void {
+  assertAfterSaleReturnWindowOpen(timing);
+  if (transitionsFor(type)[current]?.START_RETURN !== 'RETURN_PENDING') {
+    throw new AfterSaleInvariantError('AFTER_SALE_STATE_CONFLICT');
+  }
+}
+
+export function transitionAfterSaleReturnSubmitted(
   type: AfterSaleType,
   current: AfterSaleStatus,
   timing: { nowEpochMs: number; returnDeadlineEpochMs: number },
 ): AfterSaleCommandTransition {
-  assertAfterSaleReturnWindowOpen(timing);
-  const returnPending = transitionAfterSaleUnchecked(type, current, 'START_RETURN');
+  assertAfterSaleReturnSubmissionAllowed(type, current, timing);
+  assertAfterSaleEventActorAllowed('MEMBER', 'START_RETURN');
   return {
-    events: ['START_RETURN', 'RETURN_SHIPPED'],
-    status: transitionAfterSaleUnchecked(type, returnPending, 'RETURN_SHIPPED'),
+    events: ['START_RETURN'],
+    status: transitionAfterSaleUnchecked(type, current, 'START_RETURN'),
   };
 }
 
@@ -485,6 +580,52 @@ function assertSafeVnd(value: number): void {
   }
 }
 
+export function assertAfterSaleApprovalQuantities(input: {
+  approvedItems: readonly { approvedQuantity: number; orderItemId: string }[];
+  requestedItems: readonly { orderItemId: string; requestedQuantity: number }[];
+}): void {
+  if (
+    input.requestedItems.length === 0 ||
+    input.approvedItems.length !== input.requestedItems.length
+  ) {
+    throw new AfterSaleInvariantError('AFTER_SALE_QUANTITY_INVALID');
+  }
+
+  const requested = new Map<string, number>();
+  for (const item of input.requestedItems) {
+    assertSafeCount(item.requestedQuantity);
+    if (
+      item.orderItemId.trim().length === 0 ||
+      item.requestedQuantity === 0 ||
+      requested.has(item.orderItemId)
+    ) {
+      throw new AfterSaleInvariantError('AFTER_SALE_QUANTITY_INVALID');
+    }
+    requested.set(item.orderItemId, item.requestedQuantity);
+  }
+
+  const approvedIds = new Set<string>();
+  let approvedTotal = 0;
+  for (const item of input.approvedItems) {
+    assertSafeCount(item.approvedQuantity);
+    const requestedQuantity = requested.get(item.orderItemId);
+    if (requestedQuantity === undefined || approvedIds.has(item.orderItemId)) {
+      throw new AfterSaleInvariantError('AFTER_SALE_QUANTITY_INVALID');
+    }
+    if (item.approvedQuantity > requestedQuantity) {
+      throw new AfterSaleInvariantError('AFTER_SALE_QUANTITY_EXCEEDS_AVAILABLE');
+    }
+    approvedIds.add(item.orderItemId);
+    approvedTotal += item.approvedQuantity;
+    if (!Number.isSafeInteger(approvedTotal)) {
+      throw new AfterSaleInvariantError('AFTER_SALE_QUANTITY_INVALID');
+    }
+  }
+  if (approvedIds.size !== requested.size || approvedTotal === 0) {
+    throw new AfterSaleInvariantError('AFTER_SALE_QUANTITY_INVALID');
+  }
+}
+
 export function assertAfterSaleQuantityAvailable(input: {
   occupiedQuantity: number;
   orderedQuantity: number;
@@ -697,6 +838,154 @@ export function transitionAfterSaleAfterInspection(
     events: ['RETURN_RECEIVED', event],
     status: transitionAfterSaleUnchecked(type, inspectionStatus, event),
   };
+}
+
+export type AfterSalePolicyIdentity = {
+  payloadHash: string;
+  policyId: string;
+  policyVersionId: string;
+  policyVersionNumber: number;
+};
+
+export type AfterSaleOrderItemShipmentFact = {
+  deliveredAtEpochMs: number | null;
+  purpose: ShipmentPurpose;
+  quantity: number;
+  shipmentId: string;
+  status: ShipmentStatus;
+};
+
+export type AuthoritativeOrderItemDeliveryResolution =
+  | { deliveredAtEpochMs: number; proven: true }
+  | {
+      proven: false;
+      reason:
+        | 'DELIVERY_TIMESTAMP_UNPROVEN'
+        | 'DUPLICATE_OUTBOUND_SHIPMENT'
+        | 'NO_OUTBOUND_SHIPMENT_ITEM'
+        | 'OUTBOUND_NOT_DELIVERED'
+        | 'OUTBOUND_QUANTITY_UNPROVEN';
+    };
+
+export function resolveAuthoritativeOrderItemDelivery(input: {
+  orderedQuantity: number;
+  shipmentItems: readonly AfterSaleOrderItemShipmentFact[];
+}): AuthoritativeOrderItemDeliveryResolution {
+  if (!Number.isSafeInteger(input.orderedQuantity) || input.orderedQuantity <= 0) {
+    return { proven: false, reason: 'OUTBOUND_QUANTITY_UNPROVEN' };
+  }
+  const outbound = input.shipmentItems.filter((item) => item.purpose === 'ORDER_OUTBOUND');
+  if (outbound.length === 0) {
+    return { proven: false, reason: 'NO_OUTBOUND_SHIPMENT_ITEM' };
+  }
+
+  const shipmentIds = new Set<string>();
+  let deliveredAtEpochMs = 0;
+  let shippedQuantity = 0;
+  for (const item of outbound) {
+    const shipmentId = item.shipmentId.trim();
+    if (shipmentId.length === 0 || shipmentIds.has(shipmentId)) {
+      return { proven: false, reason: 'DUPLICATE_OUTBOUND_SHIPMENT' };
+    }
+    shipmentIds.add(shipmentId);
+    if (!Number.isSafeInteger(item.quantity) || item.quantity <= 0) {
+      return { proven: false, reason: 'OUTBOUND_QUANTITY_UNPROVEN' };
+    }
+    shippedQuantity += item.quantity;
+    if (!Number.isSafeInteger(shippedQuantity)) {
+      return { proven: false, reason: 'OUTBOUND_QUANTITY_UNPROVEN' };
+    }
+    if (item.status !== 'DELIVERED') {
+      return { proven: false, reason: 'OUTBOUND_NOT_DELIVERED' };
+    }
+    if (
+      item.deliveredAtEpochMs === null ||
+      !Number.isSafeInteger(item.deliveredAtEpochMs) ||
+      item.deliveredAtEpochMs < 0
+    ) {
+      return { proven: false, reason: 'DELIVERY_TIMESTAMP_UNPROVEN' };
+    }
+    deliveredAtEpochMs = Math.max(deliveredAtEpochMs, item.deliveredAtEpochMs);
+  }
+  if (shippedQuantity !== input.orderedQuantity) {
+    return { proven: false, reason: 'OUTBOUND_QUANTITY_UNPROVEN' };
+  }
+  return { deliveredAtEpochMs, proven: true };
+}
+
+export type AfterSaleCasePolicyResolution =
+  | { legacyPolicyReview: true; policy: null }
+  | { legacyPolicyReview: false; policy: AfterSalePolicyIdentity };
+
+function isValidAfterSalePolicyIdentity(
+  policy: AfterSalePolicyIdentity,
+): policy is AfterSalePolicyIdentity {
+  return (
+    policy.policyId.trim().length > 0 &&
+    policy.policyVersionId.trim().length > 0 &&
+    Number.isSafeInteger(policy.policyVersionNumber) &&
+    policy.policyVersionNumber > 0 &&
+    /^[a-f0-9]{64}$/.test(policy.payloadHash)
+  );
+}
+
+export function resolveAfterSaleCasePolicy(
+  itemPolicies: readonly (AfterSalePolicyIdentity | null)[],
+): AfterSaleCasePolicyResolution {
+  if (itemPolicies.length === 0) {
+    throw new AfterSaleInvariantError('AFTER_SALE_POLICY_MISMATCH');
+  }
+  if (itemPolicies.every((policy) => policy === null)) {
+    return { legacyPolicyReview: true, policy: null };
+  }
+  const [first, ...remaining] = itemPolicies;
+  if (first === undefined || first === null || !isValidAfterSalePolicyIdentity(first)) {
+    throw new AfterSaleInvariantError('AFTER_SALE_POLICY_MISMATCH');
+  }
+  for (const policy of remaining) {
+    if (
+      policy === null ||
+      !isValidAfterSalePolicyIdentity(policy) ||
+      policy.policyId !== first.policyId ||
+      policy.policyVersionId !== first.policyVersionId ||
+      policy.policyVersionNumber !== first.policyVersionNumber ||
+      policy.payloadHash !== first.payloadHash
+    ) {
+      throw new AfterSaleInvariantError('AFTER_SALE_POLICY_MISMATCH');
+    }
+  }
+  return { legacyPolicyReview: false, policy: first };
+}
+
+export type AfterSaleEvidenceCapabilities = {
+  claimAvailable: boolean;
+  deletionCompensationAvailable: boolean;
+  malwareScanningAvailable: boolean;
+  protectedReadAvailable: boolean;
+  uploadValidationAvailable: boolean;
+};
+
+export function assertAfterSaleEvidenceCreationAllowed(input: {
+  capabilities: AfterSaleEvidenceCapabilities;
+  evidenceRequired: boolean;
+  readyEvidenceCount: number;
+}): void {
+  if (!Number.isSafeInteger(input.readyEvidenceCount) || input.readyEvidenceCount < 0) {
+    throw new AfterSaleInvariantError('AFTER_SALE_EVIDENCE_REQUIRED');
+  }
+  if (!input.evidenceRequired) return;
+  if (
+    input.capabilities.claimAvailable !== true ||
+    input.capabilities.deletionCompensationAvailable !== true ||
+    input.capabilities.malwareScanningAvailable !== true ||
+    input.capabilities.protectedReadAvailable !== true ||
+    input.capabilities.uploadValidationAvailable !== true
+  ) {
+    throw new AfterSaleInvariantError('AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE');
+  }
+  if (input.readyEvidenceCount === 0) {
+    throw new AfterSaleInvariantError('AFTER_SALE_EVIDENCE_REQUIRED');
+  }
 }
 
 export const AFTER_SALE_EVIDENCE_STATUSES = [

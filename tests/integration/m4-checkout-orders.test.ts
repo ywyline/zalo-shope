@@ -10,17 +10,21 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parseRuntimeConfig } from '@zalo-shop/config';
 import {
   adjustInventory,
+  canonicalAfterSalePolicyHash,
   createRuntimePrismaClient,
   expireDueReservations,
   PrismaClient,
   reconcileReservationBackedOrders,
+  type StoreTransaction,
   withStoreTransaction,
+  writeCheckoutAfterSalePolicySnapshotsInTransaction,
 } from '@zalo-shop/database';
 import { createStoreContext } from '@zalo-shop/domain';
 import { hashSensitive, signJwt } from '@zalo-shop/security';
 
 const BEAUTY_STORE_ID = '10000000-0000-4000-8000-000000000001';
 const FASHION_STORE_ID = '10000000-0000-4000-8000-000000000002';
+const BEAUTY_ROOT_CATEGORY_ID = '11000000-0000-4000-8000-000000000001';
 const BEAUTY_CATEGORY_ID = '12000000-0000-4000-8000-000000000001';
 const BEAUTY_TEMPLATE_ID = '14000000-0000-4000-8000-000000000001';
 const BEAUTY_WAREHOUSE_ID = '17000000-0000-4000-8000-000000000001';
@@ -38,6 +42,14 @@ describe('M4 address, checkout and COD orders', () => {
     memberId: randomUUID(),
     secondMemberId: randomUUID(),
     productId: randomUUID(),
+    afterSalePolicyId: randomUUID(),
+    afterSalePolicyVersionId: randomUUID(),
+    afterSalePolicyAssignmentId: randomUUID(),
+    afterSaleActiveAssignmentId: randomUUID(),
+    categoryAfterSalePolicyId: randomUUID(),
+    categoryAfterSalePolicyVersionId: randomUUID(),
+    categoryAfterSalePolicyAssignmentId: randomUUID(),
+    categoryAfterSaleActiveAssignmentId: randomUUID(),
     roleId: randomUUID(),
     skuId: randomUUID(),
   };
@@ -304,6 +316,8 @@ describe('M4 address, checkout and COD orders', () => {
             { permissionCode: 'store.promotions.manage' },
             { permissionCode: 'store.promotions.publish' },
             { permissionCode: 'store.promotions.read' },
+            { permissionCode: 'store.after-sales.policy.read' },
+            { permissionCode: 'store.after-sales.policy.enforce' },
           ],
         },
         storeId: BEAUTY_STORE_ID,
@@ -380,7 +394,10 @@ describe('M4 address, checkout and COD orders', () => {
       });
       const versionIds = versions.map(({ id }) => id);
       await transaction.idempotencyRecord.deleteMany({
-        where: { storeId: BEAUTY_STORE_ID, memberId: { in: memberIds } },
+        where: {
+          storeId: BEAUTY_STORE_ID,
+          OR: [{ memberId: { in: memberIds } }, { operation: 'after-sale.policy.enforce' }],
+        },
       });
       await transaction.memberCoupon.deleteMany({
         where: { memberId: { in: memberIds }, storeId: BEAUTY_STORE_ID },
@@ -407,6 +424,9 @@ describe('M4 address, checkout and COD orders', () => {
         where: { storeId: BEAUTY_STORE_ID, orderId: { in: orderIds } },
       });
       await transaction.orderSnapshot.deleteMany({
+        where: { storeId: BEAUTY_STORE_ID, orderId: { in: orderIds } },
+      });
+      await transaction.orderItemAfterSalePolicySnapshot.deleteMany({
         where: { storeId: BEAUTY_STORE_ID, orderId: { in: orderIds } },
       });
       await transaction.orderItem.deleteMany({
@@ -445,6 +465,59 @@ describe('M4 address, checkout and COD orders', () => {
       await transaction.productLocalization.deleteMany({ where: { productId: fixture.productId } });
       await transaction.product.delete({ where: { id: fixture.productId } });
       await transaction.brand.delete({ where: { id: fixture.brandId } });
+      await transaction.storeAfterSaleSetting.upsert({
+        create: { storeId: BEAUTY_STORE_ID },
+        update: {
+          currentVersionId: null,
+          defaultPolicyId: null,
+          enforcePolicySnapshots: false,
+          readinessCheckedAt: null,
+          readinessCheckedBy: null,
+          readinessHash: null,
+          readinessReadyAt: null,
+          updatedBy: null,
+          version: 1,
+        },
+        where: { storeId: BEAUTY_STORE_ID },
+      });
+      await transaction.afterSaleActivePolicyAssignment.deleteMany({
+        where: {
+          id: {
+            in: [fixture.afterSaleActiveAssignmentId, fixture.categoryAfterSaleActiveAssignmentId],
+          },
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+      await transaction.afterSalePolicyVersionAssignment.deleteMany({
+        where: {
+          id: {
+            in: [fixture.afterSalePolicyAssignmentId, fixture.categoryAfterSalePolicyAssignmentId],
+          },
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+      await transaction.afterSalePolicyLocalization.deleteMany({
+        where: {
+          policyVersionId: {
+            in: [fixture.afterSalePolicyVersionId, fixture.categoryAfterSalePolicyVersionId],
+          },
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+      await transaction.afterSalePolicyVersion.deleteMany({
+        where: {
+          id: {
+            in: [fixture.afterSalePolicyVersionId, fixture.categoryAfterSalePolicyVersionId],
+          },
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+      await transaction.afterSalePolicy.deleteMany({
+        where: {
+          id: { in: [fixture.afterSalePolicyId, fixture.categoryAfterSalePolicyId] },
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
     });
     await owner.$disconnect();
   });
@@ -572,6 +645,521 @@ describe('M4 address, checkout and COD orders', () => {
       .set({ Authorization: `Bearer ${memberToken}`, 'X-Store-Code': 'fashion-local' });
     expect(mismatchedStore.status).toBe(401);
     expect(await owner.address.count({ where: { memberId: fixture.secondMemberId } })).toBe(1);
+  });
+
+  it('enforces ready policy snapshots with audited controls and fails closed on assignment drift', async () => {
+    const adminContext = createStoreContext({
+      actor: { id: fixture.adminId, type: 'admin' },
+      correlationId: `m63-policy-${suffix}`,
+      locale: 'vi',
+      storeCode: 'beauty-local',
+      storeId: BEAUTY_STORE_ID,
+    });
+    const defaultPolicyCode = `m63-default-${suffix}`;
+    const categoryPolicyCode = `m63-category-${suffix}`;
+
+    async function createPublishedPolicy(
+      transaction: StoreTransaction,
+      input: {
+        activeAssignmentId: string;
+        assignmentId: string;
+        categoryId: string | null;
+        code: string;
+        policyId: string;
+        policyVersionId: string;
+        targetType: 'CATEGORY' | 'STORE_DEFAULT';
+      },
+    ) {
+      const localizations: Array<{
+        buyer_instructions: string;
+        locale: 'en' | 'vi' | 'zh';
+        name: string;
+        summary: string;
+      }> = [
+        {
+          buyer_instructions: 'Gửi yêu cầu cùng bằng chứng theo hướng dẫn thử nghiệm.',
+          locale: 'vi',
+          name: `Chính sách ${input.code}`,
+          summary: 'Chính sách local/test không phải kết luận pháp lý.',
+        },
+        {
+          buyer_instructions: '请按测试说明提交申请与凭证。',
+          locale: 'zh',
+          name: `政策 ${input.code}`,
+          summary: '本 local/test 政策不是法律结论。',
+        },
+        {
+          buyer_instructions: 'Submit the request and evidence using the test instructions.',
+          locale: 'en',
+          name: `Policy ${input.code}`,
+          summary: 'This local/test policy is not legal advice.',
+        },
+      ];
+      const payload = {
+        allowed_types: ['REFUND_ONLY', 'RETURN_REFUND'],
+        category_id: input.categoryId,
+        condition_rules: {
+          evidence_required: true,
+          evidence_required_reason_codes: ['damaged', 'defect', 'wrong-item'],
+          opened_package_exception_reason_codes: [],
+        },
+        damaged_exception: true,
+        defect_exception: true,
+        exchange_attribute_code: null,
+        exchange_same_product_only: true,
+        hygiene_restricted: false,
+        localizations,
+        product_ids: [],
+        request_window_days: 30,
+        return_shipping_payer: 'MERCHANT',
+        return_window_days: 7,
+        unopened_required: false,
+        wrong_item_exception: true,
+      };
+      const payloadHash = canonicalAfterSalePolicyHash(payload);
+      await transaction.afterSalePolicy.create({
+        data: {
+          categoryId: input.categoryId,
+          code: input.code,
+          createdBy: fixture.adminId,
+          draftHash: payloadHash,
+          draftPayload: payload,
+          id: input.policyId,
+          status: 'DRAFT',
+          storeId: BEAUTY_STORE_ID,
+          updatedBy: fixture.adminId,
+        },
+      });
+      await transaction.afterSalePolicyVersion.create({
+        data: {
+          allowedTypes: ['REFUND_ONLY', 'RETURN_REFUND'],
+          conditionRules: payload.condition_rules,
+          damagedException: true,
+          defectException: true,
+          effectiveAt: new Date(Date.now() - 60_000),
+          exchangeAttributeCode: null,
+          exchangeSameProductOnly: true,
+          hygieneRestricted: false,
+          id: input.policyVersionId,
+          payload,
+          payloadHash,
+          policyId: input.policyId,
+          publishedBy: fixture.adminId,
+          requestWindowDays: 30,
+          returnShippingPayer: 'MERCHANT',
+          returnWindowDays: 7,
+          storeId: BEAUTY_STORE_ID,
+          unopenedRequired: false,
+          versionNumber: 1,
+          wrongItemException: true,
+        },
+      });
+      await transaction.afterSalePolicyLocalization.createMany({
+        data: localizations.map((localization) => ({
+          buyerInstructions: localization.buyer_instructions,
+          locale: localization.locale,
+          name: localization.name,
+          policyVersionId: input.policyVersionId,
+          storeId: BEAUTY_STORE_ID,
+          summary: localization.summary,
+        })),
+      });
+      await transaction.afterSalePolicyVersionAssignment.create({
+        data: {
+          categoryId: input.categoryId,
+          id: input.assignmentId,
+          policyId: input.policyId,
+          policyVersionId: input.policyVersionId,
+          productId: null,
+          storeId: BEAUTY_STORE_ID,
+          targetType: input.targetType,
+        },
+      });
+      await transaction.afterSalePolicy.update({
+        data: {
+          currentVersionId: input.policyVersionId,
+          status: 'ACTIVE',
+          updatedBy: fixture.adminId,
+          version: { increment: 1 },
+        },
+        where: { id: input.policyId },
+      });
+      await transaction.afterSaleActivePolicyAssignment.create({
+        data: {
+          assignmentId: input.assignmentId,
+          categoryId: input.categoryId,
+          id: input.activeAssignmentId,
+          policyId: input.policyId,
+          policyVersionId: input.policyVersionId,
+          productId: null,
+          storeId: BEAUTY_STORE_ID,
+          targetType: input.targetType,
+        },
+      });
+      return { payload, payloadHash };
+    }
+
+    const policyFacts = await withStoreTransaction(runtime, adminContext, async (transaction) => {
+      const defaults = await createPublishedPolicy(transaction, {
+        activeAssignmentId: fixture.afterSaleActiveAssignmentId,
+        assignmentId: fixture.afterSalePolicyAssignmentId,
+        categoryId: null,
+        code: defaultPolicyCode,
+        policyId: fixture.afterSalePolicyId,
+        policyVersionId: fixture.afterSalePolicyVersionId,
+        targetType: 'STORE_DEFAULT',
+      });
+      const category = await createPublishedPolicy(transaction, {
+        activeAssignmentId: fixture.categoryAfterSaleActiveAssignmentId,
+        assignmentId: fixture.categoryAfterSalePolicyAssignmentId,
+        categoryId: BEAUTY_ROOT_CATEGORY_ID,
+        code: categoryPolicyCode,
+        policyId: fixture.categoryAfterSalePolicyId,
+        policyVersionId: fixture.categoryAfterSalePolicyVersionId,
+        targetType: 'CATEGORY',
+      });
+      return { category, defaults };
+    });
+
+    const settingsPath = `/v1/admin/after-sale-settings?store_id=${BEAUTY_STORE_ID}`;
+    const ready = await api().get(settingsPath).set(adminHeaders());
+    expect(ready.status).toBe(200);
+    expect(ready.body).toMatchObject({
+      current_version_number: 1,
+      default_policy_code: defaultPolicyCode,
+      enforce_policy_snapshots: false,
+      readiness_state: 'READY',
+      version: 1,
+    });
+
+    const address = await owner.address.findFirstOrThrow({
+      where: { memberId: fixture.memberId },
+    });
+    const offOrder = await quoteAndCreateOrder({
+      addressId: address.id,
+      idempotencyKey: `m63-off-no-snapshot-${suffix}`,
+    });
+    expect(offOrder.status, JSON.stringify(offOrder.body)).toBe(201);
+    expect(
+      await owner.orderItemAfterSalePolicySnapshot.count({
+        where: { orderId: offOrder.body.id, storeId: BEAUTY_STORE_ID },
+      }),
+    ).toBe(0);
+    await api()
+      .post(`/v1/orders/${offOrder.body.id}/cancel`)
+      .set(memberHeaders())
+      .send({ reason: 'Release the enforcement-OFF compatibility order reservation.' })
+      .expect(201);
+
+    await owner.storeRolePermission.delete({
+      where: {
+        storeId_roleId_permissionCode: {
+          permissionCode: 'store.after-sales.policy.enforce',
+          roleId: fixture.roleId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      },
+    });
+    try {
+      await api()
+        .put(settingsPath)
+        .set({ ...adminHeaders(), 'Idempotency-Key': `m63-rbac-${suffix}` })
+        .send({
+          confirmation_code: 'ENABLE_AFTER_SALE_POLICY_ENFORCEMENT',
+          enabled: true,
+          expected_version: 1,
+          reason: 'This command must require the independent enforcement permission.',
+        })
+        .expect(403);
+    } finally {
+      await owner.storeRolePermission.create({
+        data: {
+          permissionCode: 'store.after-sales.policy.enforce',
+          roleId: fixture.roleId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+    }
+
+    const adminSession = await owner.adminSession.findFirstOrThrow({
+      where: { adminUserId: fixture.adminId },
+    });
+    await owner.adminSession.update({
+      data: { mfaVerifiedAt: new Date(Date.now() - 11 * 60 * 1_000) },
+      where: { id: adminSession.id },
+    });
+    try {
+      await api()
+        .put(settingsPath)
+        .set({ ...adminHeaders(), 'Idempotency-Key': `m63-mfa-${suffix}` })
+        .send({
+          confirmation_code: 'ENABLE_AFTER_SALE_POLICY_ENFORCEMENT',
+          enabled: true,
+          expected_version: 1,
+          reason: 'This command must require a recent administrator MFA verification.',
+        })
+        .expect(403);
+    } finally {
+      await owner.adminSession.update({
+        data: { mfaVerifiedAt: new Date() },
+        where: { id: adminSession.id },
+      });
+    }
+
+    const enableKey = `m63-enable-${suffix}`;
+    const enableBody = {
+      confirmation_code: 'ENABLE_AFTER_SALE_POLICY_ENFORCEMENT',
+      enabled: true,
+      expected_version: 1,
+      reason: 'Enable immutable policy snapshots for the ready local test store.',
+    };
+    let releaseStaleCheckout!: () => void;
+    let reportStaleCheckoutSnapshot!: () => void;
+    const staleCheckoutRelease = new Promise<void>((resolve) => {
+      releaseStaleCheckout = resolve;
+    });
+    const staleCheckoutSnapshot = new Promise<void>((resolve) => {
+      reportStaleCheckoutSnapshot = resolve;
+    });
+    const memberPolicyContext = createStoreContext({
+      actor: { id: fixture.memberId, type: 'member' },
+      correlationId: `m63-policy-switch-${suffix}`,
+      locale: 'vi',
+      storeCode: 'beauty-local',
+      storeId: BEAUTY_STORE_ID,
+    });
+    const staleCheckout = withStoreTransaction(
+      runtime,
+      memberPolicyContext,
+      async (transaction) => {
+        await transaction.$queryRaw`
+          SELECT enforce_policy_snapshots
+          FROM store_after_sale_settings
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+        `;
+        reportStaleCheckoutSnapshot();
+        await staleCheckoutRelease;
+        return writeCheckoutAfterSalePolicySnapshotsInTransaction(transaction, {
+          lines: [
+            {
+              categoryId: BEAUTY_CATEGORY_ID,
+              orderId: randomUUID(),
+              orderItemId: randomUUID(),
+              productId: fixture.productId,
+            },
+          ],
+          storeId: BEAUTY_STORE_ID,
+        });
+      },
+      { isolationLevel: 'Serializable', timeout: 15_000 },
+    );
+    await staleCheckoutSnapshot;
+    const enabled = await (async () => {
+      try {
+        return await api()
+          .put(settingsPath)
+          .set({ ...adminHeaders(), 'Idempotency-Key': enableKey })
+          .send(enableBody);
+      } finally {
+        releaseStaleCheckout();
+      }
+    })();
+    const staleCheckoutError = await staleCheckout.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const staleCheckoutRecord = staleCheckoutError as {
+      code?: unknown;
+      meta?: { code?: unknown };
+    } | null;
+    const staleCheckoutCode =
+      staleCheckoutRecord?.code === 'P2010'
+        ? staleCheckoutRecord.meta?.code
+        : staleCheckoutRecord?.code;
+    expect(['40001', 'P2034']).toContain(staleCheckoutCode);
+    expect(enabled.status).toBe(200);
+    expect(enabled.headers['idempotency-replayed']).toBe('false');
+    expect(enabled.body).toMatchObject({
+      default_policy_code: defaultPolicyCode,
+      enforce_policy_snapshots: true,
+      readiness_state: 'ENFORCED',
+      version: 2,
+    });
+    const replay = await api()
+      .put(settingsPath)
+      .set({ ...adminHeaders(), 'Idempotency-Key': enableKey })
+      .send(enableBody);
+    expect(replay.status).toBe(200);
+    expect(replay.headers['idempotency-replayed']).toBe('true');
+    expect(replay.body).toEqual(enabled.body);
+    await api()
+      .put(settingsPath)
+      .set({ ...adminHeaders(), 'Idempotency-Key': enableKey })
+      .send({ ...enableBody, reason: 'A changed command must conflict with the original key.' })
+      .expect(409);
+    await api()
+      .put(settingsPath)
+      .set({ ...adminHeaders(), 'Idempotency-Key': `m63-stale-version-${suffix}` })
+      .send(enableBody)
+      .expect(409);
+
+    const sameConcurrentKey = `m63-concurrent-same-${suffix}`;
+    const sameConcurrentBody = {
+      ...enableBody,
+      expected_version: 2,
+      reason: 'Concurrent identical readiness refresh must commit exactly once.',
+    };
+    const sameConcurrent = await Promise.all([
+      api()
+        .put(settingsPath)
+        .set({ ...adminHeaders(), 'Idempotency-Key': sameConcurrentKey })
+        .send(sameConcurrentBody),
+      api()
+        .put(settingsPath)
+        .set({ ...adminHeaders(), 'Idempotency-Key': sameConcurrentKey })
+        .send(sameConcurrentBody),
+    ]);
+    expect(sameConcurrent.map(({ status }) => status)).toEqual([200, 200]);
+    expect(sameConcurrent[0]?.body).toEqual(sameConcurrent[1]?.body);
+    expect(sameConcurrent[0]?.body.version).toBe(3);
+    expect(sameConcurrent.map(({ headers }) => headers['idempotency-replayed']).sort()).toEqual([
+      'false',
+      'true',
+    ]);
+
+    const concurrent = await Promise.all([
+      api()
+        .put(settingsPath)
+        .set({ ...adminHeaders(), 'Idempotency-Key': `m63-concurrent-a-${suffix}` })
+        .send({ ...enableBody, expected_version: 3, reason: 'Concurrent readiness refresh A.' }),
+      api()
+        .put(settingsPath)
+        .set({ ...adminHeaders(), 'Idempotency-Key': `m63-concurrent-b-${suffix}` })
+        .send({ ...enableBody, expected_version: 3, reason: 'Concurrent readiness refresh B.' }),
+    ]);
+    expect(concurrent.map(({ status }) => status).sort()).toEqual([200, 409]);
+    expect(concurrent.find(({ status }) => status === 200)?.body.version).toBe(4);
+
+    await api()
+      .get(`/v1/admin/after-sale-settings?store_id=${FASHION_STORE_ID}`)
+      .set(adminHeaders())
+      .expect(403);
+    await api()
+      .get(settingsPath)
+      .set({ ...adminHeaders(), 'X-Store-Code': 'fashion-local' })
+      .expect(403);
+
+    const created = await quoteAndCreateOrder({
+      addressId: address.id,
+      idempotencyKey: `m63-snapshot-${suffix}`,
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const snapshot = await owner.orderItemAfterSalePolicySnapshot.findFirstOrThrow({
+      where: { orderId: created.body.id, storeId: BEAUTY_STORE_ID },
+    });
+    expect(snapshot).toMatchObject({
+      payload: policyFacts.category.payload,
+      payloadHash: policyFacts.category.payloadHash,
+      policyCode: categoryPolicyCode,
+      policyId: fixture.categoryAfterSalePolicyId,
+      policyVersionId: fixture.categoryAfterSalePolicyVersionId,
+      policyVersionNumber: 1,
+    });
+    await api()
+      .post(`/v1/orders/${created.body.id}/cancel`)
+      .set(memberHeaders())
+      .send({ reason: 'Release the M6.3-A policy snapshot test reservation.' })
+      .expect(201);
+
+    const orderCountBeforeDrift = await owner.order.count({
+      where: { memberId: fixture.memberId, storeId: BEAUTY_STORE_ID },
+    });
+    const balanceBeforeDrift = await owner.inventoryBalance.findUniqueOrThrow({
+      where: { id: fixture.balanceId },
+    });
+    await withStoreTransaction(runtime, adminContext, (transaction) =>
+      transaction.afterSaleActivePolicyAssignment.delete({
+        where: { id: fixture.categoryAfterSaleActiveAssignmentId },
+      }),
+    );
+    const driftKey = `m63-policy-drift-${suffix}`;
+    try {
+      const driftedSettings = await api().get(settingsPath).set(adminHeaders());
+      expect(driftedSettings.status).toBe(200);
+      expect(driftedSettings.body).toMatchObject({
+        enforce_policy_snapshots: true,
+        readiness_state: 'NOT_READY',
+        version: 4,
+      });
+      const body = {
+        address_id: address.id,
+        coupon_code: null,
+        items: [{ quantity: 1, sku_code: skuCode }],
+        locale: 'vi',
+        payment_method: 'COD',
+      } as const;
+      const quote = await api().post('/v1/checkout/quote').set(memberHeaders()).send(body);
+      expect(quote.status).toBe(201);
+      const rejected = await api()
+        .post('/v1/checkout/orders')
+        .set({ ...memberHeaders(), 'Idempotency-Key': driftKey })
+        .send({ ...body, quote_hash: quote.body.quote_hash });
+      expect(rejected.status).toBe(409);
+      expect(rejected.body.details?.reason_code).toBe('AFTER_SALE_POLICY_NOT_READY');
+      expect(
+        await owner.order.count({
+          where: { memberId: fixture.memberId, storeId: BEAUTY_STORE_ID },
+        }),
+      ).toBe(orderCountBeforeDrift);
+      expect(
+        await owner.inventoryBalance.findUniqueOrThrow({ where: { id: fixture.balanceId } }),
+      ).toMatchObject({
+        onHand: balanceBeforeDrift.onHand,
+        reserved: balanceBeforeDrift.reserved,
+      });
+      expect(
+        await owner.idempotencyRecord.count({
+          where: { idempotencyKey: driftKey, operation: 'checkout.create-order' },
+        }),
+      ).toBe(0);
+    } finally {
+      await withStoreTransaction(runtime, adminContext, (transaction) =>
+        transaction.afterSaleActivePolicyAssignment.create({
+          data: {
+            assignmentId: fixture.categoryAfterSalePolicyAssignmentId,
+            categoryId: BEAUTY_ROOT_CATEGORY_ID,
+            id: fixture.categoryAfterSaleActiveAssignmentId,
+            policyId: fixture.categoryAfterSalePolicyId,
+            policyVersionId: fixture.categoryAfterSalePolicyVersionId,
+            productId: null,
+            storeId: BEAUTY_STORE_ID,
+            targetType: 'CATEGORY',
+          },
+        }),
+      );
+    }
+
+    const audits = await owner.auditLog.findMany({
+      where: {
+        action: 'after-sale.policy.enforcement.updated',
+        actorId: fixture.adminId,
+        storeId: BEAUTY_STORE_ID,
+      },
+    });
+    expect(audits).toHaveLength(3);
+    expect(audits.map(({ afterData }) => afterData)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ enforce_policy_snapshots: true, version: 2 }),
+        expect.objectContaining({ enforce_policy_snapshots: true, version: 3 }),
+        expect.objectContaining({
+          current_version_id: fixture.afterSalePolicyVersionId,
+          default_policy_id: fixture.afterSalePolicyId,
+          enforce_policy_snapshots: true,
+          readiness_hash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+          version: 4,
+        }),
+      ]),
+    );
   });
 
   it('recalculates final VND COD total and is idempotent', async () => {
@@ -1018,7 +1606,9 @@ describe('M4 address, checkout and COD orders', () => {
   });
 
   it('confirms COD through scoped admin and consumes the reservation once', async () => {
-    const order = await owner.order.findFirstOrThrow({ where: { memberId: fixture.memberId } });
+    const order = await owner.order.findFirstOrThrow({
+      where: { memberId: fixture.memberId, status: 'PENDING_CONFIRMATION' },
+    });
     const response = await api()
       .post(`/v1/admin/orders/${order.id}/confirm-cod?store_id=${BEAUTY_STORE_ID}`)
       .set(adminHeaders())

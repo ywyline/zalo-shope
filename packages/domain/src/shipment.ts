@@ -16,6 +16,14 @@ export const SHIPMENT_STATUSES = [
 
 export type ShipmentStatus = (typeof SHIPMENT_STATUSES)[number];
 
+export const SHIPMENT_PURPOSES = [
+  'ORDER_OUTBOUND',
+  'AFTER_SALE_RETURN',
+  'EXCHANGE_OUTBOUND',
+] as const;
+
+export type ShipmentPurpose = (typeof SHIPMENT_PURPOSES)[number];
+
 export class ShipmentStateError extends Error {
   public constructor(public readonly code: 'SHIPMENT_STATE_CONFLICT') {
     super(code);
@@ -82,7 +90,11 @@ export function transitionShipmentStatus(
   return target;
 }
 
-export function orderEventsForShipmentStatus(status: ShipmentStatus): readonly OrderEvent[] {
+export function orderEventsForShipmentStatus(
+  purpose: ShipmentPurpose,
+  status: ShipmentStatus,
+): readonly OrderEvent[] {
+  if (purpose !== 'ORDER_OUTBOUND') return [];
   switch (status) {
     case 'IN_TRANSIT':
     case 'OUT_FOR_DELIVERY':

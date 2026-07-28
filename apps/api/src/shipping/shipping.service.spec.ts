@@ -130,6 +130,7 @@ describe('ShippingService', () => {
       idempotencyKey: 'm56-create-idempotency-key',
       inspectionPolicy: 'NO_INSPECTION',
       orderId,
+      purpose: 'ORDER_OUTBOUND',
       providerEnvironment: 'SANDBOX',
       reason: 'Create a GHN shipment for the confirmed order',
       serviceCode: 'GHN:53320:2',
@@ -137,6 +138,46 @@ describe('ShippingService', () => {
     expect(command).not.toHaveProperty('address');
     expect(command).not.toHaveProperty('amountVnd');
     expect(command).not.toHaveProperty('providerShipmentId');
+  });
+
+  it('fixes order quote and provider-operation paths to ORDER_OUTBOUND', async () => {
+    databaseMocks.prepareQuote.mockRejectedValueOnce(new Error('STOP_AFTER_QUOTE_PREPARATION'));
+    databaseMocks.requestOperation.mockResolvedValueOnce({
+      operationId: '60000000-0000-4000-8000-000000000002',
+      operationStatus: 'PENDING',
+      orderId,
+      providerShipmentReferenceMasked: 'GH****-1',
+      publicShipmentNumber: 'SHP-M56-1',
+      replayed: false,
+      shipmentId,
+      status: 'PENDING_PICKUP',
+      version: 2,
+    });
+    const { service } = fixture();
+
+    await expect(
+      service.quote({ accessToken: 'admin-token', storeCode: 'beauty-local' }, storeId, {
+        order_id: orderId,
+      }),
+    ).rejects.toThrow('STOP_AFTER_QUOTE_PREPARATION');
+    expect(databaseMocks.prepareQuote).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      orderId,
+      providerEnvironment: 'SANDBOX',
+      purpose: 'ORDER_OUTBOUND',
+    });
+
+    await service.sync(
+      { accessToken: 'admin-token', storeCode: 'beauty-local' },
+      storeId,
+      shipmentId,
+      'm56-sync-idempotency-key',
+      { expected_version: 1, reason: 'Synchronize the reviewed outbound shipment' },
+    );
+    expect(databaseMocks.requestOperation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ purpose: 'ORDER_OUTBOUND' }),
+    );
   });
 
   it('issues only an internal short-lived label proxy URL', async () => {
@@ -163,6 +204,11 @@ describe('ShippingService', () => {
       transaction,
       context,
       expect.objectContaining({ action: 'shipping.shipment.label_access_issued' }),
+    );
+    expect(transaction.shipment.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ purpose: 'ORDER_OUTBOUND' }),
+      }),
     );
   });
 
@@ -208,6 +254,12 @@ describe('ShippingService', () => {
     await expect(
       service.proxyLabel(decodeURIComponent(issued.url.slice('/v1/shipping/labels/'.length))),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(transaction.shipment.findFirst).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({ purpose: 'ORDER_OUTBOUND' }),
+      }),
+    );
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });

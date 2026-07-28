@@ -60,6 +60,7 @@ export class ShipmentProviderOperationHandler implements OutboxMessageHandler {
         fact,
         operationId: identity.operationId,
         operationType: request.operationType,
+        purpose: request.purpose,
         shipmentId: identity.shipmentId,
         source: 'QUERY',
       });

@@ -2,15 +2,19 @@
 
 > 状态：已批准
 >
-> 版本：0.4
+> 版本：0.7
 >
-> 日期：2026-07-27
+> 日期：2026-07-29
 >
 > 依据：`REQUIREMENTS.md` V2.0、`AGENTS.md`
 
 批准记录：用户于 2026-07-17 批准本架构，授权先实施 P0 计划的 M0；用户于
 2026-07-23 批准 M4 专项计划，地址、服务端结算、订单、COD 与配送策略按本文边界实施；用户于
-2026-07-27 先批准 M6 双轨契约冻结，随后授权 M6.2 数据/RLS/迁移实施，外部上线门禁保持不变。
+2026-07-27 先批准 M6 双轨契约冻结，随后授权 M6.2 数据/RLS/迁移实施；2026-07-28 授权 M6.3，
+先完成 M6.3-A checkout 政策快照与物流 purpose 前置安全收口，随后完成 M6.3-B0 契约与前向
+数据库修复。B0 完成时不授权任何 B1-B7 运行时；用户随后按推荐边界单独授权 B1，现已完成四个
+会员/管理员只读接口及适用门禁。B2-B7、UI、生产政策/启用、供应商调用、部署与发布仍未授权，原有外部上线
+门禁保持不变。
 
 ## 1. 决策范围
 
@@ -264,8 +268,9 @@ docs/
   只追加事实、列级最小授权和 12 项只登记不自动赋予生产角色的 STORE 权限。定向数据库 38/38 与
   35 段 M2-to-current、重复部署、M6/M5 down/重新前滚及 `55000` 门禁演练已通过。
 - 数据库把政策、不可变版本/assignment、订单行快照及 canonical payload/hash 精确绑定；只有商城
-  enforcement 已启用时，deferred commit guard 才要求订单行同事务存在快照。M6.2 不创建生产政策，
-  所有商城 enforcement 保持 OFF，checkout resolver/writer、readiness API 和受审启用命令尚未实现。
+  enforcement 已启用时，deferred commit guard 才要求订单行同事务存在快照。M6.2 交付时不创建生产
+  政策，所有商城 enforcement 保持 OFF，resolver/writer、readiness API 和受审启用命令尚未实现；
+  这些历史边界由下述 M6.3-A 向后兼容扩展。
 - 初始第六段 `20260727115000_m62_integrity_closeout` 要求普通售后从 `PENDING_REVIEW`、legacy 售后从
   `REVIEW_REQUIRED` 安全初态开始；legacy 决定绑定当前管理员、未受污染的初态和唯一受审转换。
   售后状态只能由只追加 transition 原子投影，运行角色不能直接改 header 状态。后续五段前向修复
@@ -279,12 +284,103 @@ docs/
   append-only transition。跨 RLS 读取所需 trigger function 固定 definer owner/search path，且 PUBLIC
   与 runtime 的直接 EXECUTE 均撤销。这些 guard 不替代 M6.3/M6.4 的领域命令、幂等、审计和外部协调。
 - M5 `shipments` 已新增 `purpose` 与售后复合关联；旧数据和普通建单默认 `ORDER_OUTBOUND`，数据库
-  在锁定售后聚合后校验 purpose、case type 和允许状态，并阻止 reject/convert 后留下晚到运单。既有
-  M5 查询、命令、callback 和 worker 尚未全面 purpose-aware，
-  M6.3 创建任何返件/换货运单前必须分流，且只有 `ORDER_OUTBOUND` 可推进原订单 `SHIP/DELIVER`。
-- M6.2 没有开放售后、收藏、历史、隐私或分享的买家/管理员运行时，也没有 worker、UI、对象存储/
-  扫描、真实 COD/GHN/Zalo 调用或生产 rollout。表存在只表示数据事实基础完成；M6.3 尚未开始，
-  M5.5-M5.7、整个 M5 和 P0 的外部上线门禁保持不变。
+  在锁定售后聚合后校验 purpose、case type 和允许状态，并阻止 reject/convert 后留下晚到运单。
+- M6.2 交付时没有开放售后、收藏、历史、隐私或分享的买家/管理员运行时，也没有 worker、UI、对象
+  存储/扫描、真实 COD/GHN/Zalo 调用或生产 rollout。表存在只表示数据事实基础完成；M6.2 的历史
+  范围不因后续 M6.3-A/B1 增量而被改写，当前能力只以以下各节为准。
+
+### M6.3-A 已完成 checkout 政策与 shipment purpose 前置边界
+
+- checkout 在订单创建的同一商城事务中取得 `m62-policy:{store_id}` advisory lock，并通过受限
+  `app_security.lock_m63_after_sale_setting()` 锁定当前商城稳定 settings 行。OFF 时不解析、不写快照，
+  保持旧订单兼容；ON 时重新验证 readiness，并按商品覆盖、订单行主类目的最近祖先、商城默认顺序
+  选择唯一不可变版本，为全部订单行写入 canonical payload、SHA-256、policy/version 精确快照。
+  任一默认、assignment、runtime capability、父链、payload/hash 或数据库 guard 冲突都使下单事务
+  失败，不留下订单、库存预留或幂等成功事实。
+- readiness 只从当前商城活动投影和不可变版本构建，验证 ACTIVE head/current version、完整三语内容、
+  目标集合、effective time 与 payload hash，并将版本化 checkout snapshot runtime capability 纳入
+  readiness hash。已启用 settings 还必须与当前默认 policy/version/hash 同步；应用能力变化不会静默
+  复用旧 ready 事实。
+- `GET /v1/admin/after-sale-settings` 要求 `store.after-sales.policy.read`；`PUT` 独立要求
+  `store.after-sales.policy.enforce`、近期 MFA、匹配确认词、AccessReason（平台跨商城时强制）、
+  expected version 与商城范围
+  Idempotency-Key。命令在 Serializable 事务内以固定锁序执行，有限重试冲突，幂等响应保留 24 小时并
+  返回 `Idempotency-Replayed`。审计 before/after 精确包含 enforcement、settings version、默认
+  policy/version ID、readiness time/hash，不把敏感政策正文或凭据写入日志。
+- 四段向前迁移依次让数据库快照 guard 支持最近类目祖先解析、为既有商城补稳定 OFF settings 行、
+  提供只锁当前 RLS 商城且仅返回 enforcement 布尔值的受限 definer 函数，并通过 stores AFTER INSERT
+  trigger 为新增商城自动 provision 同样的稳定 OFF 行。该 lock 函数是运行角色可直接 EXECUTE 的
+  明确最小例外；其他跨 RLS 校验/投影函数继续撤销 PUBLIC/runtime 直接调用。
+- 既有 M5 订单物流 API 固定只读写 `ORDER_OUTBOUND`；callback body 不能选择 purpose，首次 hint 和
+  后续 provider operation 都从商城隔离的本地 shipment 事实携带 purpose。旧建单 worker 对非订单
+  purpose 永久拒绝；查单/取消的供应商事实可更新对应 shipment，但领域映射仅为 `ORDER_OUTBOUND`
+  生成原订单 `SHIP/DELIVER`，返件/换货状态不会污染原订单。
+- 取消可以与供应商建单并发：provider reference 尚未写回时取消 operation 保持 `PENDING` 并通过
+  outbox 有界重试；operation 真缺失仍永久失败。创建事实落库后同一取消 operation 继续使用已写回
+  的供应商单号，避免并发窗口留下活动运单。
+- 当前定向 unit 55/55、M6.2 数据库 39/39、M4 15/15、M5.6 13/13、完整 integration 26 个文件/
+  206 项、39 段迁移演练、`verify`（54 个文件/381 项单元测试）、21/21 E2E、交付候选 Gitleaks、
+  `git diff --check` 与生产依赖 high 门禁均通过；审计另有 3 项 React Router moderate 公告并已明确
+  结转。M6.3-A 完成时 B1-B7 运行时均未开始、未授权；此历史证据不因随后单独实施 B1 而改变。
+  所有商城默认 OFF，不创建生产政策、返件/换货运单或真实外部调用；M5/P0 外部上线门禁不变。
+
+### M6.3-B0 已完成的契约与前向修复边界
+
+- B0 只冻结并修复领域、严格 DTO、OpenAPI、Prisma/schema、RLS/guard 与前向迁移，当时不创建
+  controller、service、worker、UI 或生产配置。B0 已通过独立完成报告所列领域/契约、数据库、完整
+  integration、迁移演练、静态验证、依赖审计、泄漏扫描和最终差异复审等适用门禁；由于没有新增
+  运行时或 UI，未执行或声称 B0 专属 E2E。B0 完成不自动进入 B1；随后 B1 的单独授权不改变这组
+  历史范围与证据。
+- 非 legacy 售后单的所有订单行必须来自完全相同的 policy、不可变 version 和 canonical payload
+  hash；售后 header 显式保存该精确身份，不能任取第一行政策。每个订单行的权威 `delivered_at`
+  只从 `shipment_items` 关联的 `ORDER_OUTBOUND` 运单解析，并要求订单行全部数量已有可证明的签收
+  事实；冲突或无法证明的旧事实进入 `legacy_policy_review`，禁止使用当前时间或订单更新时间推断。
+- 创建申请与审核都锁定原订单行并使用同一安全整数 VND 余数算法。管理员审核逐行提交
+  `approved_quantity`，客户端不提交批准金额；覆盖全部剩余数量时取得全部剩余 VND，且总额继续受
+  订单与 M5 退款容量保护。reason code 必须来自冻结政策 allowlist；政策要求证据时，上传校验、恶意
+  文件扫描、READY claim、受保护读取或删除补偿任一能力不可用都必须失败关闭且不创建售后单。
+- 会员首次提交返件只原子创建/占用 `SUBMITTED` 返件事实并追加 `START_RETURN`，把售后从
+  `APPROVED` 推进到 `RETURN_PENDING`；会员不能追加 `RETURN_SHIPPED` 或声称运输中/已签收。
+  `RETURN_SHIPPED/RETURN_RECEIVED` 只能来自可信物流查询或受审管理员事实。完整 `inspect-return`
+  及其 exactly-once 库存恢复整体延至 M6.4；M6.3-B 只冻结返件与待验收读取/物流事实。
+- SYSTEM 使用独立 `actor_type=system`、`system_scope=after-sale-transition`、当前商城、系统 actor 和
+  correlation ID 上下文，只允许 `RETURN_EXPIRED`、退款权威结果、`REQUIRE_REVIEW` 与必要的
+  `COMPLETE`。审核、legacy 决定、COD 确认、`REFUND_REQUESTED` 和其他人工动作不在 allowlist；
+  `COMPLETE` 只允许无新增资金副作用地把 `REFUNDED -> COMPLETED` 做确定性收口。
+- B0 同时冻结但不实现读取公共契约：会员 locale 按 `preferredLocale -> vi`，管理员按显式 locale、
+  商城默认、`vi` 回退；`c1_` 游标以独立可轮换 HMAC key 绑定版本、商城、主体、资源、过滤、排序和
+  过期时间；售后公开号为至少 128-bit 随机的 `ASC-[A-Z0-9]{16,32}`。会员/管理员读写分别按
+  60/10 与 120/30 次每 60 秒、商城+主体限流，所有响应以同一 correlation ID 贯穿事务、转换、审计、
+  日志和错误；冲突只暴露公开 allowlist。B6 ONLINE Refund 与 B7 COD 双人结算在 B0 仅为设计，
+  不代表 M5 事务原语、协调 worker、真实转账证明或成功按钮已经交付。
+
+### M6.3-B1 已实现的售后只读边界
+
+- B1 只注册 `GET /v1/after-sales`、`GET /v1/after-sales/{afterSaleId}`、
+  `GET /v1/admin/after-sales` 与 `GET /v1/admin/after-sales/{afterSaleId}`。会员服务查询显式包含
+  `store_id/member_id`；管理员先通过中央商城授权和 `store.after-sales.read`，再以显式 `store_id`
+  查询。两条应用层边界均叠加 PostgreSQL FORCE RLS，已知 UUID 也不能跨商城或跨会员探测。
+- 列表在单个 `REPEATABLE READ` 商城事务内分两阶段读取：原生 SQL 仅取 `limit + 1` 个 page key，
+  再只对白名单 ID 使用严格 Prisma `select` 加载响应所需字段并按 page key 重排。会员固定
+  `created_at DESC, id DESC`，管理员固定 `updated_at DESC, id DESC`；禁止宽关系 `include` 把证据
+  对象 key/扫描详情、结算密文、transition actor/reason 或 header 内部 hash 带入进程。
+- PostgreSQL `timestamptz(6)` page key 以六位微秒 UTC 文本返回并写入游标，下一页直接使用数据库
+  `(timestamp, id)` tuple seek；不得先转为 JavaScript `Date` 再回灌查询。这样保留同一毫秒内记录的
+  全部排序精度，避免分页重复或漏项。
+- `c1_` 游标由独立 `AFTER_SALE_CURSOR_HMAC_KEYS` key ring 保护：配置为 1–3 把唯一、解码后至少
+  32 字节的 base64url 密钥，第一把签发、全部验证；payload 绑定版本、商城、主体、资源、规范筛选、
+  微秒排序键、UUID 和过期时间。轮换必须先置入新主密钥，等待最长 TTL 后才移除旧验证密钥。
+- 响应由严格 schema allowlist 复验。非 legacy 历史政策只从绑定的不可变版本读取，会员 locale 按
+  `preferredLocale -> vi`、管理员按显式 locale、商城默认、`vi` 回退；缺少必要政策/version/越南语
+  事实时失败关闭。凭证只公开 `PENDING/READY/UNAVAILABLE`，原因 ciphertext、管理员字段、供应商
+  payload 和内部资金引用不返回；成功响应统一 `Cache-Control: private, no-store`。
+- 读限流使用 Redis 60 秒窗口并绑定商城+主体：会员 60 次、管理员 120 次；Redis 故障不静默放行，
+  超限返回 `429` 与 `Retry-After`。所有响应延续同一个安全 correlation ID。管理员无 status 列表新增
+  `(store_id, updated_at DESC, id DESC)` 前向索引；Prisma 仅补记数据库原有
+  `after_sale_refunds(store_id, settlement_id)` 唯一约束以修复 schema drift，不重复创建索引。
+- B1 不开放申请、取消、审核、凭证访问、返件、退款、COD 结算或任何其他写路径，也不交付 UI、
+  worker、生产政策/启用或外部调用。B2-B7、完整返件验收与库存恢复 M6.4、生产 rollout、部署和发布
+  继续需要单独授权；B1 可读不代表整个 M6.3、M6、M5 或 P0 完成。
 
 ## 7. 身份、安全与隐私
 

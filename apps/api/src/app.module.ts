@@ -89,6 +89,16 @@ import { ShippingService } from './shipping/shipping.service';
 import { SHIPPING_PROVIDER } from './shipping/shipping.tokens';
 import { PaymentsAdminController } from './payments-admin/payments-admin.controller';
 import { PaymentsAdminService } from './payments-admin/payments-admin.service';
+import { AfterSalesPolicyController } from './after-sales-policy/after-sales-policy.controller';
+import { AfterSalesPolicyService } from './after-sales-policy/after-sales-policy.service';
+import {
+  AfterSalesAdminController,
+  AfterSalesController,
+} from './after-sales/after-sales.controller';
+import { AfterSalesCursor } from './after-sales/after-sales-cursor';
+import { AfterSalesProjector } from './after-sales/after-sales-projector';
+import { AfterSalesRateLimiter } from './after-sales/after-sales-rate-limiter';
+import { AfterSalesService } from './after-sales/after-sales.service';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -176,6 +186,9 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     ShippingWebhookController,
     ShippingController,
     PaymentsAdminController,
+    AfterSalesPolicyController,
+    AfterSalesController,
+    AfterSalesAdminController,
   ],
   providers: [
     AdminService,
@@ -202,6 +215,11 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     ShippingWebhookService,
     ShippingService,
     PaymentsAdminService,
+    AfterSalesPolicyService,
+    AfterSalesCursor,
+    AfterSalesProjector,
+    AfterSalesRateLimiter,
+    AfterSalesService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
       provide: DATABASE_CLIENT,

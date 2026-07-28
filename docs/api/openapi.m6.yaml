@@ -1,17 +1,60 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M6 incremental API contract
-  version: 0.6.1-contract
+  version: 0.6.3-b1
   description: >-
-    M6.1 contract only. It is combined with the M1-M5 contracts and does not mean that these
-    routes are implemented. Buyer store ownership comes from the authenticated member and
-    X-Store-Code. Admin routes additionally require the matching store_id query parameter.
+    M6 incremental contract combined with the M1-M5 contracts. M6.3-A implements only the
+    after-sale settings GET/PUT routes. M6.3-B1 implements only the member/admin after-sale list and
+    detail GET routes; all other after-sale operations assigned to M6.3-B2 through B7 remain
+    contract-only. Buyer store ownership comes from the authenticated member and X-Store-Code.
+    Admin routes additionally require the matching store_id query parameter. Every after-sale HTTP
+    response carries the same X-Correlation-Id propagated through its transaction, transitions,
+    audit and logs; error bodies repeat it as correlation_id.
+x-after-sale-b0-contract:
+  runtime_status: m6_3_a_settings_and_m6_3_b1_reads_implemented
+  runtime_operations:
+    implemented_m6_3_a: [getAfterSaleSettings, setAfterSalePolicyEnforcement]
+    implemented_m6_3_b1:
+      [listMemberAfterSales, getMemberAfterSale, listAdminAfterSales, getAdminAfterSale]
+    contract_only_m6_3_b2_to_b7: all_after_sale_operations_not_listed_as_implemented_above
+  list_sort:
+    member: created_at_desc_then_id_desc
+    admin: updated_at_desc_then_id_desc
+  locale_resolution:
+    member: authenticated_member_preferred_locale_then_vi
+    admin: explicit_locale_then_store_default_then_vi
+  cursor:
+    prefix: c1_
+    protection: dedicated_rotatable_hmac_key_ring_first_signs_all_verify
+    binds: [version, store_id, subject_type, subject_id, resource, filters, sort_key, expires_at]
+    tamper_response: 400
+  rate_limits:
+    window_seconds: 60
+    member_read: { limit: 60, scope: 'store_id:member_id' }
+    member_write: { limit: 10, scope: 'store_id:member_id' }
+    admin_read: { limit: 120, scope: 'store_id:admin_id' }
+    admin_write: { limit: 30, scope: 'store_id:admin_id' }
+    runtime:
+      member_read: implemented_m6_3_b1
+      admin_read: implemented_m6_3_b1
+      member_write: contract_only_m6_3_b2_to_b7
+      admin_write: contract_only_m6_3_b2_to_b7
+    read_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
+  system_principal:
+    scope: after-sale-transition
+    events:
+      [RETURN_EXPIRED, REFUND_SUCCEEDED, REFUND_FAILED, REFUND_CANCELLED, REQUIRE_REVIEW, COMPLETE]
+    forbidden_events:
+      [APPROVE, REJECT, LEGACY_APPROVE, LEGACY_REJECT, RESUME_REVIEW, REFUND_REQUESTED]
+    complete_rule: deterministic_REFUNDED_to_COMPLETED_without_new_fund_side_effect
 servers:
   - url: https://api.example.invalid
 paths:
   /v1/after-sales/evidence-uploads:
     post:
       operationId: initializeAfterSaleEvidenceUpload
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: member_write
       summary: Initialize a private evidence upload for the current member and store
       security: [{ MemberBearer: [] }]
       parameters:
@@ -26,6 +69,7 @@ paths:
         '201':
           description: Private upload target; object is unreadable until confirmed and scanned
           headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
             Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
             Referrer-Policy: { $ref: '#/components/headers/NoReferrer' }
           content:
@@ -35,9 +79,12 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /v1/after-sales/evidence-uploads/{evidenceId}/confirm:
     post:
       operationId: confirmAfterSaleEvidenceUpload
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: member_write
       summary: Confirm object metadata and request scanning
       security: [{ MemberBearer: [] }]
       parameters:
@@ -52,6 +99,8 @@ paths:
       responses:
         '202':
           description: Evidence is pending scanning
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EvidenceView' }
@@ -59,13 +108,21 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /v1/after-sales:
     get:
       operationId: listMemberAfterSales
+      x-runtime-status: implemented_m6_3_b1
+      x-rate-limit-tier: member_read
       summary: List the current member's after-sale cases
+      description: >-
+        Policy text resolves with authenticated preferredLocale and then Vietnamese. Results are
+        always ordered by created_at DESC, id DESC; cursor seek uses the same immutable tuple.
       security: [{ MemberBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
         - { $ref: '#/components/parameters/Cursor' }
         - { $ref: '#/components/parameters/Limit' }
         - { name: type, in: query, schema: { $ref: '#/components/schemas/AfterSaleType' } }
@@ -73,15 +130,30 @@ paths:
       responses:
         '200':
           description: Member-scoped cases
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleReadLimiterUnavailable' }
     post:
       operationId: createAfterSale
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: member_write
       summary: Submit a refund-only, return-refund, or equivalent exchange request
-      description: Amount, policy result, state, refund, inventory and store facts are server-owned.
+      description: >-
+        Amount, policy result, state, refund, inventory and store facts are server-owned. Eligibility
+        derives each requested order line's delivered_at only from its delivered ORDER_OUTBOUND
+        shipment_items; conflicting or unprovable legacy delivery facts enter audited manual review
+        and are never inferred from current time or order timestamps. All lines in one non-legacy
+        case must resolve to the same policy id, version and canonical payload hash; different
+        policies require separate cases. If that policy/reason requires evidence, creation fails
+        closed unless real magic-byte/type/size/count upload validation, malware scanning, READY
+        evidence claim, protected retrieval and deletion compensation capabilities are all available.
       security: [{ MemberBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
@@ -94,6 +166,8 @@ paths:
       responses:
         '201':
           description: Submitted case
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
@@ -102,25 +176,38 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /v1/after-sales/{afterSaleId}:
     get:
       operationId: getMemberAfterSale
+      x-runtime-status: implemented_m6_3_b1
+      x-rate-limit-tier: member_read
       summary: Get the current member's case and public timeline
+      description: Policy text resolves with authenticated preferredLocale and then Vietnamese.
       security: [{ MemberBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
         - { $ref: '#/components/parameters/AfterSaleId' }
       responses:
         '200':
           description: Member-safe case detail
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleReadLimiterUnavailable' }
   /v1/after-sales/{afterSaleId}/cancel:
     post:
       operationId: cancelMemberAfterSale
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: member_write
       summary: Cancel a case that is still pending review
       security: [{ MemberBearer: [] }]
       parameters:
@@ -135,22 +222,28 @@ paths:
       responses:
         '200':
           description: Current case; an idempotent replay returns the same fact
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/after-sales/{afterSaleId}/return-shipment:
     post:
       operationId: submitAfterSaleReturnShipment
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: member_write
       summary: Submit buyer-provided return tracking without treating it as provider truth
       description: >-
-        On the first valid submission from APPROVED, one transaction appends START_RETURN and
-        RETURN_SHIPPED in order, advances the aggregate to RETURN_IN_TRANSIT and records the
-        member-provided tracking fact. It must lock and win before the exclusive
-        return_deadline_at; at or after that instant the request conflicts. Idempotent replay
-        appends neither event again.
+        On the first valid submission from APPROVED, one transaction records and occupies a
+        SUBMITTED member-provided return shipment and appends only START_RETURN, moving the case to
+        RETURN_PENDING before the exclusive return_deadline_at. The member command cannot append
+        RETURN_SHIPPED or assert IN_TRANSIT/DELIVERED. Only later verified logistics or audited
+        administrator facts may append RETURN_SHIPPED/RETURN_RECEIVED. Idempotent replay creates no
+        duplicate record or transition.
       security: [{ MemberBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
@@ -163,7 +256,9 @@ paths:
             schema: { $ref: '#/components/schemas/ReturnShipmentRequest' }
       responses:
         '200':
-          description: Case moved through an explicit return event
+          description: Return record submitted and case moved only to RETURN_PENDING
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
@@ -171,9 +266,12 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/after-sales/{afterSaleId}/evidence/{evidenceId}:
     get:
       operationId: getMemberAfterSaleEvidence
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: member_read
       summary: Get a short-lived no-store URL for the current member's scanned evidence
       description: >-
         Access is issued only while the claimed object is READY and before access_expires_at.
@@ -188,6 +286,7 @@ paths:
         '200':
           description: Member-scoped private evidence access
           headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
             Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
             Referrer-Policy: { $ref: '#/components/headers/NoReferrer' }
           content:
@@ -195,9 +294,12 @@ paths:
               schema: { $ref: '#/components/schemas/EvidenceAccess' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/orders/{orderId}/after-sales:
     post:
       operationId: createMerchantAfterSale
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_write
       summary: Create an audited merchant-initiated refund case for one order
       description: The server calculates all refundable amounts and resolves the member and store.
       security: [{ AdminBearer: [] }]
@@ -214,6 +316,8 @@ paths:
       responses:
         '201':
           description: Merchant-initiated case; no refund has yet been claimed successful
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
@@ -222,16 +326,28 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sales:
     get:
       operationId: listAdminAfterSales
+      x-runtime-status: implemented_m6_3_b1
+      x-rate-limit-tier: admin_read
       summary: List after-sale cases for one authorized store
+      description: >-
+        Results are always ordered by updated_at DESC, id DESC, and cursor seek uses that same
+        ordering tuple. Because updated_at can change between page requests, clients that need a
+        refreshed view restart from the first page. Policy text resolves with explicit locale, then
+        the store default, then Vietnamese. Platform cross-store access additionally requires an
+        audited X-Access-Reason.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AccessReason' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
         - { $ref: '#/components/parameters/Cursor' }
         - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/AdminLocale' }
         - { name: order_id, in: query, schema: { type: string, format: uuid } }
         - { name: member_id, in: query, schema: { type: string, format: uuid } }
         - { name: type, in: query, schema: { $ref: '#/components/schemas/AfterSaleType' } }
@@ -239,39 +355,62 @@ paths:
       responses:
         '200':
           description: Store-scoped cases; evidence content is not included
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleReadLimiterUnavailable' }
   /v1/admin/after-sales/{afterSaleId}:
     get:
       operationId: getAdminAfterSale
+      x-runtime-status: implemented_m6_3_b1
+      x-rate-limit-tier: admin_read
       summary: Read one store-scoped case without private evidence bytes
+      description: >-
+        Platform cross-store access additionally requires an audited X-Access-Reason. Policy text
+        resolves with explicit locale, then the store default, then Vietnamese.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AccessReason' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
         - { $ref: '#/components/parameters/AfterSaleId' }
+        - { $ref: '#/components/parameters/AdminLocale' }
       responses:
         '200':
           description: Admin case detail
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleReadLimiterUnavailable' }
   /v1/admin/after-sales/{afterSaleId}/review:
     post:
       operationId: reviewAfterSale
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_write
       summary: Approve or reject after policy and order fact checks
       description: >-
         This initial review command accepts only a non-legacy case in PENDING_REVIEW and appends
-        APPROVE or REJECT. A case created directly in REVIEW_REQUIRED because its order lacks a
-        trustworthy policy snapshot must use resolve-review with LEGACY_APPROVE or LEGACY_REJECT;
-        the two paths cannot be interchanged.
+        APPROVE or REJECT. APPROVE supplies one approved_quantity decision for every requested
+        order line; at least one is positive, none exceeds requested quantity, and the server locks
+        order lines and applies the frozen integer-VND remainder algorithm. A case created directly
+        in REVIEW_REQUIRED because its order lacks a trustworthy policy snapshot must use
+        resolve-review with LEGACY_APPROVE or LEGACY_REJECT; the paths cannot be interchanged.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
@@ -286,6 +425,8 @@ paths:
       responses:
         '200':
           description: Reviewed case
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
@@ -294,42 +435,12 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
-  /v1/admin/after-sales/{afterSaleId}/inspect-return:
-    post:
-      operationId: inspectAfterSaleReturn
-      summary: Record received, restockable, quarantine or scrap quantities
-      description: >-
-        One transaction first appends RETURN_RECEIVED and then derives ACCEPT_INSPECTION only when
-        at least one unit is accepted. A complete all-RETURN_TO_MEMBER inspection derives
-        REJECT_INSPECTION and cannot enter refund or exchange processing. The client cannot select
-        either transition event; idempotent replay appends neither event again. Any
-        RESTOCK_SELLABLE quantity dynamically requires both after-sales inspect and inventory-adjust
-        permission plus recent MFA; otherwise no inspection or inventory fact is committed.
-      security: [{ AdminBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/StoreCode' }
-        - { $ref: '#/components/parameters/StoreIdQuery' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/AfterSaleId' }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/AfterSaleInspectionRequest' }
-      responses:
-        '200':
-          description: Inspection and any exactly-once inventory action committed atomically
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AfterSale' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sales/{afterSaleId}/refund:
     post:
       operationId: requestAfterSaleRefund
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_write
       summary: Request server-calculated ONLINE or COD settlement
       description: >-
         ONLINE reuses the M5 refund capacity and outbox. COD creates a pending dual-control
@@ -356,6 +467,8 @@ paths:
           description: >-
             Refund or COD settlement is pending; no client amount is accepted. The returned
             settlements include the public_number required by the separate COD confirmation route.
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
@@ -364,9 +477,12 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sales/{afterSaleId}/exchange:
     post:
       operationId: createAfterSaleExchange
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_write
       summary: Reserve and start an equal-quantity replacement SKU fulfillment
       security: [{ AdminBearer: [] }]
       parameters:
@@ -382,6 +498,8 @@ paths:
       responses:
         '202':
           description: Replacement inventory is reserved or the command failed closed
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
@@ -390,9 +508,12 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sales/{afterSaleId}/convert-exchange-to-refund:
     post:
       operationId: convertAfterSaleExchangeToRefund
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_write
       summary: Convert an inspected exchange to a refund before replacement fulfillment starts
       description: >-
         Requires after-sales exchange plus review permission and recent MFA. The server proves no
@@ -413,6 +534,8 @@ paths:
       responses:
         '200':
           description: Exchange converted to REFUND_PENDING without losing prior facts
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
@@ -421,9 +544,12 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sales/{afterSaleId}/resolve-review:
     post:
       operationId: resolveAfterSaleManualReview
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_write
       summary: Resolve an uncertain fact or make the one-time decision for a legacy-policy case
       description: >-
         RESUME records RESUME_REVIEW and returns only to the stored type-compatible resume state.
@@ -450,6 +576,8 @@ paths:
       responses:
         '200':
           description: Case resumed or given its one-time legacy decision after audited validation
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
@@ -458,9 +586,12 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sales/{afterSaleId}/cod-refunds/{settlementNumber}/confirm:
     post:
       operationId: confirmAfterSaleCodRefund
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_write
       summary: Independently confirm a COD refund without accepting client amount or payout reference
       description: >-
         This command is available only after an approved payout adapter or finance workflow has
@@ -485,6 +616,8 @@ paths:
       responses:
         '200':
           description: COD settlement confirmed by a different authorized administrator
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
@@ -493,9 +626,12 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sales/{afterSaleId}/evidence/{evidenceId}:
     get:
       operationId: getAdminAfterSaleEvidence
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_read
       summary: Audit and issue short-lived access to one scanned private evidence object
       description: >-
         Access is issued only for READY evidence before access_expires_at. Expired, failed,
@@ -512,6 +648,7 @@ paths:
         '200':
           description: Access URL; the read is separately audited
           headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
             Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
             Referrer-Policy: { $ref: '#/components/headers/NoReferrer' }
           content:
@@ -520,24 +657,33 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sale-settings:
     get:
       operationId: getAfterSaleSettings
+      x-runtime-status: implemented_m6_3_a
+      x-rate-limit-tier: admin_read
       summary: Read current-store policy readiness and enforcement state
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AccessReason' }
       responses:
         '200':
           description: Store-scoped policy snapshot readiness
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSaleSettings' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     put:
       operationId: setAfterSalePolicyEnforcement
+      x-runtime-status: implemented_m6_3_a
+      x-rate-limit-tier: admin_write
       summary: Enable or disable policy snapshot enforcement for one store
       description: >-
         Enabling runs the full current-store readiness preflight atomically and fails closed when
@@ -547,6 +693,7 @@ paths:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AccessReason' }
       requestBody:
         required: true
         content:
@@ -555,6 +702,9 @@ paths:
       responses:
         '200':
           description: Audited current enforcement state
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSaleSettings' }
@@ -562,9 +712,12 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sale-policies:
     get:
       operationId: listAfterSalePolicies
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_read
       summary: List current-store policy heads without mutable published payloads
       security: [{ AdminBearer: [] }]
       parameters:
@@ -576,14 +729,19 @@ paths:
       responses:
         '200':
           description: Policy heads
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyPage' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sale-policies/{policyCode}:
     get:
       operationId: getAfterSalePolicy
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_read
       summary: Read a policy draft/head and immutable version metadata
       security: [{ AdminBearer: [] }]
       parameters:
@@ -598,14 +756,19 @@ paths:
       responses:
         '200':
           description: Store-scoped policy
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyDetail' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     put:
       operationId: putAfterSalePolicyDraft
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_write
       summary: Create or replace one store-scoped policy draft
       security: [{ AdminBearer: [] }]
       parameters:
@@ -626,6 +789,8 @@ paths:
       responses:
         '200':
           description: Draft only; it is not effective until published
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyDetail' }
@@ -633,9 +798,12 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sale-policies/{policyCode}/versions:
     get:
       operationId: listAfterSalePolicyVersions
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_read
       summary: List immutable current-store policy versions
       security: [{ AdminBearer: [] }]
       parameters:
@@ -647,15 +815,20 @@ paths:
       responses:
         '200':
           description: Immutable policy history
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyVersionPage' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sale-policies/{policyCode}/versions/{versionNumber}:
     get:
       operationId: getAfterSalePolicyVersion
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_read
       summary: Read one immutable current-store policy version and its frozen content
       security: [{ AdminBearer: [] }]
       parameters:
@@ -666,15 +839,20 @@ paths:
       responses:
         '200':
           description: Immutable policy version
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyVersion' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sale-policies/{policyCode}/publish:
     post:
       operationId: publishAfterSalePolicy
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_write
       summary: Publish an immutable after-sale policy version
       description: >-
         The transaction locks canonical target keys and returns 409 when another ACTIVE policy
@@ -695,6 +873,8 @@ paths:
       responses:
         '200':
           description: Published immutable version
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyVersion' }
@@ -702,9 +882,12 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/admin/after-sale-policies/{policyCode}/disable:
     post:
       operationId: disableAfterSalePolicy
+      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-rate-limit-tier: admin_write
       summary: Disable a policy for new resolution without changing historical versions
       description: >-
         The server rejects disabling the enforced store default or any policy whose removal would
@@ -723,6 +906,8 @@ paths:
       responses:
         '200':
           description: Disabled policy head; historical snapshots and versions remain readable
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicySummary' }
@@ -731,6 +916,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/members/me/favorites:
     get:
       operationId: listMemberFavorites
@@ -1031,6 +1217,26 @@ components:
       in: query
       required: true
       schema: { type: string, format: uuid }
+    AccessReason:
+      name: X-Access-Reason
+      in: header
+      required: false
+      description: >-
+        Optional for a store-assigned administrator; required and audited when a platform
+        administrator uses platform.stores.cross_access to enter the target store scope.
+      schema: { type: string, minLength: 10, maxLength: 500 }
+    CorrelationIdRequest:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: >-
+        Optional safe client correlation identifier. The response X-Correlation-Id is authoritative;
+        unsafe supplied values are not propagated and are replaced with a server-generated value.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+        pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1079,7 +1285,10 @@ components:
     Cursor:
       name: cursor
       in: query
-      description: Signed opaque cursor bound to the authenticated store, member/admin scope and sort key
+      description: >-
+        c1_ token signed with a dedicated rotatable HMAC key and bound to schema version, store,
+        authenticated subject type/id, resource, canonical filters, sort key/id and expiry. Any
+        tampering, scope reuse or expiry returns the same stable 400 response.
       schema: { $ref: '#/components/schemas/OpaqueCursor' }
     Limit:
       name: limit
@@ -1089,12 +1298,18 @@ components:
       name: locale
       in: query
       schema: { type: string, enum: [vi, zh, en], default: vi }
+    AdminLocale:
+      name: locale
+      in: query
+      description: Omit to resolve the store default locale, then fall back to Vietnamese.
+      schema: { type: string, enum: [vi, zh, en] }
   schemas:
     OpaqueCursor:
       type: string
       minLength: 23
       maxLength: 512
       pattern: '^c1_[A-Za-z0-9_-]{20,509}$'
+      description: Syntax only; accepting the token also requires the scoped HMAC verification above.
     ShortCode:
       type: string
       minLength: 20
@@ -1183,6 +1398,13 @@ components:
           description: >-
             Exclusive ordinary-access deadline; null when unavailable. A legal hold never extends it.
         version: { type: integer, minimum: 1 }
+      oneOf:
+        - properties:
+            status: { const: READY }
+            access_expires_at: { type: string, format: date-time }
+        - properties:
+            status: { enum: [PENDING, UNAVAILABLE] }
+            access_expires_at: { type: 'null' }
     EvidenceAccess:
       type: object
       additionalProperties: false
@@ -1295,14 +1517,31 @@ components:
         carrier_name: { type: string, minLength: 2, maxLength: 160 }
         expected_version: { type: integer, minimum: 1 }
         tracking_number: { type: string, minLength: 2, maxLength: 160 }
+    AfterSaleApprovedItemInput:
+      type: object
+      additionalProperties: false
+      required: [approved_quantity, order_item_id]
+      properties:
+        approved_quantity: { type: integer, minimum: 0, maximum: 1000 }
+        order_item_id: { type: string, format: uuid }
     ApproveAfterSaleReviewRequest:
       type: object
       additionalProperties: false
-      required: [confirmation_code, decision, expected_version, reason]
+      description: >-
+        order_item_id values are unique and must exactly cover every requested case line. Each
+        approved_quantity is bounded by that line's requested quantity and at least one is positive.
+      required: [confirmation_code, decision, expected_version, items, reason]
       properties:
         confirmation_code: { type: string, const: APPROVE_AFTER_SALE }
         decision: { type: string, const: APPROVE }
         expected_version: { type: integer, minimum: 1 }
+        items:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 20,
+            items: { $ref: '#/components/schemas/AfterSaleApprovedItemInput' },
+          }
         reason: { type: string, minLength: 10, maxLength: 500 }
     RejectAfterSaleReviewRequest:
       type: object
@@ -1318,50 +1557,6 @@ components:
         - { $ref: '#/components/schemas/ApproveAfterSaleReviewRequest' }
         - { $ref: '#/components/schemas/RejectAfterSaleReviewRequest' }
       discriminator: { propertyName: decision }
-    InspectionDisposition:
-      type: object
-      additionalProperties: false
-      required: [disposition, quantity]
-      properties:
-        disposition: { type: string, enum: [RESTOCK_SELLABLE, QUARANTINE, SCRAP, RETURN_TO_MEMBER] }
-        quantity: { type: integer, minimum: 1, maximum: 1000 }
-    InspectionItem:
-      type: object
-      additionalProperties: false
-      description: >-
-        Dispositions must be unique and their quantities must sum exactly to received_quantity.
-        The submitted item set must exactly match every approved case item awaiting inspection;
-        partial or zero-quantity inspection cannot advance the aggregate.
-      required: [dispositions, order_item_id, received_quantity]
-      properties:
-        dispositions:
-          type: array
-          minItems: 1
-          maxItems: 4
-          uniqueItems: true
-          items: { $ref: '#/components/schemas/InspectionDisposition' }
-        order_item_id: { type: string, format: uuid }
-        received_quantity: { type: integer, minimum: 1, maximum: 1000 }
-    AfterSaleInspectionRequest:
-      type: object
-      additionalProperties: false
-      description: >-
-        order_item_id values are unique and the item set exactly covers all approved lines awaiting
-        inspection. Within each item, disposition codes are unique and quantities sum exactly to
-        received_quantity. These server constraints apply even where JSON Schema uniqueItems alone
-        cannot express key uniqueness or sums.
-      required: [confirmation_code, expected_version, items, reason]
-      properties:
-        confirmation_code: { type: string, const: INSPECT_RETURN }
-        expected_version: { type: integer, minimum: 1 }
-        items:
-          {
-            type: array,
-            minItems: 1,
-            maxItems: 20,
-            items: { $ref: '#/components/schemas/InspectionItem' },
-          }
-        reason: { type: string, minLength: 10, maxLength: 500 }
     AfterSaleRefundRequest:
       type: object
       additionalProperties: false
@@ -1557,10 +1752,32 @@ components:
             - { $ref: '#/components/schemas/PublicCode' }
             - { type: 'null' }
         policy_version_number: { type: [integer, 'null'], minimum: 1 }
-        resolved_locale: { type: [string, 'null'], enum: [vi, zh, en, null] }
+        resolved_locale:
+          type: [string, 'null']
+          enum: [vi, zh, en, null]
+          description: >-
+            Member reads use preferredLocale then vi; admin reads use explicit locale, then store
+            default, then vi. Null is reserved for a legacy case without a policy snapshot.
         name: { type: [string, 'null'], maxLength: 160 }
         summary: { type: [string, 'null'], maxLength: 1000 }
         buyer_instructions: { type: [string, 'null'], maxLength: 2000 }
+      oneOf:
+        - properties:
+            legacy_policy_review: { const: true }
+            policy_code: { type: 'null' }
+            policy_version_number: { type: 'null' }
+            resolved_locale: { type: 'null' }
+            name: { type: 'null' }
+            summary: { type: 'null' }
+            buyer_instructions: { type: 'null' }
+        - properties:
+            legacy_policy_review: { const: false }
+            policy_code: { $ref: '#/components/schemas/PublicCode' }
+            policy_version_number: { type: integer, minimum: 1 }
+            resolved_locale: { type: string, enum: [vi, zh, en] }
+            name: { type: string, maxLength: 160 }
+            summary: { type: string, maxLength: 1000 }
+            buyer_instructions: { type: string, maxLength: 2000 }
     AfterSale:
       type: object
       additionalProperties: false
@@ -1588,10 +1805,17 @@ components:
         ]
       properties:
         id: { type: string, format: uuid }
-        public_number: { type: string }
+        public_number:
+          type: string
+          pattern: '^ASC-[A-Z0-9]{16,32}$'
+          description: At least 128 bits of server-generated random uppercase base32/hex entropy
         order_id: { type: string, format: uuid }
         reason_code: { $ref: '#/components/schemas/PublicCode' }
-        reason_detail: { type: string, minLength: 10, maxLength: 2000 }
+        reason_detail:
+          type: [string, 'null']
+          minLength: 10
+          maxLength: 2000
+          description: Nullable only for legacy stored cases; every new create request remains non-empty.
         type: { $ref: '#/components/schemas/AfterSaleType' }
         status: { $ref: '#/components/schemas/AfterSaleStatus' }
         currency: { type: string, const: VND }
@@ -1682,6 +1906,7 @@ components:
           category_id,
           condition_rules,
           damaged_exception,
+          defect_exception,
           exchange_attribute_code,
           exchange_same_product_only,
           expected_version,
@@ -1692,6 +1917,7 @@ components:
           return_shipping_payer,
           return_window_days,
           unopened_required,
+          wrong_item_exception,
         ]
       properties:
         allowed_types:
@@ -1705,6 +1931,7 @@ components:
         category_id: { type: [string, 'null'], format: uuid }
         condition_rules: { $ref: '#/components/schemas/AfterSalePolicyConditionRules' }
         damaged_exception: { type: boolean }
+        defect_exception: { type: boolean }
         exchange_attribute_code:
           { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/PublicCode' }] }
         exchange_same_product_only: { type: boolean, const: true }
@@ -1720,6 +1947,7 @@ components:
         return_shipping_payer: { type: string, enum: [BUYER, MERCHANT, CONDITIONAL] }
         return_window_days: { type: integer, minimum: 1, maximum: 60 }
         unopened_required: { type: boolean }
+        wrong_item_exception: { type: boolean }
     AfterSalePolicyContent:
       type: object
       additionalProperties: false
@@ -1732,6 +1960,7 @@ components:
           category_id,
           condition_rules,
           damaged_exception,
+          defect_exception,
           exchange_attribute_code,
           exchange_same_product_only,
           hygiene_restricted,
@@ -1741,6 +1970,7 @@ components:
           return_shipping_payer,
           return_window_days,
           unopened_required,
+          wrong_item_exception,
         ]
       properties:
         allowed_types:
@@ -1754,6 +1984,7 @@ components:
         category_id: { type: [string, 'null'], format: uuid }
         condition_rules: { $ref: '#/components/schemas/AfterSalePolicyConditionRules' }
         damaged_exception: { type: boolean }
+        defect_exception: { type: boolean }
         exchange_attribute_code:
           { oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/PublicCode' }] }
         exchange_same_product_only: { type: boolean, const: true }
@@ -1768,6 +1999,7 @@ components:
         return_shipping_payer: { type: string, enum: [BUYER, MERCHANT, CONDITIONAL] }
         return_window_days: { type: integer, minimum: 1, maximum: 60 }
         unopened_required: { type: boolean }
+        wrong_item_exception: { type: boolean }
     PolicyPublishRequest:
       type: object
       additionalProperties: false
@@ -2095,6 +2327,18 @@ components:
         interaction_token:
           { type: string, minLength: 20, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' }
         outcome: { type: string, enum: [COMPLETED, CANCELLED] }
+    AfterSalePublicConflictCode:
+      type: string
+      enum:
+        [
+          AFTER_SALE_STATE_CONFLICT,
+          AFTER_SALE_VERSION_CONFLICT,
+          AFTER_SALE_IDEMPOTENCY_CONFLICT,
+          AFTER_SALE_QUANTITY_EXCEEDS_AVAILABLE,
+          AFTER_SALE_POLICY_MISMATCH,
+          AFTER_SALE_RETURN_WINDOW_CLOSED,
+          AFTER_SALE_REFUND_EXCEEDS_APPROVED,
+        ]
     ApiError:
       type: object
       additionalProperties: false
@@ -2116,9 +2360,25 @@ components:
               INTERNAL_ERROR,
             ]
         message_key: { type: string }
-        correlation_id: { type: string }
-        details: { type: object, additionalProperties: true }
+        correlation_id:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+        details:
+          type: object
+          additionalProperties: true
+          properties:
+            after_sale_code: { $ref: '#/components/schemas/AfterSalePublicConflictCode' }
   headers:
+    CorrelationId:
+      required: true
+      description: Same safe identifier propagated through transaction, audit, logs and error body
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+        pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
     FallbackCsp:
       required: true
       schema:
@@ -2138,32 +2398,75 @@ components:
       schema: { type: string, const: 'private, no-store' }
   responses:
     BadRequest:
-      description: Strict DTO, file metadata, header or path input is invalid
+      description: Strict DTO, cursor, filter, file metadata, header or path input is invalid
+      headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
     Unauthorized:
       description: Authentication failed
+      headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
     Forbidden:
       description: The actor lacks the target-store permission or required fresh MFA
+      headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
     NotFound:
       description: The resource is absent in the current actor and store scope
+      headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
     Conflict:
-      description: State, version, quantity, amount, policy, inventory or idempotency conflict
+      description: >-
+        State, version, quantity, amount, policy, inventory or idempotency conflict. After-sale
+        responses expose only details.after_sale_code values from AfterSalePublicConflictCode.
+      headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
     RateLimited:
-      description: Request rate exceeded
+      description: >-
+        Request rate exceeded for the frozen store+actor tier. The response does not disclose
+        account existence or cross-store activity.
+      headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+        Retry-After:
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 60 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    AfterSaleReadLimiterUnavailable:
+      description: >-
+        The required Redis-backed after-sale read limiter is unavailable. The read fails closed
+        before querying the target after-sale resource and ApiError.code is UPSTREAM_UNAVAILABLE. No
+        Retry-After header is promised because recovery depends on infrastructure health rather than
+        a known rate-limit window.
+      headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    ServiceUnavailable:
+      description: >-
+        Required magic-byte/type/size/count evidence validation, scanning, claim, protected retrieval
+        or deletion compensation capability is unavailable; the request fails closed and no case is
+        created.
+      headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+        Retry-After:
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 3600 }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }

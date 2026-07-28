@@ -1392,6 +1392,7 @@ model AfterSalePolicy {
   draftProducts      AfterSalePolicyDraftProduct[]
   activeAssignments  AfterSaleActivePolicyAssignment[]
   orderItemSnapshots OrderItemAfterSalePolicySnapshot[]
+  afterSales         AfterSale[]                       @relation("AfterSalePolicyCases")
   storeSettings      StoreAfterSaleSetting[]
 
   @@unique([storeId, id])
@@ -1431,6 +1432,7 @@ model AfterSalePolicyVersion {
   assignments        AfterSalePolicyVersionAssignment[]
   activeAssignments  AfterSaleActivePolicyAssignment[]
   orderItemSnapshots OrderItemAfterSalePolicySnapshot[]
+  afterSales         AfterSale[]                       @relation("AfterSalePolicyVersionCases")
   storeSettings      StoreAfterSaleSetting[]
 
   @@unique([storeId, id])
@@ -1552,6 +1554,8 @@ model AfterSale {
   reviewReason           String?          @map("review_reason") @db.VarChar(500)
   policySnapshot         Json?            @map("policy_snapshot")
   policyHash             String?          @map("policy_hash") @db.Char(64)
+  policyId               String?          @map("policy_id") @db.Uuid
+  policyVersionId        String?          @map("policy_version_id") @db.Uuid
   legacyPolicyReview     Boolean          @default(false) @map("legacy_policy_review")
   returnDeadlineAt       DateTime?        @map("return_deadline_at") @db.Timestamptz(6)
   returnExpiredAt        DateTime?        @map("return_expired_at") @db.Timestamptz(6)
@@ -1577,6 +1581,8 @@ model AfterSale {
 
   store            Store                      @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sales_store_id_fkey")
   order            Order                      @relation(fields: [storeId, orderId, memberId], references: [storeId, id, memberId], onDelete: Restrict, map: "after_sales_order_owner_fkey")
+  policy           AfterSalePolicy?           @relation("AfterSalePolicyCases", fields: [storeId, policyId], references: [storeId, id], onDelete: Restrict, map: "after_sales_policy_fkey")
+  policyVersion    AfterSalePolicyVersion?    @relation("AfterSalePolicyVersionCases", fields: [storeId, policyVersionId, policyId], references: [storeId, id, policyId], onDelete: Restrict, map: "after_sales_policy_version_fkey")
   reviewer         AdminUser?                 @relation("AfterSaleReviewedBy", fields: [reviewedBy], references: [id], onDelete: Restrict, map: "after_sales_reviewed_by_fkey")
   items            AfterSaleItem[]
   transitions      AfterSaleTransition[]
@@ -1595,7 +1601,9 @@ model AfterSale {
   @@unique([storeId, id, orderId, memberId])
   @@unique([storeId, idempotencyKeyHash])
   @@index([storeId, memberId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([storeId, updatedAt(sort: Desc), id(sort: Desc)], map: "after_sales_store_id_updated_at_id_idx")
   @@index([storeId, status, updatedAt, id])
+  @@index([storeId, policyId, policyVersionId], map: "after_sales_policy_identity_idx")
   @@map("after_sales")
 }
 
@@ -1891,6 +1899,7 @@ model AfterSaleRefund {
   refund     Refund              @relation(fields: [storeId, refundId, paymentAttemptId, orderId, amountVnd], references: [storeId, id, paymentAttemptId, orderId, amountVnd], onDelete: Restrict, map: "after_sale_refunds_refund_fkey")
 
   @@id([storeId, settlementId, refundId])
+  @@unique([storeId, settlementId], map: "after_sale_refunds_store_id_settlement_id_key")
   @@unique([storeId, refundId])
   @@index([storeId, afterSaleId])
   @@map("after_sale_refunds")
@@ -1945,6 +1954,7 @@ model AfterSaleReturnShipment {
   submitter Member    @relation(fields: [storeId, submittedBy], references: [storeId, id], onDelete: Restrict, map: "after_sale_return_shipments_submitter_fkey")
 
   @@unique([storeId, id])
+  @@unique([storeId, afterSaleId])
   @@unique([storeId, afterSaleId, trackingNumberDigest])
   @@index([storeId, status, updatedAt])
   @@map("after_sale_return_shipments")

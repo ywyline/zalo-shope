@@ -14,6 +14,7 @@ import type { PrismaClient } from '@zalo-shop/database';
 import { withStoreTransaction } from '@zalo-shop/database';
 import { createStoreContext } from '@zalo-shop/domain';
 import { normalizeSupportedPhone } from '@zalo-shop/i18n';
+import { resolveCorrelationId } from '@zalo-shop/logger';
 import {
   ZaloProviderError,
   type ZaloIdentity,
@@ -389,7 +390,11 @@ export class AuthService {
     };
   }
 
-  public async authenticateAccessToken(token: string, storeCode?: string): Promise<AccessClaims> {
+  public async authenticateAccessToken(
+    token: string,
+    storeCode?: string,
+    correlationId?: string,
+  ): Promise<AccessClaims> {
     const claims = this.verifyAccessToken(token);
     if (claims.actorType === 'admin') {
       const session = await this.database.adminSession.findUnique({
@@ -405,7 +410,7 @@ export class AuthService {
     if (store.id !== claims.storeId) throw new UnauthorizedException('Store context is invalid');
     const context = createStoreContext({
       actor: { id: claims.subjectId, type: 'member' },
-      correlationId: randomUUID(),
+      correlationId: resolveCorrelationId(correlationId),
       locale: store.default_locale,
       storeCode: store.code,
       storeId: store.id,

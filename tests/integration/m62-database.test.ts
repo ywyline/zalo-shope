@@ -7,7 +7,9 @@ import {
   createRuntimePrismaClient,
   PrismaClient,
   type StoreTransaction,
+  withAfterSaleSystemTransaction,
 } from '@zalo-shop/database';
+import { createAfterSaleSystemContext } from '@zalo-shop/domain';
 
 const BEAUTY_STORE_ID = '10000000-0000-4000-8000-000000000001';
 const FASHION_STORE_ID = '10000000-0000-4000-8000-000000000002';
@@ -269,6 +271,14 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND order_id = ${fixture.orderId}::uuid`;
         await transaction.$executeRaw`DELETE FROM after_sales
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND order_id = ${fixture.orderId}::uuid`;
+        await transaction.$executeRaw`DELETE FROM order_item_after_sale_policy_snapshots
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND order_id = ${fixture.orderId}::uuid`;
+        await transaction.$executeRaw`DELETE FROM after_sale_active_policy_assignments
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+            AND assignment_id = ${fixture.casePolicyAssignmentId}::uuid`;
+        await transaction.$executeRaw`DELETE FROM after_sale_policy_version_assignments
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+            AND id = ${fixture.casePolicyAssignmentId}::uuid`;
         await transaction.$executeRaw`DELETE FROM order_items
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND order_id = ${fixture.orderId}::uuid`;
         await transaction.$executeRaw`DELETE FROM orders
@@ -279,6 +289,14 @@ describe('M6.2 after-sale, member and share database foundation', () => {
               ${fixture.alternateSkuId}::uuid)`;
         await transaction.$executeRaw`DELETE FROM products
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${fixture.productId}::uuid`;
+        await transaction.$executeRaw`DELETE FROM after_sale_policy_localizations
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+            AND policy_version_id = ${fixture.casePolicyVersionId}::uuid`;
+        await transaction.$executeRaw`DELETE FROM after_sale_policy_versions
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+            AND id = ${fixture.casePolicyVersionId}::uuid`;
+        await transaction.$executeRaw`DELETE FROM after_sale_policies
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${fixture.casePolicyId}::uuid`;
         await transaction.$executeRaw`DELETE FROM brands
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${fixture.brandId}::uuid`;
         await transaction.$executeRaw`DELETE FROM members
@@ -298,14 +316,25 @@ describe('M6.2 after-sale, member and share database foundation', () => {
     skuId: string;
     replacementSkuId: string;
     alternateSkuId: string;
+    casePolicyAssignmentId: string;
+    casePolicyId: string;
+    casePolicyPayload: string;
+    casePolicyPayloadHash: string;
+    casePolicyVersionId: string;
     orderId: string;
     orderItemId: string;
   }>;
 
   async function createCommerceFixture(
     transaction: StoreTransaction,
-    input: { orderPayableVnd?: number } = {},
+    input: {
+      orderPayableVnd?: number;
+      orderQuantity?: number;
+      paymentMethod?: 'COD' | 'ONLINE';
+      withCasePolicy?: boolean;
+    } = {},
   ): Promise<CommerceFixture> {
+    const casePolicyVersionId = randomUUID();
     const fixture: CommerceFixture = {
       adminId: randomUUID(),
       confirmingAdminId: randomUUID(),
@@ -315,10 +344,21 @@ describe('M6.2 after-sale, member and share database foundation', () => {
       skuId: randomUUID(),
       replacementSkuId: randomUUID(),
       alternateSkuId: randomUUID(),
+      casePolicyAssignmentId: randomUUID(),
+      casePolicyId: randomUUID(),
+      casePolicyPayload: JSON.stringify({
+        return_shipping_payer: 'MERCHANT',
+        return_window_days: 7,
+      }),
+      casePolicyPayloadHash: createHash('sha256')
+        .update(`m63-b0-policy-${casePolicyVersionId}`)
+        .digest('hex'),
+      casePolicyVersionId,
       orderId: randomUUID(),
       orderItemId: randomUUID(),
     };
     const payableVnd = input.orderPayableVnd ?? 100_000;
+    const orderQuantity = input.orderQuantity ?? 2;
     const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 
     await transaction.$executeRaw`INSERT INTO admin_users
@@ -358,7 +398,8 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         currency, base_subtotal_vnd, shipping_fee_vnd, payable_vnd, quote_hash, updated_at)
       VALUES (${fixture.orderId}::uuid, ${BEAUTY_STORE_ID}::uuid,
         ${fixture.memberId}::uuid, ${`M62-${fixture.orderId.slice(0, 12)}`},
-        'PENDING_FULFILLMENT', 'COD', 'SUCCEEDED', 'VND', ${payableVnd}, 0,
+        'PENDING_FULFILLMENT', ${input.paymentMethod ?? 'COD'}::order_payment_method,
+        'SUCCEEDED', 'VND', ${payableVnd}, 0,
         ${payableVnd}, ${digest(`quote-${fixture.orderId}`)}, now())`;
     await transaction.$executeRaw`INSERT INTO order_items
       (id, store_id, order_id, sku_id, product_id, brand_id, category_id, sku_code,
@@ -367,8 +408,60 @@ describe('M6.2 after-sale, member and share database foundation', () => {
       VALUES (${fixture.orderItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
         ${fixture.orderId}::uuid, ${fixture.skuId}::uuid, ${fixture.productId}::uuid,
         ${fixture.brandId}::uuid, ${BEAUTY_CATEGORY_ID}::uuid,
-        ${`m62-sku-${fixture.skuId.slice(0, 8)}`}, 'M6.2 product', 'M6.2 brand',
-        '{"size":"small"}'::jsonb, ${payableVnd / 2}, 2, ${payableVnd}, ${payableVnd})`;
+         ${`m62-sku-${fixture.skuId.slice(0, 8)}`}, 'M6.2 product', 'M6.2 brand',
+         '{"size":"small"}'::jsonb, ${Math.floor(payableVnd / orderQuantity)},
+         ${orderQuantity}, ${payableVnd}, ${payableVnd})`;
+    if (input.withCasePolicy !== false) {
+      await setContext(transaction, {
+        actorId: fixture.adminId,
+        actorType: 'admin',
+        storeId: BEAUTY_STORE_ID,
+      });
+      await transaction.$executeRaw`INSERT INTO after_sale_policies
+        (id, store_id, code, status, draft_payload, draft_hash, created_by, updated_by,
+          updated_at)
+        VALUES (${fixture.casePolicyId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${`m63-b0-${fixture.casePolicyId.slice(0, 8)}`}, 'DRAFT', '{}'::jsonb,
+          ${digest(`m63-b0-draft-${fixture.casePolicyId}`)}, ${fixture.adminId}::uuid,
+          ${fixture.adminId}::uuid, now())`;
+      await transaction.$executeRaw`INSERT INTO after_sale_policy_versions
+        (id, store_id, policy_id, version_number, effective_at, request_window_days,
+          return_window_days, allowed_types, return_shipping_payer, unopened_required,
+          hygiene_restricted, damaged_exception, wrong_item_exception, defect_exception,
+          condition_rules, payload, payload_hash, published_by)
+        VALUES (${fixture.casePolicyVersionId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${fixture.casePolicyId}::uuid, 1, now(), 30, 7,
+          ARRAY['REFUND_ONLY','RETURN_REFUND','EXCHANGE','MERCHANT_REFUND']::after_sale_type[],
+          'MERCHANT', false, false, true, true, true, '{}'::jsonb,
+          ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+          ${fixture.adminId}::uuid)`;
+      await transaction.$executeRaw`INSERT INTO after_sale_policy_localizations
+        (store_id, policy_version_id, locale, name, summary, buyer_instructions)
+        VALUES (${BEAUTY_STORE_ID}::uuid, ${fixture.casePolicyVersionId}::uuid, 'vi',
+          'Chinh sach B0', 'Tom tat B0', 'Huong dan B0')`;
+      await transaction.$executeRaw`UPDATE after_sale_policies
+        SET status = 'ACTIVE', current_version_id = ${fixture.casePolicyVersionId}::uuid,
+          version = version + 1, updated_at = now()
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${fixture.casePolicyId}::uuid`;
+      await transaction.$executeRaw`INSERT INTO after_sale_policy_version_assignments
+        (id, store_id, policy_id, policy_version_id, target_type, product_id)
+        VALUES (${fixture.casePolicyAssignmentId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid,
+          'PRODUCT', ${fixture.productId}::uuid)`;
+      await transaction.$executeRaw`INSERT INTO after_sale_active_policy_assignments
+        (store_id, target_type, product_id, policy_id, policy_version_id, assignment_id,
+          updated_at)
+        VALUES (${BEAUTY_STORE_ID}::uuid, 'PRODUCT', ${fixture.productId}::uuid,
+          ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid,
+          ${fixture.casePolicyAssignmentId}::uuid, now())`;
+      await transaction.$executeRaw`INSERT INTO order_item_after_sale_policy_snapshots
+        (store_id, order_id, order_item_id, policy_id, policy_version_id, policy_code,
+          policy_version_number, payload, payload_hash)
+        VALUES (${BEAUTY_STORE_ID}::uuid, ${fixture.orderId}::uuid,
+          ${fixture.orderItemId}::uuid, ${fixture.casePolicyId}::uuid,
+          ${fixture.casePolicyVersionId}::uuid, ${`m63-b0-${fixture.casePolicyId.slice(0, 8)}`},
+          1, ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash})`;
+    }
     return fixture;
   }
 
@@ -438,8 +531,14 @@ describe('M6.2 after-sale, member and share database foundation', () => {
     } = {},
   ): Promise<{ afterSaleId: string; afterSaleItemId?: string }> {
     const afterSaleId = randomUUID();
-    const afterSaleItemId = input.withItem ? randomUUID() : undefined;
     const approvedTotalVnd = input.approvedTotalVnd ?? 60_000;
+    const afterSaleItemId = input.withItem === false ? undefined : randomUUID();
+    const approvedQuantity = approvedTotalVnd >= 100_000 ? 2 : 1;
+    const approvedItemVnd = afterSaleItemId ? approvedQuantity * 50_000 : 0;
+    const approvedOtherVnd = approvedTotalVnd - approvedItemVnd;
+    if (approvedOtherVnd < 0) {
+      throw new Error('M6.2 fixture approved total cannot cover its positive item allocation');
+    }
     const type = input.type ?? 'REFUND_ONLY';
     const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -451,16 +550,17 @@ describe('M6.2 after-sale, member and share database foundation', () => {
 
     await transaction.$executeRaw`INSERT INTO after_sales
       (id, store_id, order_id, member_id, public_case_number, type, status, source,
-        reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+        reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+        legacy_policy_review,
         requested_item_vnd, requested_other_vnd, requested_total_vnd,
         idempotency_key_hash, request_hash, initiated_by, correlation_id, updated_at)
       VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${fixture.orderId}::uuid,
         ${fixture.memberId}::uuid,
         ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
         ${type}::after_sale_type, 'PENDING_REVIEW', 'ADMIN', 'm62-regression',
-        '{}'::jsonb, ${digest(`policy-${afterSaleId}`)}, false,
-        ${afterSaleItemId ? approvedTotalVnd : 0},
-        ${afterSaleItemId ? 0 : approvedTotalVnd}, ${approvedTotalVnd},
+        ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+        ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+        ${approvedItemVnd}, ${approvedOtherVnd}, ${approvedTotalVnd},
         ${digest(`case-key-${afterSaleId}`)},
         ${digest(`case-request-${afterSaleId}`)}, ${fixture.adminId}::uuid,
         ${`m62-${afterSaleId}`}, now())`;
@@ -472,39 +572,41 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           sku_id, product_id, brand_id, category_id, sku_code, product_name,
           option_snapshot, unit_price_vnd, replacement_sku_id, updated_at)
         VALUES (${afterSaleItemId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
-          ${fixture.orderId}::uuid, ${fixture.orderItemId}::uuid, 2,
-          ${approvedTotalVnd}, ${fixture.skuId}::uuid,
+          ${fixture.orderId}::uuid, ${fixture.orderItemId}::uuid, ${approvedQuantity},
+          ${approvedItemVnd}, ${fixture.skuId}::uuid,
           ${fixture.productId}::uuid, ${fixture.brandId}::uuid,
           ${BEAUTY_CATEGORY_ID}::uuid, ${`m62-sku-${fixture.skuId.slice(0, 8)}`},
-          'M6.2 product', '{"size":"small"}'::jsonb, ${approvedTotalVnd / 2},
+          'M6.2 product', '{"size":"small"}'::jsonb, 50000,
           ${type === 'EXCHANGE' ? fixture.replacementSkuId : null}::uuid, now())`;
 
       await transaction.$executeRaw`UPDATE after_sale_items
-        SET approved_quantity = 2, approved_item_vnd = ${approvedTotalVnd},
-          replacement_quantity = ${type === 'EXCHANGE' ? 2 : 0}, updated_at = now()
+        SET approved_quantity = ${approvedQuantity}, approved_item_vnd = ${approvedItemVnd},
+          replacement_quantity = ${type === 'EXCHANGE' ? approvedQuantity : 0},
+          updated_at = now()
         WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleItemId}::uuid`;
     }
 
     await transaction.$executeRaw`UPDATE after_sales
-      SET approved_item_vnd = ${afterSaleItemId ? approvedTotalVnd : 0},
-        approved_other_vnd = ${afterSaleItemId ? 0 : approvedTotalVnd},
+      SET approved_item_vnd = ${approvedItemVnd},
+        approved_other_vnd = ${approvedOtherVnd},
         approved_total_vnd = ${approvedTotalVnd},
         return_deadline_at = CASE WHEN ${type} IN ('RETURN_REFUND', 'EXCHANGE')
           THEN now() + interval '7 days' ELSE NULL END,
         updated_at = now()
       WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`;
-    if (!afterSaleItemId) {
+    if (approvedOtherVnd > 0) {
       await transaction.$executeRaw`INSERT INTO after_sale_order_allocations
         (store_id, after_sale_id, order_id, other_vnd)
         VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
-          ${fixture.orderId}::uuid, ${approvedTotalVnd})`;
+          ${fixture.orderId}::uuid, ${approvedOtherVnd})`;
     }
     await transaction.$executeRaw`INSERT INTO after_sale_transitions
       (store_id, after_sale_id, from_status, to_status, event, actor_type,
         actor_id, correlation_id)
       VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
         'PENDING_REVIEW', 'APPROVED', 'APPROVE', 'ADMIN',
-        ${fixture.adminId}::uuid, ${`m62-${randomUUID()}`})`;
+        ${fixture.adminId}::uuid,
+        pg_catalog.current_setting('app.correlation_id', true))`;
 
     return { afterSaleId, afterSaleItemId };
   }
@@ -529,7 +631,8 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         actor_id, correlation_id)
       VALUES (${BEAUTY_STORE_ID}::uuid, ${input.afterSaleId}::uuid,
         ${input.fromStatus}::after_sale_status, ${input.toStatus}::after_sale_status,
-        ${input.event}, 'ADMIN', ${input.actorId}::uuid, ${`m62-${randomUUID()}`})`;
+        ${input.event}, 'ADMIN', ${input.actorId}::uuid,
+        pg_catalog.current_setting('app.correlation_id', true))`;
   }
 
   function createDeferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -1059,14 +1162,17 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           });
           await transaction.$executeRaw`INSERT INTO after_sales
             (id, store_id, order_id, member_id, public_case_number, type, status, source,
-              reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+              reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+              legacy_policy_review,
               requested_item_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
               initiated_by, correlation_id, updated_at)
             VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
               ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
               ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
-              'REFUND_ONLY', 'PENDING_REVIEW', 'MEMBER', 'm62-concurrent-claim', '{}'::jsonb,
-              ${digest(`policy-${afterSaleId}`)}, false, 100000, 100000,
+              'REFUND_ONLY', 'PENDING_REVIEW', 'MEMBER', 'm62-concurrent-claim',
+              ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+              ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+              100000, 100000,
               ${digest(`case-key-${afterSaleId}`)},
               ${digest(`case-request-${afterSaleId}`)}, ${fixture.memberId}::uuid,
               ${`m62-race-${afterSaleId}`}, now())`;
@@ -1106,7 +1212,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
     });
   });
 
-  it('releases unapproved item quantity after an approval decision', async () => {
+  it('releases item quantity after a rejection decision', async () => {
     await withCommittedCommerceFixture(async (fixture) => {
       await withRollback(async (transaction) => {
         await setContext(transaction, {
@@ -1120,15 +1226,18 @@ describe('M6.2 after-sale, member and share database foundation', () => {
 
         await transaction.$executeRaw`INSERT INTO after_sales
           (id, store_id, order_id, member_id, public_case_number, type, status, source,
-            reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review,
             requested_item_vnd, requested_other_vnd, requested_total_vnd,
             idempotency_key_hash, request_hash,
             initiated_by, correlation_id, updated_at)
           VALUES (${firstAfterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
             ${`ASC-${firstAfterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
-            'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'unapproved-item-release', '{}'::jsonb,
-            ${digest(`policy-${firstAfterSaleId}`)}, false, 100000, 10000, 110000,
+            'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'unapproved-item-release',
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            100000, 10000, 110000,
             ${digest(`case-key-${firstAfterSaleId}`)},
             ${digest(`case-request-${firstAfterSaleId}`)}, ${fixture.adminId}::uuid,
             ${`m62-${firstAfterSaleId}`}, now())`;
@@ -1142,31 +1251,49 @@ describe('M6.2 after-sale, member and share database foundation', () => {
             ${fixture.brandId}::uuid, ${BEAUTY_CATEGORY_ID}::uuid,
             ${`m62-sku-${fixture.skuId.slice(0, 8)}`}, 'M6.2 product',
             '{"size":"small"}'::jsonb, 50000, now())`;
-        await transaction.$executeRaw`UPDATE after_sales
-          SET approved_other_vnd = 10000, approved_total_vnd = 10000, updated_at = now()
-          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${firstAfterSaleId}::uuid`;
-        await transaction.$executeRaw`INSERT INTO after_sale_order_allocations
-          (store_id, after_sale_id, order_id, other_vnd)
-          VALUES (${BEAUTY_STORE_ID}::uuid, ${firstAfterSaleId}::uuid,
-            ${fixture.orderId}::uuid, 10000)`;
+        await expectDatabaseFailure(
+          transaction,
+          async () => {
+            await transaction.$executeRaw`UPDATE after_sales
+              SET approved_other_vnd = 10000, approved_total_vnd = 10000,
+                updated_at = now()
+              WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+                AND id = ${firstAfterSaleId}::uuid`;
+            await transaction.$executeRaw`INSERT INTO after_sale_order_allocations
+              (store_id, after_sale_id, order_id, other_vnd)
+              VALUES (${BEAUTY_STORE_ID}::uuid, ${firstAfterSaleId}::uuid,
+                ${fixture.orderId}::uuid, 10000)`;
+            await appendAfterSaleTransition(transaction, {
+              actorId: fixture.adminId,
+              afterSaleId: firstAfterSaleId,
+              event: 'APPROVE',
+              fromStatus: 'PENDING_REVIEW',
+              toStatus: 'APPROVED',
+            });
+          },
+          '23514',
+        );
         await appendAfterSaleTransition(transaction, {
           actorId: fixture.adminId,
           afterSaleId: firstAfterSaleId,
-          event: 'APPROVE',
+          event: 'REJECT',
           fromStatus: 'PENDING_REVIEW',
-          toStatus: 'APPROVED',
+          toStatus: 'REJECTED',
         });
 
         await transaction.$executeRaw`INSERT INTO after_sales
           (id, store_id, order_id, member_id, public_case_number, type, status, source,
-            reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review,
             requested_item_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
             initiated_by, correlation_id, updated_at)
           VALUES (${secondAfterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
             ${`ASC-${secondAfterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
-            'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'reclaimed-item-capacity', '{}'::jsonb,
-            ${digest(`policy-${secondAfterSaleId}`)}, false, 100000, 100000,
+            'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'reclaimed-item-capacity',
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            100000, 100000,
             ${digest(`case-key-${secondAfterSaleId}`)},
             ${digest(`case-request-${secondAfterSaleId}`)}, ${fixture.adminId}::uuid,
             ${`m62-${secondAfterSaleId}`}, now())`;
@@ -1192,7 +1319,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
             ORDER BY sale.id`,
         ).toEqual(
           expect.arrayContaining([
-            { approved_quantity: 0, requested_quantity: 2, status: 'APPROVED' },
+            { approved_quantity: 0, requested_quantity: 2, status: 'REJECTED' },
             { approved_quantity: 0, requested_quantity: 2, status: 'PENDING_REVIEW' },
           ]),
         );
@@ -1216,27 +1343,47 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         return Promise.all(
           decisions.map(async (decision) => {
             const afterSaleId = randomUUID();
+            const afterSaleItemId = randomUUID();
+            const approving = decision.event === 'APPROVE';
             await transaction.$executeRaw`INSERT INTO after_sales
               (id, store_id, order_id, member_id, public_case_number, type, status, source,
-                reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+                reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+                legacy_policy_review,
                 requested_item_vnd, requested_other_vnd, requested_total_vnd,
                 idempotency_key_hash, request_hash,
                 initiated_by, correlation_id, updated_at)
               VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
                 ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
                 ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
-                'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'item-decision-race', '{}'::jsonb,
-                ${digest(`policy-${afterSaleId}`)}, false, 50000, 50000, 100000,
+                'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'item-decision-race',
+                ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+                ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+                ${approving ? 50000 : 0}, ${approving ? 0 : 50000}, 50000,
                 ${digest(`case-key-${afterSaleId}`)},
                 ${digest(`case-request-${afterSaleId}`)}, ${fixture.adminId}::uuid,
                 ${`m62-${afterSaleId}`}, now())`;
-            if (decision.event === 'APPROVE') {
+            if (approving) {
+              await transaction.$executeRaw`INSERT INTO after_sale_items
+                (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+                  requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+                  product_name, option_snapshot, unit_price_vnd, updated_at)
+                VALUES (${afterSaleItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+                  ${afterSaleId}::uuid, ${fixture.orderId}::uuid,
+                  ${fixture.orderItemId}::uuid, 1, 50000, ${fixture.skuId}::uuid,
+                  ${fixture.productId}::uuid, ${fixture.brandId}::uuid,
+                  ${BEAUTY_CATEGORY_ID}::uuid,
+                  ${`m62-sku-${fixture.skuId.slice(0, 8)}`}, 'M6.2 product',
+                  '{"size":"small"}'::jsonb, 50000, now())`;
+              await transaction.$executeRaw`UPDATE after_sale_items
+                SET approved_quantity = 1, approved_item_vnd = 50000, updated_at = now()
+                WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+                  AND id = ${afterSaleItemId}::uuid`;
               await transaction.$executeRaw`UPDATE after_sales
-                SET approved_other_vnd = 50000, approved_total_vnd = 50000,
+                SET approved_item_vnd = 50000, approved_total_vnd = 50000,
                   updated_at = now()
                 WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`;
             }
-            return { afterSaleId, ...decision };
+            return { afterSaleId, initialItemCount: approving ? 1n : 0n, ...decision };
           }),
         );
       });
@@ -1246,15 +1393,6 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           {
             actorId: fixture.adminId,
             afterSaleId: afterSaleCase.afterSaleId,
-            beforeTransition:
-              afterSaleCase.event === 'APPROVE'
-                ? async (transaction) => {
-                    await transaction.$executeRaw`INSERT INTO after_sale_order_allocations
-                      (store_id, after_sale_id, order_id, other_vnd)
-                      VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleCase.afterSaleId}::uuid,
-                        ${fixture.orderId}::uuid, 50000)`;
-                  }
-                : undefined,
             event: afterSaleCase.event,
             fromStatus: 'PENDING_REVIEW',
             toStatus: afterSaleCase.status,
@@ -1291,7 +1429,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
             WHERE sale.store_id = ${BEAUTY_STORE_ID}::uuid
               AND sale.id = ${afterSaleCase.afterSaleId}::uuid
             GROUP BY sale.status`,
-        ).toEqual([{ item_count: 0n, status: afterSaleCase.status }]);
+        ).toEqual([{ item_count: afterSaleCase.initialItemCount, status: afterSaleCase.status }]);
       }
     });
   });
@@ -1315,14 +1453,17 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           transaction,
           () => transaction.$executeRaw`INSERT INTO after_sales
             (store_id, order_id, member_id, public_case_number, type, status, source,
-              reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+              reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+              legacy_policy_review,
               requested_item_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
               initiated_by, correlation_id, updated_at)
             VALUES (${BEAUTY_STORE_ID}::uuid, ${fixture.orderId}::uuid,
               ${fixture.memberId}::uuid,
               ${`ASC-${randomUUID().replaceAll('-', '').slice(0, 16).toUpperCase()}`},
-              'REFUND_ONLY', 'PENDING_REVIEW', 'MEMBER', 'spoofed-member-actor', '{}'::jsonb,
-              ${digest(`policy-spoofed-${afterSaleId}`)}, false, 100000, 100000,
+              'REFUND_ONLY', 'PENDING_REVIEW', 'MEMBER', 'spoofed-member-actor',
+              ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+              ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+              100000, 100000,
               ${digest(`spoofed-key-${afterSaleId}`)},
               ${digest(`spoofed-request-${afterSaleId}`)}, ${randomUUID()}::uuid,
               ${`m62-spoofed-${afterSaleId}`}, now())`,
@@ -1330,14 +1471,17 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         );
         await transaction.$executeRaw`INSERT INTO after_sales
           (id, store_id, order_id, member_id, public_case_number, type, status, source,
-            reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review,
             requested_item_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
             initiated_by, correlation_id, updated_at)
           VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
             ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
-            'REFUND_ONLY', 'PENDING_REVIEW', 'MEMBER', 'member-request', '{}'::jsonb,
-            ${digest(`policy-${afterSaleId}`)}, false, 100000, 100000,
+            'REFUND_ONLY', 'PENDING_REVIEW', 'MEMBER', 'member-request',
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            100000, 100000,
             ${digest(`case-key-${afterSaleId}`)},
             ${digest(`case-request-${afterSaleId}`)}, ${fixture.memberId}::uuid,
             ${`m62-member-${afterSaleId}`}, now())`;
@@ -1390,7 +1534,8 @@ describe('M6.2 after-sale, member and share database foundation', () => {
               actor_id, correlation_id)
             VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
               'PENDING_REVIEW', 'APPROVED', 'APPROVE', 'MEMBER',
-              ${fixture.memberId}::uuid, ${`m62-${randomUUID()}`})`,
+              ${fixture.memberId}::uuid,
+              pg_catalog.current_setting('app.correlation_id', true))`,
           '42501',
         );
 
@@ -1502,7 +1647,8 @@ describe('M6.2 after-sale, member and share database foundation', () => {
             actor_id, correlation_id)
           VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
             'PENDING_REVIEW', 'CANCELLED', 'CANCEL', 'MEMBER',
-            ${fixture.memberId}::uuid, ${`m62-${randomUUID()}`})`;
+            ${fixture.memberId}::uuid,
+            pg_catalog.current_setting('app.correlation_id', true))`;
         expect(
           await transaction.$queryRaw`SELECT status, version, completed_at IS NOT NULL AS completed
             FROM after_sales
@@ -1745,14 +1891,17 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         });
         await transaction.$executeRaw`INSERT INTO after_sales
           (id, store_id, order_id, member_id, public_case_number, type, status, source,
-            reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review,
             requested_item_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
             initiated_by, correlation_id, updated_at)
           VALUES (${protectedAfterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
             ${`ASC-${protectedAfterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
             'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'untyped-definer-scope',
-            '{}'::jsonb, ${digest(`policy-${protectedAfterSaleId}`)}, false, 50000, 50000,
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            50000, 50000,
             ${digest(`case-key-${protectedAfterSaleId}`)},
             ${digest(`case-request-${protectedAfterSaleId}`)}, ${fixture.adminId}::uuid,
             ${`m62-${protectedAfterSaleId}`}, now())`;
@@ -1799,7 +1948,8 @@ describe('M6.2 after-sale, member and share database foundation', () => {
                 actor_id, correlation_id)
               VALUES (${BEAUTY_STORE_ID}::uuid, ${randomUUID()}::uuid,
                 'PENDING_REVIEW', 'APPROVED', 'APPROVE', 'ADMIN',
-                ${fixture.adminId}::uuid, ${`m62-${randomUUID()}`})`,
+                ${fixture.adminId}::uuid,
+                pg_catalog.current_setting('app.correlation_id', true))`,
             '42501',
           );
         });
@@ -1840,14 +1990,17 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         const afterSaleId = randomUUID();
         await transaction.$executeRaw`INSERT INTO after_sales
           (id, store_id, order_id, member_id, public_case_number, type, status, source,
-            reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review,
             requested_item_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
             initiated_by, correlation_id, updated_at)
           VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
             ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
-            'REFUND_ONLY', 'PENDING_REVIEW', 'MEMBER', 'member-request', '{}'::jsonb,
-            ${digest(`policy-${afterSaleId}`)}, false, 100000, 100000,
+            'REFUND_ONLY', 'PENDING_REVIEW', 'MEMBER', 'member-request',
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            100000, 100000,
             ${digest(`case-key-${afterSaleId}`)}, ${digest(`case-request-${afterSaleId}`)},
             ${fixture.memberId}::uuid, ${`m62-${afterSaleId}`}, now())`;
 
@@ -1945,20 +2098,34 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           storeId: BEAUTY_STORE_ID,
         });
         const afterSaleId = randomUUID();
+        const afterSaleItemId = randomUUID();
         const digest = (value: string) => createHash('sha256').update(value).digest('hex');
         await transaction.$executeRaw`INSERT INTO after_sales
           (id, store_id, order_id, member_id, public_case_number, type, status, source,
-            reason_code, policy_snapshot, policy_hash, legacy_policy_review,
-            requested_other_vnd, requested_total_vnd,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review,
+            requested_item_vnd, requested_other_vnd, requested_total_vnd,
             idempotency_key_hash, request_hash, initiated_by, correlation_id, updated_at)
           VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
             ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
-            'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'admin-review', '{}'::jsonb,
-            ${digest(`policy-${afterSaleId}`)}, false, 60000, 60000,
+            'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'admin-review',
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            50000, 10000, 60000,
             ${digest(`case-key-${afterSaleId}`)},
             ${digest(`case-request-${afterSaleId}`)}, ${fixture.adminId}::uuid,
             ${`m62-${afterSaleId}`}, now())`;
+        await transaction.$executeRaw`INSERT INTO after_sale_items
+          (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+            requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+            product_name, option_snapshot, unit_price_vnd, updated_at)
+          VALUES (${afterSaleItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${afterSaleId}::uuid, ${fixture.orderId}::uuid, ${fixture.orderItemId}::uuid,
+            1, 50000, ${fixture.skuId}::uuid, ${fixture.productId}::uuid,
+            ${fixture.brandId}::uuid, ${BEAUTY_CATEGORY_ID}::uuid,
+            ${`m62-sku-${fixture.skuId.slice(0, 8)}`}, 'M6.2 product',
+            '{"size":"small"}'::jsonb, 50000, now())`;
 
         await expectDatabaseFailure(
           transaction,
@@ -1975,22 +2142,42 @@ describe('M6.2 after-sale, member and share database foundation', () => {
               actor_id, correlation_id)
             VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
               'PENDING_REVIEW', 'REFUNDED', 'REFUND_SUCCEEDED', 'ADMIN',
-              ${fixture.adminId}::uuid, ${`m62-${randomUUID()}`})`,
+              ${fixture.adminId}::uuid,
+              pg_catalog.current_setting('app.correlation_id', true))`,
           '23514',
         );
         await transaction.$executeRaw`UPDATE after_sales
-          SET approved_other_vnd = 60000, approved_total_vnd = 60000, updated_at = now()
+          SET approved_other_vnd = 10000, approved_total_vnd = 10000, updated_at = now()
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`;
         await transaction.$executeRaw`INSERT INTO after_sale_order_allocations
           (store_id, after_sale_id, order_id, other_vnd)
           VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
-            ${fixture.orderId}::uuid, 60000)`;
+            ${fixture.orderId}::uuid, 10000)`;
+        await expectDatabaseFailure(
+          transaction,
+          () =>
+            appendAfterSaleTransition(transaction, {
+              actorId: fixture.adminId,
+              afterSaleId,
+              event: 'APPROVE',
+              fromStatus: 'PENDING_REVIEW',
+              toStatus: 'APPROVED',
+            }),
+          '23514',
+        );
+        await transaction.$executeRaw`UPDATE after_sale_items
+          SET approved_quantity = 1, approved_item_vnd = 50000, updated_at = now()
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleItemId}::uuid`;
+        await transaction.$executeRaw`UPDATE after_sales
+          SET approved_item_vnd = 50000, approved_total_vnd = 60000, updated_at = now()
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`;
         await transaction.$executeRaw`INSERT INTO after_sale_transitions
           (store_id, after_sale_id, from_status, to_status, event, actor_type,
             actor_id, correlation_id)
           VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
             'PENDING_REVIEW', 'APPROVED', 'APPROVE', 'ADMIN',
-            ${fixture.adminId}::uuid, ${`m62-${randomUUID()}`})`;
+            ${fixture.adminId}::uuid,
+            pg_catalog.current_setting('app.correlation_id', true))`;
         expect(
           await transaction.$queryRaw`SELECT status, version FROM after_sales
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`,
@@ -2017,15 +2204,18 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           const afterSaleItemId = randomUUID();
           await transaction.$executeRaw`INSERT INTO after_sales
             (id, store_id, order_id, member_id, public_case_number, type, status, source,
-              reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+              reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+              legacy_policy_review,
               requested_item_vnd, requested_total_vnd, idempotency_key_hash,
               request_hash, initiated_by, correlation_id, updated_at)
             VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
               ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
               ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
               ${input.type}::after_sale_type, 'PENDING_REVIEW', 'ADMIN',
-              'approval-shape-regression', '{}'::jsonb, ${digest(`policy-${afterSaleId}`)},
-              false, 50000, 50000, ${digest(`case-key-${afterSaleId}`)},
+              'approval-shape-regression', ${fixture.casePolicyPayload}::jsonb,
+              ${fixture.casePolicyPayloadHash}, ${fixture.casePolicyId}::uuid,
+              ${fixture.casePolicyVersionId}::uuid, false, 50000, 50000,
+              ${digest(`case-key-${afterSaleId}`)},
               ${digest(`case-request-${afterSaleId}`)}, ${fixture.adminId}::uuid,
               ${`m62-${afterSaleId}`}, now())`;
           await transaction.$executeRaw`INSERT INTO after_sale_items
@@ -2108,30 +2298,105 @@ describe('M6.2 after-sale, member and share database foundation', () => {
     await withOwnerRollback(async (transaction) => {
       const fixture = await createCommerceFixture(transaction);
       const afterSaleId = randomUUID();
+      const afterSaleItemId = randomUUID();
+      const secondOrderItemId = randomUUID();
       const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+      await transaction.$executeRaw`UPDATE orders
+        SET base_subtotal_vnd = 150000, payable_vnd = 150000, updated_at = now()
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${fixture.orderId}::uuid`;
+      await transaction.$executeRaw`INSERT INTO order_items
+        (id, store_id, order_id, sku_id, product_id, brand_id, category_id, sku_code,
+          product_name, brand_name, option_snapshot, unit_price_vnd, quantity,
+          subtotal_vnd, payable_vnd)
+        VALUES (${secondOrderItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${fixture.orderId}::uuid, ${fixture.alternateSkuId}::uuid,
+          ${fixture.productId}::uuid, ${fixture.brandId}::uuid,
+          ${BEAUTY_CATEGORY_ID}::uuid,
+          ${`m62-sku-${fixture.alternateSkuId.slice(0, 8)}`},
+          'M6.3 B0 second product', 'M6.2 brand', '{"size":"second"}'::jsonb,
+          50000, 1, 50000, 50000)`;
       await setContext(transaction, {
         actorId: fixture.adminId,
         actorType: 'admin',
         storeId: BEAUTY_STORE_ID,
       });
+      const legacySavepoint = `m63_b0_legacy_mix_${randomUUID().replaceAll('-', '')}`;
+      await transaction.$executeRawUnsafe(`SAVEPOINT ${legacySavepoint}`);
+      try {
+        const legacyAfterSaleId = randomUUID();
+        await transaction.$executeRaw`INSERT INTO after_sales
+          (id, store_id, order_id, member_id, public_case_number, type, status, source,
+            reason_code, legacy_policy_review, requested_item_vnd, requested_total_vnd,
+            idempotency_key_hash, request_hash, initiated_by, correlation_id, updated_at)
+          VALUES (${legacyAfterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
+            ${`ASC-${legacyAfterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
+            'REFUND_ONLY', 'REVIEW_REQUIRED', 'ADMIN', 'm63-b0-legacy-mixed-lines',
+            true, 150000, 150000, ${digest(`case-key-${legacyAfterSaleId}`)},
+            ${digest(`case-request-${legacyAfterSaleId}`)}, ${fixture.adminId}::uuid,
+            ${`m63-b0-${legacyAfterSaleId}`}, now())`;
+        await transaction.$executeRaw`INSERT INTO after_sale_items
+          (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+            requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+            product_name, option_snapshot, unit_price_vnd, updated_at)
+          VALUES (${randomUUID()}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${legacyAfterSaleId}::uuid, ${fixture.orderId}::uuid,
+            ${fixture.orderItemId}::uuid, 2, 100000, ${fixture.skuId}::uuid,
+            ${fixture.productId}::uuid, ${fixture.brandId}::uuid,
+            ${BEAUTY_CATEGORY_ID}::uuid, ${`m62-sku-${fixture.skuId.slice(0, 8)}`},
+            'M6.2 product', '{"size":"small"}'::jsonb, 50000, now())`;
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`INSERT INTO after_sale_items
+            (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+              requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+              product_name, option_snapshot, unit_price_vnd, updated_at)
+            VALUES (${randomUUID()}::uuid, ${BEAUTY_STORE_ID}::uuid,
+              ${legacyAfterSaleId}::uuid, ${fixture.orderId}::uuid,
+              ${secondOrderItemId}::uuid, 1, 50000, ${fixture.alternateSkuId}::uuid,
+              ${fixture.productId}::uuid, ${fixture.brandId}::uuid,
+              ${BEAUTY_CATEGORY_ID}::uuid,
+              ${`m62-sku-${fixture.alternateSkuId.slice(0, 8)}`},
+              'M6.3 B0 second product', '{"size":"second"}'::jsonb, 50000, now())`,
+          '23514',
+        );
+      } finally {
+        await transaction.$executeRawUnsafe(`ROLLBACK TO SAVEPOINT ${legacySavepoint}`);
+        await transaction.$executeRawUnsafe(`RELEASE SAVEPOINT ${legacySavepoint}`);
+      }
       await transaction.$executeRaw`INSERT INTO after_sales
         (id, store_id, order_id, member_id, public_case_number, type, status, source,
-          reason_code, legacy_policy_review, requested_other_vnd, requested_total_vnd,
-          idempotency_key_hash, request_hash, initiated_by, correlation_id, updated_at)
+          reason_code, legacy_policy_review, requested_item_vnd, requested_other_vnd,
+          requested_total_vnd, idempotency_key_hash, request_hash, initiated_by,
+          correlation_id, updated_at)
         VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
           ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
           ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
           'REFUND_ONLY', 'REVIEW_REQUIRED', 'ADMIN', 'legacy-review', true,
-          60000, 60000, ${digest(`case-key-${afterSaleId}`)},
+          50000, 10000, 60000, ${digest(`case-key-${afterSaleId}`)},
           ${digest(`case-request-${afterSaleId}`)}, ${fixture.adminId}::uuid,
           ${`m62-${afterSaleId}`}, now())`;
+      await transaction.$executeRaw`INSERT INTO after_sale_items
+        (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+          requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+          product_name, option_snapshot, unit_price_vnd, updated_at)
+        VALUES (${afterSaleItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${afterSaleId}::uuid, ${fixture.orderId}::uuid, ${fixture.orderItemId}::uuid,
+          1, 50000, ${fixture.skuId}::uuid, ${fixture.productId}::uuid,
+          ${fixture.brandId}::uuid, ${BEAUTY_CATEGORY_ID}::uuid,
+          ${`m62-sku-${fixture.skuId.slice(0, 8)}`}, 'M6.2 product',
+          '{"size":"small"}'::jsonb, 50000, now())`;
+      await transaction.$executeRaw`UPDATE after_sale_items
+        SET approved_quantity = 1, approved_item_vnd = 50000, updated_at = now()
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleItemId}::uuid`;
       await transaction.$executeRaw`UPDATE after_sales
-        SET approved_other_vnd = 60000, approved_total_vnd = 60000, updated_at = now()
+        SET approved_item_vnd = 50000, approved_other_vnd = 10000,
+          approved_total_vnd = 60000, updated_at = now()
         WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`;
       await transaction.$executeRaw`INSERT INTO after_sale_order_allocations
         (store_id, after_sale_id, order_id, other_vnd)
         VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
-          ${fixture.orderId}::uuid, 60000)`;
+          ${fixture.orderId}::uuid, 10000)`;
 
       await expectDatabaseFailure(
         transaction,
@@ -2193,6 +2458,56 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           FROM after_sales
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`,
       ).toEqual([{ reviewed: true, reviewed_by: fixture.adminId, status: 'APPROVED', version: 2 }]);
+
+      const zeroApprovedLegacyId = randomUUID();
+      const zeroApprovedLegacyItemId = randomUUID();
+      const zeroApprovedLegacyDecisionId = randomUUID();
+      await transaction.$executeRaw`INSERT INTO after_sales
+        (id, store_id, order_id, member_id, public_case_number, type, status, source,
+          reason_code, legacy_policy_review, requested_item_vnd, requested_other_vnd,
+          requested_total_vnd, idempotency_key_hash, request_hash, initiated_by,
+          correlation_id, updated_at)
+        VALUES (${zeroApprovedLegacyId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
+          ${`ASC-${zeroApprovedLegacyId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
+          'REFUND_ONLY', 'REVIEW_REQUIRED', 'ADMIN', 'legacy-zero-approved-units', true,
+          50000, 10000, 60000, ${digest(`case-key-${zeroApprovedLegacyId}`)},
+          ${digest(`case-request-${zeroApprovedLegacyId}`)}, ${fixture.adminId}::uuid,
+          ${`m63-b0-${zeroApprovedLegacyId}`}, now())`;
+      await transaction.$executeRaw`INSERT INTO after_sale_items
+        (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+          requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+          product_name, option_snapshot, unit_price_vnd, updated_at)
+        VALUES (${zeroApprovedLegacyItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${zeroApprovedLegacyId}::uuid, ${fixture.orderId}::uuid,
+          ${secondOrderItemId}::uuid, 1, 50000, ${fixture.alternateSkuId}::uuid,
+          ${fixture.productId}::uuid, ${fixture.brandId}::uuid,
+          ${BEAUTY_CATEGORY_ID}::uuid,
+          ${`m62-sku-${fixture.alternateSkuId.slice(0, 8)}`},
+          'M6.3 B0 second product', '{"size":"second"}'::jsonb, 50000, now())`;
+      await transaction.$executeRaw`UPDATE after_sales
+        SET approved_other_vnd = 10000, approved_total_vnd = 10000, updated_at = now()
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${zeroApprovedLegacyId}::uuid`;
+      await transaction.$executeRaw`INSERT INTO after_sale_legacy_decisions
+        (id, store_id, after_sale_id, decision, admin_id, reason,
+          policy_basis_ciphertext, payload, payload_hash)
+        VALUES (${zeroApprovedLegacyDecisionId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${zeroApprovedLegacyId}::uuid, 'APPROVE', ${fixture.adminId}::uuid,
+          'Legacy item approval requires a positive unit', 'encrypted-test-policy-basis',
+          '{"basis":"zero-approved-units"}'::jsonb,
+          ${digest(`legacy-decision-${zeroApprovedLegacyDecisionId}`)})`;
+      await expectDatabaseFailure(
+        transaction,
+        () =>
+          appendAfterSaleTransition(transaction, {
+            actorId: fixture.adminId,
+            afterSaleId: zeroApprovedLegacyId,
+            event: 'LEGACY_APPROVE',
+            fromStatus: 'REVIEW_REQUIRED',
+            toStatus: 'APPROVED',
+          }),
+        '23514',
+      );
 
       const nonInitialCaseId = randomUUID();
       await transaction.$executeRaw`INSERT INTO after_sales
@@ -2337,6 +2652,28 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           VALUES (${returnId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid, 'Member carrier',
             ${digest(`tracking-${returnId}`)}, '***1234', ${fixture.memberId}::uuid, now())`;
+        await transaction.$executeRaw`INSERT INTO after_sale_transitions
+          (store_id, after_sale_id, from_status, to_status, event, actor_type,
+            actor_id, correlation_id)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+            'APPROVED', 'RETURN_PENDING', 'START_RETURN', 'MEMBER',
+            ${fixture.memberId}::uuid,
+            pg_catalog.current_setting('app.correlation_id', true))`;
+        expect(
+          await transaction.$queryRaw`SELECT status, version FROM after_sales
+            WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`,
+        ).toEqual([{ status: 'RETURN_PENDING', version: 3 }]);
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+            (store_id, after_sale_id, from_status, to_status, event, actor_type,
+              actor_id, correlation_id)
+            VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+              'RETURN_PENDING', 'RETURN_IN_TRANSIT', 'RETURN_SHIPPED', 'MEMBER',
+              ${fixture.memberId}::uuid,
+              pg_catalog.current_setting('app.correlation_id', true))`,
+          '42501',
+        );
         await expect(
           transaction.$executeRaw`UPDATE after_sale_return_shipments
             SET status = 'DELIVERED', received_at = now(), version = version + 1,
@@ -2372,13 +2709,6 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         await appendAfterSaleTransition(transaction, {
           actorId: fixture.adminId,
           afterSaleId,
-          event: 'START_RETURN',
-          fromStatus: 'APPROVED',
-          toStatus: 'RETURN_PENDING',
-        });
-        await appendAfterSaleTransition(transaction, {
-          actorId: fixture.adminId,
-          afterSaleId,
           event: 'REQUIRE_REVIEW',
           fromStatus: 'RETURN_PENDING',
           toStatus: 'REVIEW_REQUIRED',
@@ -2404,13 +2734,15 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         });
         await transaction.$executeRaw`INSERT INTO after_sales
           (id, store_id, order_id, member_id, public_case_number, type, status, source,
-            reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review,
             idempotency_key_hash, request_hash, initiated_by, correlation_id, updated_at)
           VALUES (${rejectedCaseId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
             ${`ASC-${rejectedCaseId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
             'RETURN_REFUND', 'PENDING_REVIEW', 'ADMIN', 'rejected-return-regression',
-            '{}'::jsonb, ${digest(`policy-${rejectedCaseId}`)}, false,
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
             ${digest(`case-key-${rejectedCaseId}`)},
             ${digest(`case-request-${rejectedCaseId}`)}, ${fixture.adminId}::uuid,
             ${`m62-${rejectedCaseId}`}, now())`;
@@ -2461,6 +2793,19 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         const { afterSaleId } = await createAfterSaleFixture(transaction, fixture, {
           type: 'RETURN_REFUND',
         });
+        const returnShipmentId = randomUUID();
+        await setContext(transaction, {
+          actorId: fixture.memberId,
+          actorType: 'member',
+          storeId: BEAUTY_STORE_ID,
+        });
+        await transaction.$executeRaw`INSERT INTO after_sale_return_shipments
+          (id, store_id, after_sale_id, order_id, member_id, carrier_name,
+            tracking_number_digest, tracking_number_masked, submitted_by, updated_at)
+          VALUES (${returnShipmentId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${afterSaleId}::uuid, ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
+            'M6.3 B0 return fixture', ${digest(`tracking-${returnShipmentId}`)}, '***B0',
+            ${fixture.memberId}::uuid, now())`;
         await appendAfterSaleTransition(transaction, {
           actorId: fixture.adminId,
           afterSaleId,
@@ -2468,18 +2813,11 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           fromStatus: 'APPROVED',
           toStatus: 'RETURN_PENDING',
         });
-        await appendAfterSaleTransition(transaction, {
-          actorId: fixture.adminId,
-          afterSaleId,
-          event: 'REQUIRE_REVIEW',
-          fromStatus: 'RETURN_PENDING',
-          toStatus: 'REVIEW_REQUIRED',
-        });
         return afterSaleId;
       });
       const exchangeCase = await owner.$transaction(async (transaction) => {
         const created = await createAfterSaleFixture(transaction, fixture, {
-          approvedTotalVnd: 100_000,
+          approvedTotalVnd: 50_000,
           type: 'EXCHANGE',
           withItem: true,
         });
@@ -2490,6 +2828,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         await createCompleteInspection(transaction, fixture, {
           afterSaleId: created.afterSaleId,
           afterSaleItemId: created.afterSaleItemId,
+          quantity: 1,
         });
         await appendAfterSaleTransition(transaction, {
           actorId: fixture.adminId,
@@ -2530,9 +2869,9 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           {
             actorId: fixture.adminId,
             afterSaleId: returnCaseId,
-            event: 'REJECT_REVIEW',
-            fromStatus: 'REVIEW_REQUIRED',
-            toStatus: 'REJECTED',
+            event: 'REQUIRE_REVIEW',
+            fromStatus: 'RETURN_PENDING',
+            toStatus: 'REVIEW_REQUIRED',
           },
           (transaction) => insertShipment(transaction, returnCaseId, 'AFTER_SALE_RETURN'),
         );
@@ -2549,7 +2888,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
             WHERE sale.store_id = ${BEAUTY_STORE_ID}::uuid
               AND sale.id = ${returnCaseId}::uuid
             GROUP BY sale.status`,
-        ).toEqual([{ shipment_count: 0n, status: 'REJECTED' }]);
+        ).toEqual([{ shipment_count: 0n, status: 'REVIEW_REQUIRED' }]);
 
         const exchangeResults = await raceWithHeldAfterSaleTransition(
           {
@@ -2590,7 +2929,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
               AND after_sale_id = ${exchangeCase.afterSaleId}::uuid`;
           await transaction.$executeRaw`DELETE FROM after_sale_return_shipments
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid
-              AND after_sale_id = ${exchangeCase.afterSaleId}::uuid`;
+              AND after_sale_id IN (${returnCaseId}::uuid, ${exchangeCase.afterSaleId}::uuid)`;
           await transaction.$executeRaw`DELETE FROM after_sale_transitions
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid
               AND after_sale_id IN (${returnCaseId}::uuid, ${exchangeCase.afterSaleId}::uuid)`;
@@ -2774,13 +3113,14 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           'validate_m62_policy_actor',
           'validate_m62_policy_version_actor',
           'validate_m62_policy_settings_actor',
+          'provision_m63_after_sale_setting',
           'validate_m62_order_allocation',
           'validate_m62_order_approval_capacity',
           'validate_m62_order_allocation_final_state'
         )
       ORDER BY procedure.proname
     `;
-    expect(definerFunctions).toHaveLength(15);
+    expect(definerFunctions).toHaveLength(16);
     expect(
       definerFunctions.every(
         ({ function_owner, proconfig, prosecdef, runtime_can_execute }) =>
@@ -2790,6 +3130,32 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           !runtime_can_execute,
       ),
     ).toBe(true);
+  });
+
+  it('provisions a stable OFF policy-settings row for stores created after deployment', async () => {
+    await withOwnerRollback(async (transaction) => {
+      const storeId = randomUUID();
+      await transaction.store.create({
+        data: {
+          code: `m63-provision-${storeId.slice(0, 8)}`,
+          id: storeId,
+          industry: 'BEAUTY',
+        },
+      });
+
+      await expect(
+        transaction.storeAfterSaleSetting.findUnique({ where: { storeId } }),
+      ).resolves.toMatchObject({
+        currentVersionId: null,
+        defaultPolicyId: null,
+        enforcePolicySnapshots: false,
+        readinessCheckedAt: null,
+        readinessHash: null,
+        storeId,
+        updatedBy: null,
+        version: 1,
+      });
+    });
   });
 
   it('enforces deterministic policy assignments and immutable order-item snapshots in the catalog', async () => {
@@ -2913,11 +3279,11 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           '42501',
         );
         const readinessHash = digest(`readiness-${policyId}`);
-        await transaction.$executeRaw`INSERT INTO store_after_sale_settings
-          (store_id, readiness_checked_at, readiness_ready_at, readiness_hash,
-            readiness_checked_by, updated_at, updated_by)
-          VALUES (${BEAUTY_STORE_ID}::uuid, now(), now(), ${readinessHash},
-            ${fixture.adminId}::uuid, now(), ${fixture.adminId}::uuid)`;
+        await transaction.$executeRaw`UPDATE store_after_sale_settings
+          SET readiness_checked_at = now(), readiness_ready_at = now(),
+            readiness_hash = ${readinessHash}, readiness_checked_by = ${fixture.adminId}::uuid,
+            updated_at = now(), updated_by = ${fixture.adminId}::uuid
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid`;
         await expectDatabaseFailure(
           transaction,
           () => transaction.$executeRaw`UPDATE store_after_sale_settings
@@ -2963,7 +3329,8 @@ describe('M6.2 after-sale, member and share database foundation', () => {
               actor_id, correlation_id)
             VALUES (${FASHION_STORE_ID}::uuid, ${randomUUID()}::uuid,
               'PENDING_REVIEW', 'APPROVED', 'APPROVE', 'ADMIN',
-              ${fixture.adminId}::uuid, ${`m62-${randomUUID()}`})`,
+              ${fixture.adminId}::uuid,
+              pg_catalog.current_setting('app.correlation_id', true))`,
           '42501',
         );
       });
@@ -2976,14 +3343,17 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           });
           await transaction.$executeRaw`INSERT INTO after_sales
             (id, store_id, order_id, member_id, public_case_number, type, status, source,
-              reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+              reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+              legacy_policy_review,
               requested_other_vnd, requested_total_vnd, idempotency_key_hash,
               request_hash, initiated_by, correlation_id, updated_at)
             VALUES (${orphanAfterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
               ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
               ${`ASC-${orphanAfterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
               'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'orphan-order-allocation',
-              '{}'::jsonb, ${digest(`policy-${orphanAfterSaleId}`)}, false, 10000, 10000,
+              ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+              ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+              10000, 10000,
               ${digest(`case-key-${orphanAfterSaleId}`)},
               ${digest(`case-request-${orphanAfterSaleId}`)}, ${fixture.adminId}::uuid,
               ${`m62-${orphanAfterSaleId}`}, now())`;
@@ -3008,20 +3378,23 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           storeId: BEAUTY_STORE_ID,
         });
         const afterSaleId = randomUUID();
+        const afterSaleItemId = randomUUID();
         const mismatchedAfterSaleId = randomUUID();
         await expectDatabaseFailure(
           transaction,
           async () => {
             await transaction.$executeRaw`INSERT INTO after_sales
               (id, store_id, order_id, member_id, public_case_number, type, status,
-                source, reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+                source, reason_code, policy_snapshot, policy_hash, policy_id,
+                policy_version_id, legacy_policy_review,
                 requested_item_vnd, requested_total_vnd, idempotency_key_hash,
                 request_hash, initiated_by, correlation_id, updated_at)
               VALUES (${mismatchedAfterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
                 ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
                 ${`ASC-${mismatchedAfterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
                 'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'mismatched-order-allocation',
-                '{}'::jsonb, ${digest(`policy-${mismatchedAfterSaleId}`)}, false,
+                ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+                ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
                 10000, 10000, ${digest(`case-key-${mismatchedAfterSaleId}`)},
                 ${digest(`case-request-${mismatchedAfterSaleId}`)}, ${fixture.adminId}::uuid,
                 ${`m62-${mismatchedAfterSaleId}`}, now())`;
@@ -3046,18 +3419,35 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         );
         await transaction.$executeRaw`INSERT INTO after_sales
           (id, store_id, order_id, member_id, public_case_number, type, status, source,
-            reason_code, policy_snapshot, policy_hash, legacy_policy_review,
-            requested_other_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
-            initiated_by, correlation_id, updated_at)
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review,
+            requested_item_vnd, requested_other_vnd, requested_total_vnd,
+            idempotency_key_hash, request_hash, initiated_by, correlation_id, updated_at)
           VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
             ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
             'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'order-allocation-capacity',
-            '{}'::jsonb, ${digest(`policy-${afterSaleId}`)}, false, 10000, 10000,
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            50000, 10000, 60000,
             ${digest(`case-key-${afterSaleId}`)}, ${digest(`case-request-${afterSaleId}`)},
             ${fixture.adminId}::uuid, ${`m62-${afterSaleId}`}, now())`;
+        await transaction.$executeRaw`INSERT INTO after_sale_items
+          (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+            requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+            product_name, option_snapshot, unit_price_vnd, updated_at)
+          VALUES (${afterSaleItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${afterSaleId}::uuid, ${fixture.orderId}::uuid, ${fixture.orderItemId}::uuid,
+            1, 50000, ${fixture.skuId}::uuid, ${fixture.productId}::uuid,
+            ${fixture.brandId}::uuid, ${BEAUTY_CATEGORY_ID}::uuid,
+            ${`m62-sku-${fixture.skuId.slice(0, 8)}`}, 'M6.2 product',
+            '{"size":"small"}'::jsonb, 50000, now())`;
+        await transaction.$executeRaw`UPDATE after_sale_items
+          SET approved_quantity = 1, approved_item_vnd = 50000, updated_at = now()
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleItemId}::uuid`;
         await transaction.$executeRaw`UPDATE after_sales
-          SET approved_other_vnd = 10000, approved_total_vnd = 10000, updated_at = now()
+          SET approved_item_vnd = 50000, approved_other_vnd = 10000,
+            approved_total_vnd = 60000, updated_at = now()
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`;
 
         await expectDatabaseFailure(
@@ -3098,7 +3488,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           await transaction.$queryRaw`SELECT status, approved_total_vnd
             FROM after_sales
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`,
-        ).toEqual([{ approved_total_vnd: 10000n, status: 'APPROVED' }]);
+        ).toEqual([{ approved_total_vnd: 60000n, status: 'APPROVED' }]);
       });
     });
   });
@@ -3120,14 +3510,17 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           const afterSaleItemId = randomUUID();
           await transaction.$executeRaw`INSERT INTO after_sales
             (id, store_id, order_id, member_id, public_case_number, type, status, source,
-              reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+              reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+              legacy_policy_review,
               requested_item_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
               initiated_by, correlation_id, updated_at)
             VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
               ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
               ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
               'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'concurrent-order-capacity',
-              '{}'::jsonb, ${digest(`policy-${afterSaleId}`)}, false, 50000, 50000,
+              ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+              ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+              50000, 50000,
               ${digest(`case-key-${afterSaleId}`)}, ${digest(`case-request-${afterSaleId}`)},
               ${fixture.adminId}::uuid, ${`m62-${afterSaleId}`}, now())`;
           await transaction.$executeRaw`INSERT INTO after_sale_items
@@ -3229,6 +3622,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
   it('serializes settlement capacity behind a held after-sale approval aggregate lock', async () => {
     await withCommittedCommerceFixture(async (fixture) => {
       const afterSaleId = randomUUID();
+      const afterSaleItemId = randomUUID();
       const settlementId = randomUUID();
       const digest = (value: string) => createHash('sha256').update(value).digest('hex');
       await owner.$transaction(async (transaction) => {
@@ -3239,18 +3633,35 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         });
         await transaction.$executeRaw`INSERT INTO after_sales
           (id, store_id, order_id, member_id, public_case_number, type, status, source,
-            reason_code, policy_snapshot, policy_hash, legacy_policy_review,
-            requested_other_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
-            initiated_by, correlation_id, updated_at)
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review,
+            requested_item_vnd, requested_other_vnd, requested_total_vnd,
+            idempotency_key_hash, request_hash, initiated_by, correlation_id, updated_at)
           VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
             ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
             'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'settlement-lock-order',
-            '{}'::jsonb, ${digest(`policy-${afterSaleId}`)}, false, 60000, 60000,
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            50000, 10000, 60000,
             ${digest(`case-key-${afterSaleId}`)}, ${digest(`case-request-${afterSaleId}`)},
             ${fixture.adminId}::uuid, ${`m62-${afterSaleId}`}, now())`;
+        await transaction.$executeRaw`INSERT INTO after_sale_items
+          (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+            requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+            product_name, option_snapshot, unit_price_vnd, updated_at)
+          VALUES (${afterSaleItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${afterSaleId}::uuid, ${fixture.orderId}::uuid, ${fixture.orderItemId}::uuid,
+            1, 50000, ${fixture.skuId}::uuid, ${fixture.productId}::uuid,
+            ${fixture.brandId}::uuid, ${BEAUTY_CATEGORY_ID}::uuid,
+            ${`m62-sku-${fixture.skuId.slice(0, 8)}`}, 'M6.2 product',
+            '{"size":"small"}'::jsonb, 50000, now())`;
+        await transaction.$executeRaw`UPDATE after_sale_items
+          SET approved_quantity = 1, approved_item_vnd = 50000, updated_at = now()
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleItemId}::uuid`;
         await transaction.$executeRaw`UPDATE after_sales
-          SET approved_other_vnd = 60000, approved_total_vnd = 60000, updated_at = now()
+          SET approved_item_vnd = 50000, approved_other_vnd = 10000,
+            approved_total_vnd = 60000, updated_at = now()
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`;
       });
 
@@ -3262,7 +3673,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
             await transaction.$executeRaw`INSERT INTO after_sale_order_allocations
               (store_id, after_sale_id, order_id, other_vnd)
               VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
-                ${fixture.orderId}::uuid, 60000)`;
+                ${fixture.orderId}::uuid, 10000)`;
             await appendAfterSaleTransition(transaction, {
               actorId: fixture.adminId,
               afterSaleId,
@@ -3313,14 +3724,17 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         });
         await transaction.$executeRaw`INSERT INTO after_sales
           (id, store_id, order_id, member_id, public_case_number, type, status, source,
-            reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review,
             requested_item_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
             initiated_by, correlation_id, updated_at)
           VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
             ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
             'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'item-approval-settlement-lock-order',
-            '{}'::jsonb, ${digest(`policy-${afterSaleId}`)}, false, 50000, 50000,
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            50000, 50000,
             ${digest(`case-key-${afterSaleId}`)}, ${digest(`case-request-${afterSaleId}`)},
             ${fixture.adminId}::uuid, ${`m62-${afterSaleId}`}, now())`;
         await transaction.$executeRaw`INSERT INTO after_sale_items
@@ -3403,14 +3817,17 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         });
         await transaction.$executeRaw`INSERT INTO after_sales
           (id, store_id, order_id, member_id, public_case_number, type, status, source,
-            reason_code, policy_snapshot, policy_hash, legacy_policy_review,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review,
             requested_item_vnd, requested_total_vnd, idempotency_key_hash, request_hash,
             initiated_by, correlation_id, updated_at)
           VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
             ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
             'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'item-lock-order',
-            '{}'::jsonb, ${digest(`policy-${afterSaleId}`)}, false, 100000, 100000,
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            100000, 100000,
             ${digest(`case-key-${afterSaleId}`)}, ${digest(`case-request-${afterSaleId}`)},
             ${fixture.adminId}::uuid, ${`m62-${afterSaleId}`}, now())`;
       });
@@ -3467,7 +3884,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
 
   it('rejects a snapshot that splices a policy to another policy version', async () => {
     await withOwnerRollback(async (transaction) => {
-      const fixture = await createCommerceFixture(transaction);
+      const fixture = await createCommerceFixture(transaction, { withCasePolicy: false });
       const firstPolicy = await createPublishedPolicy(transaction, fixture, {
         activateDefault: true,
         code: `snapshot-a-${fixture.productId.slice(0, 8)}`,
@@ -3508,7 +3925,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
 
   it('enforces order-item snapshots at deferred commit only after the store enables enforcement', async () => {
     await withOwnerRollback(async (transaction) => {
-      const fixture = await createCommerceFixture(transaction);
+      const fixture = await createCommerceFixture(transaction, { withCasePolicy: false });
       const policy = await createPublishedPolicy(transaction, fixture, {
         activateDefault: true,
         code: `enforce-off-${fixture.productId.slice(0, 8)}`,
@@ -3536,7 +3953,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
 
     await expectSqlState(
       owner.$transaction(async (transaction) => {
-        const fixture = await createCommerceFixture(transaction);
+        const fixture = await createCommerceFixture(transaction, { withCasePolicy: false });
         const policy = await createPublishedPolicy(transaction, fixture, {
           activateDefault: true,
           code: `enforce-on-missing-${fixture.productId.slice(0, 8)}`,
@@ -3565,7 +3982,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
     );
 
     await withOwnerRollback(async (transaction) => {
-      const fixture = await createCommerceFixture(transaction);
+      const fixture = await createCommerceFixture(transaction, { withCasePolicy: false });
       const policyCode = `enforce-on-valid-${fixture.productId.slice(0, 8)}`;
       const policy = await createPublishedPolicy(transaction, fixture, {
         activateDefault: true,
@@ -4467,28 +4884,19 @@ describe('M6.2 after-sale, member and share database foundation', () => {
 
   it('links an online settlement only to the exact M5 order, payment, refund and amount', async () => {
     await withOwnerRollback(async (transaction) => {
-      const adminId = randomUUID();
-      const memberId = randomUUID();
-      const orderId = randomUUID();
+      const fixture = await createCommerceFixture(transaction, { paymentMethod: 'ONLINE' });
+      const { adminId, orderId } = fixture;
       const paymentId = randomUUID();
       const refundId = randomUUID();
       const settlementId = randomUUID();
       const appId = `m62-app-${randomUUID()}`;
       const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 
-      await transaction.$executeRaw`INSERT INTO admin_users
-        (id, email, email_normalized, display_name, password_hash, updated_at)
-        VALUES (${adminId}::uuid, ${`${adminId}@example.invalid`},
-          ${`${adminId}@example.invalid`}, 'M6.2 refund-link admin',
-          'test-fixture-not-a-login-hash', now())`;
-      await transaction.$executeRaw`INSERT INTO members (id, store_id, updated_at)
-        VALUES (${memberId}::uuid, ${BEAUTY_STORE_ID}::uuid, now())`;
-      await transaction.$executeRaw`INSERT INTO orders
-        (id, store_id, member_id, order_number, status, payment_method, payment_status,
-          currency, base_subtotal_vnd, shipping_fee_vnd, payable_vnd, quote_hash, updated_at)
-        VALUES (${orderId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${memberId}::uuid,
-          ${`M62-${orderId.slice(0, 12)}`}, 'PENDING_FULFILLMENT', 'ONLINE', 'SUCCEEDED',
-          'VND', 100000, 0, 100000, ${digest(`quote-${orderId}`)}, now())`;
+      await setContext(transaction, {
+        actorId: adminId,
+        actorType: 'admin',
+        storeId: BEAUTY_STORE_ID,
+      });
       await transaction.$executeRaw`INSERT INTO store_zalo_apps
         (store_id, environment, mini_app_id, enabled, updated_at)
         VALUES (${BEAUTY_STORE_ID}::uuid, 'STAGING', ${appId}, false, now())`;
@@ -4518,22 +4926,9 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           ${paymentId}::uuid, ${`RFD-M62-${refundId.slice(0, 16)}`}, 60000,
           'REQUESTED', 'M6.2 exact refund-link fixture', ${adminId}::uuid,
           ${digest(`refund-${refundId}`)}, now())`;
-      const { afterSaleId } = await createAfterSaleFixture(
-        transaction,
-        {
-          adminId,
-          alternateSkuId: randomUUID(),
-          brandId: randomUUID(),
-          confirmingAdminId: adminId,
-          memberId,
-          orderId,
-          orderItemId: randomUUID(),
-          productId: randomUUID(),
-          replacementSkuId: randomUUID(),
-          skuId: randomUUID(),
-        },
-        { approvedTotalVnd: 60_000 },
-      );
+      const { afterSaleId } = await createAfterSaleFixture(transaction, fixture, {
+        approvedTotalVnd: 60_000,
+      });
       await appendAfterSaleTransition(transaction, {
         actorId: adminId,
         afterSaleId,
@@ -4604,6 +4999,662 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           FROM after_sale_settlements
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${settlementId}::uuid`,
       ).toEqual([{ completed: true, status: 'SUCCEEDED', version: 3 }]);
+    });
+  });
+
+  it('binds every non-legacy case line to one immutable policy identity', async () => {
+    await withOwnerRollback(async (transaction) => {
+      const fixture = await createCommerceFixture(transaction);
+      const secondProductId = randomUUID();
+      const secondSkuId = randomUUID();
+      const secondOrderItemId = randomUUID();
+      const afterSaleId = randomUUID();
+      const firstAfterSaleItemId = randomUUID();
+      const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+
+      await transaction.$executeRaw`INSERT INTO products
+        (id, store_id, code, brand_id, main_category_id, updated_at)
+        VALUES (${secondProductId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${`m63-b0-product-${secondProductId.slice(0, 8)}`}, ${fixture.brandId}::uuid,
+          ${BEAUTY_CATEGORY_ID}::uuid, now())`;
+      await transaction.$executeRaw`INSERT INTO skus
+        (id, store_id, product_id, code, sale_price_vnd, option_combination_key,
+          option_combination_hash, updated_at)
+        VALUES (${secondSkuId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${secondProductId}::uuid,
+          ${`m63-b0-sku-${secondSkuId.slice(0, 8)}`}, 50000, 'size=second',
+          ${digest(`m63-b0-sku-${secondSkuId}`)}, now())`;
+      await transaction.$executeRaw`UPDATE orders
+        SET base_subtotal_vnd = 150000, payable_vnd = 150000, updated_at = now()
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${fixture.orderId}::uuid`;
+      await transaction.$executeRaw`INSERT INTO order_items
+        (id, store_id, order_id, sku_id, product_id, brand_id, category_id, sku_code,
+          product_name, brand_name, option_snapshot, unit_price_vnd, quantity,
+          subtotal_vnd, payable_vnd)
+        VALUES (${secondOrderItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${fixture.orderId}::uuid, ${secondSkuId}::uuid, ${secondProductId}::uuid,
+          ${fixture.brandId}::uuid, ${BEAUTY_CATEGORY_ID}::uuid,
+          ${`m63-b0-sku-${secondSkuId.slice(0, 8)}`}, 'M6.3 B0 second product',
+          'M6.2 brand', '{"size":"second"}'::jsonb, 50000, 1, 50000, 50000)`;
+
+      const secondPolicy = await createPublishedPolicy(transaction, fixture, {
+        activateDefault: true,
+        code: `m63-b0-second-${secondProductId.slice(0, 8)}`,
+      });
+      await transaction.$executeRaw`INSERT INTO order_item_after_sale_policy_snapshots
+        (store_id, order_id, order_item_id, policy_id, policy_version_id, policy_code,
+          policy_version_number, payload, payload_hash)
+        VALUES (${BEAUTY_STORE_ID}::uuid, ${fixture.orderId}::uuid,
+          ${secondOrderItemId}::uuid, ${secondPolicy.policyId}::uuid,
+          ${secondPolicy.policyVersionId}::uuid,
+          ${`m63-b0-second-${secondProductId.slice(0, 8)}`}, 1,
+          jsonb_build_object('return_window_days', 7,
+            'return_shipping_payer', 'MERCHANT'), ${secondPolicy.payloadHash})`;
+
+      await setContext(transaction, {
+        actorId: fixture.adminId,
+        actorType: 'admin',
+        storeId: BEAUTY_STORE_ID,
+      });
+      const crossStoreAfterSaleId = randomUUID();
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`INSERT INTO after_sales
+          (id, store_id, order_id, member_id, public_case_number, type, status, source,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review, idempotency_key_hash, request_hash, initiated_by,
+            correlation_id, updated_at)
+          VALUES (${crossStoreAfterSaleId}::uuid, ${FASHION_STORE_ID}::uuid,
+            ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
+            ${`ASC-${crossStoreAfterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
+            'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'm63-b0-cross-store-policy',
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            ${digest(`case-key-${crossStoreAfterSaleId}`)},
+            ${digest(`case-request-${crossStoreAfterSaleId}`)}, ${fixture.adminId}::uuid,
+            ${`m63-b0-${crossStoreAfterSaleId}`}, now())`,
+        '42501',
+      );
+      await transaction.$executeRaw`INSERT INTO after_sales
+        (id, store_id, order_id, member_id, public_case_number, type, status, source,
+          reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+          legacy_policy_review, requested_item_vnd, requested_total_vnd,
+          idempotency_key_hash, request_hash, initiated_by, correlation_id, updated_at)
+        VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
+          ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
+          'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'm63-b0-policy-identity',
+          ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+          ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+          150000, 150000, ${digest(`case-key-${afterSaleId}`)},
+          ${digest(`case-request-${afterSaleId}`)}, ${fixture.adminId}::uuid,
+          ${`m63-b0-${afterSaleId}`}, now())`;
+      await transaction.$executeRaw`INSERT INTO after_sale_items
+        (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+          requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+          product_name, option_snapshot, unit_price_vnd, updated_at)
+        VALUES (${firstAfterSaleItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${afterSaleId}::uuid, ${fixture.orderId}::uuid, ${fixture.orderItemId}::uuid,
+          2, 100000, ${fixture.skuId}::uuid, ${fixture.productId}::uuid,
+          ${fixture.brandId}::uuid, ${BEAUTY_CATEGORY_ID}::uuid,
+          ${`m62-sku-${fixture.skuId.slice(0, 8)}`}, 'M6.2 product',
+          '{"size":"small"}'::jsonb, 50000, now())`;
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`INSERT INTO after_sale_items
+          (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+            requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+            product_name, option_snapshot, unit_price_vnd, updated_at)
+          VALUES (${randomUUID()}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${afterSaleId}::uuid, ${fixture.orderId}::uuid, ${secondOrderItemId}::uuid,
+            1, 50000, ${secondSkuId}::uuid, ${secondProductId}::uuid,
+            ${fixture.brandId}::uuid, ${BEAUTY_CATEGORY_ID}::uuid,
+            ${`m63-b0-sku-${secondSkuId.slice(0, 8)}`}, 'M6.3 B0 second product',
+            '{"size":"second"}'::jsonb, 50000, now())`,
+        '23514',
+      );
+
+      const invalidLegacyId = randomUUID();
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`INSERT INTO after_sales
+          (id, store_id, order_id, member_id, public_case_number, type, status, source,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review, idempotency_key_hash, request_hash, initiated_by,
+            correlation_id, updated_at)
+          VALUES (${invalidLegacyId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
+            ${`ASC-${invalidLegacyId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
+            'REFUND_ONLY', 'REVIEW_REQUIRED', 'ADMIN', 'm63-b0-invalid-legacy',
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, true,
+            ${digest(`case-key-${invalidLegacyId}`)},
+            ${digest(`case-request-${invalidLegacyId}`)}, ${fixture.adminId}::uuid,
+            ${`m63-b0-${invalidLegacyId}`}, now())`,
+        '23514',
+      );
+    });
+  });
+
+  it('allocates odd VND line amounts with one exact remainder algorithm', async () => {
+    await withOwnerRollback(async (transaction) => {
+      const fixture = await createCommerceFixture(transaction, { orderPayableVnd: 100_001 });
+      const firstAfterSaleId = randomUUID();
+      const secondAfterSaleId = randomUUID();
+      const firstItemId = randomUUID();
+      const secondItemId = randomUUID();
+      const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+
+      await setContext(transaction, {
+        actorId: fixture.adminId,
+        actorType: 'admin',
+        storeId: BEAUTY_STORE_ID,
+      });
+      for (const [afterSaleId, amountVnd] of [
+        [firstAfterSaleId, 50_000],
+        [secondAfterSaleId, 50_001],
+      ] as const) {
+        await transaction.$executeRaw`INSERT INTO after_sales
+          (id, store_id, order_id, member_id, public_case_number, type, status, source,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review, requested_item_vnd, requested_total_vnd,
+            idempotency_key_hash, request_hash, initiated_by, correlation_id, updated_at)
+          VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
+            ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
+            'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'm63-b0-vnd-remainder',
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            ${amountVnd}, ${amountVnd}, ${digest(`case-key-${afterSaleId}`)},
+            ${digest(`case-request-${afterSaleId}`)}, ${fixture.adminId}::uuid,
+            ${`m63-b0-${afterSaleId}`}, now())`;
+      }
+
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`INSERT INTO after_sale_items
+          (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+            requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+            product_name, option_snapshot, unit_price_vnd, updated_at)
+          VALUES (${firstItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${firstAfterSaleId}::uuid, ${fixture.orderId}::uuid,
+            ${fixture.orderItemId}::uuid, 1, 50001, ${fixture.skuId}::uuid,
+            ${fixture.productId}::uuid, ${fixture.brandId}::uuid,
+            ${BEAUTY_CATEGORY_ID}::uuid, ${`m62-sku-${fixture.skuId.slice(0, 8)}`},
+            'M6.2 product', '{"size":"small"}'::jsonb, 50000, now())`,
+        '23514',
+      );
+      await transaction.$executeRaw`INSERT INTO after_sale_items
+        (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+          requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+          product_name, option_snapshot, unit_price_vnd, updated_at)
+        VALUES (${firstItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${firstAfterSaleId}::uuid, ${fixture.orderId}::uuid,
+          ${fixture.orderItemId}::uuid, 1, 50000, ${fixture.skuId}::uuid,
+          ${fixture.productId}::uuid, ${fixture.brandId}::uuid,
+          ${BEAUTY_CATEGORY_ID}::uuid, ${`m62-sku-${fixture.skuId.slice(0, 8)}`},
+          'M6.2 product', '{"size":"small"}'::jsonb, 50000, now())`;
+      await transaction.$executeRaw`INSERT INTO after_sale_items
+        (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+          requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+          product_name, option_snapshot, unit_price_vnd, updated_at)
+        VALUES (${secondItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${secondAfterSaleId}::uuid, ${fixture.orderId}::uuid,
+          ${fixture.orderItemId}::uuid, 1, 50001, ${fixture.skuId}::uuid,
+          ${fixture.productId}::uuid, ${fixture.brandId}::uuid,
+          ${BEAUTY_CATEGORY_ID}::uuid, ${`m62-sku-${fixture.skuId.slice(0, 8)}`},
+          'M6.2 product', '{"size":"small"}'::jsonb, 50000, now())`;
+      await transaction.$executeRaw`UPDATE after_sale_items
+        SET approved_quantity = 1, approved_item_vnd = 50000, updated_at = now()
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${firstItemId}::uuid`;
+      await transaction.$executeRaw`UPDATE after_sale_items
+        SET approved_quantity = 1, approved_item_vnd = 50001, updated_at = now()
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${secondItemId}::uuid`;
+
+      expect(
+        await transaction.$queryRaw`SELECT requested_item_vnd, approved_item_vnd
+          FROM after_sale_items
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+            AND id IN (${firstItemId}::uuid, ${secondItemId}::uuid)
+          ORDER BY requested_item_vnd`,
+      ).toEqual([
+        { approved_item_vnd: 50_000n, requested_item_vnd: 50_000n },
+        { approved_item_vnd: 50_001n, requested_item_vnd: 50_001n },
+      ]);
+    });
+  });
+
+  it('keeps a later odd-VND request approvable after an earlier request releases capacity', async () => {
+    await withOwnerRollback(async (transaction) => {
+      const fixture = await createCommerceFixture(transaction, {
+        orderPayableVnd: 101,
+        orderQuantity: 3,
+      });
+      const firstAfterSaleId = randomUUID();
+      const secondAfterSaleId = randomUUID();
+      const firstItemId = randomUUID();
+      const secondItemId = randomUUID();
+      const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+
+      await setContext(transaction, {
+        actorId: fixture.adminId,
+        actorType: 'admin',
+        storeId: BEAUTY_STORE_ID,
+      });
+      for (const [afterSaleId, amountVnd] of [
+        [firstAfterSaleId, 33],
+        [secondAfterSaleId, 34],
+      ] as const) {
+        await transaction.$executeRaw`INSERT INTO after_sales
+          (id, store_id, order_id, member_id, public_case_number, type, status, source,
+            reason_code, policy_snapshot, policy_hash, policy_id, policy_version_id,
+            legacy_policy_review, requested_item_vnd, requested_total_vnd,
+            idempotency_key_hash, request_hash, initiated_by, correlation_id, updated_at)
+          VALUES (${afterSaleId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
+            ${`ASC-${afterSaleId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
+            'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'm63-b0-release-remainder',
+            ${fixture.casePolicyPayload}::jsonb, ${fixture.casePolicyPayloadHash},
+            ${fixture.casePolicyId}::uuid, ${fixture.casePolicyVersionId}::uuid, false,
+            ${amountVnd}, ${amountVnd}, ${digest(`case-key-${afterSaleId}`)},
+            ${digest(`case-request-${afterSaleId}`)}, ${fixture.adminId}::uuid,
+            ${`m63-b0-${afterSaleId}`}, now())`;
+      }
+      await transaction.$executeRaw`INSERT INTO after_sale_items
+        (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+          requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+          product_name, option_snapshot, unit_price_vnd, updated_at)
+        VALUES (${firstItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${firstAfterSaleId}::uuid, ${fixture.orderId}::uuid,
+          ${fixture.orderItemId}::uuid, 1, 33, ${fixture.skuId}::uuid,
+          ${fixture.productId}::uuid, ${fixture.brandId}::uuid,
+          ${BEAUTY_CATEGORY_ID}::uuid, ${`m62-sku-${fixture.skuId.slice(0, 8)}`},
+          'M6.2 product', '{"size":"small"}'::jsonb, 33, now())`;
+      await transaction.$executeRaw`INSERT INTO after_sale_items
+        (id, store_id, after_sale_id, order_id, order_item_id, requested_quantity,
+          requested_item_vnd, sku_id, product_id, brand_id, category_id, sku_code,
+          product_name, option_snapshot, unit_price_vnd, updated_at)
+        VALUES (${secondItemId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${secondAfterSaleId}::uuid, ${fixture.orderId}::uuid,
+          ${fixture.orderItemId}::uuid, 1, 34, ${fixture.skuId}::uuid,
+          ${fixture.productId}::uuid, ${fixture.brandId}::uuid,
+          ${BEAUTY_CATEGORY_ID}::uuid, ${`m62-sku-${fixture.skuId.slice(0, 8)}`},
+          'M6.2 product', '{"size":"small"}'::jsonb, 33, now())`;
+
+      await appendAfterSaleTransition(transaction, {
+        actorId: fixture.adminId,
+        afterSaleId: firstAfterSaleId,
+        event: 'REJECT',
+        fromStatus: 'PENDING_REVIEW',
+        toStatus: 'REJECTED',
+      });
+      await expect(
+        transaction.$executeRaw`UPDATE after_sale_items
+          SET approved_quantity = 1, approved_item_vnd = 34, updated_at = now()
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${secondItemId}::uuid`,
+      ).resolves.toBe(1);
+      expect(
+        await transaction.$queryRaw`SELECT sale.status, item.requested_item_vnd,
+            item.approved_item_vnd
+          FROM after_sale_items item
+          JOIN after_sales sale ON sale.store_id = item.store_id
+            AND sale.id = item.after_sale_id
+          WHERE item.store_id = ${BEAUTY_STORE_ID}::uuid
+            AND item.id IN (${firstItemId}::uuid, ${secondItemId}::uuid)
+          ORDER BY item.requested_item_vnd`,
+      ).toEqual([
+        { approved_item_vnd: 0n, requested_item_vnd: 33n, status: 'REJECTED' },
+        { approved_item_vnd: 34n, requested_item_vnd: 34n, status: 'PENDING_REVIEW' },
+      ]);
+    });
+  });
+
+  it('allows an owner member to start a return only after its SUBMITTED fact', async () => {
+    await withOwnerRollback(async (transaction) => {
+      const fixture = await createCommerceFixture(transaction);
+      const { afterSaleId } = await createAfterSaleFixture(transaction, fixture, {
+        type: 'RETURN_REFUND',
+      });
+      const returnShipmentId = randomUUID();
+
+      await setContext(transaction, {
+        actorId: fixture.memberId,
+        actorType: 'member',
+        storeId: BEAUTY_STORE_ID,
+      });
+      const startReturn = () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+        (store_id, after_sale_id, from_status, to_status, event, actor_type,
+          actor_id, correlation_id)
+        VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+          'APPROVED', 'RETURN_PENDING', 'START_RETURN', 'MEMBER',
+          ${fixture.memberId}::uuid,
+          pg_catalog.current_setting('app.correlation_id', true))`;
+      await expectDatabaseFailure(transaction, startReturn, '23514');
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+          (store_id, after_sale_id, from_status, to_status, event, actor_type,
+            actor_id, correlation_id)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+            'APPROVED', 'RETURN_PENDING', 'START_RETURN', 'MEMBER',
+            ${fixture.memberId}::uuid, ${`mismatched-${randomUUID()}`})`,
+        '42501',
+      );
+      const otherMemberId = randomUUID();
+      await transaction.$executeRaw`INSERT INTO members (id, store_id, updated_at)
+        VALUES (${otherMemberId}::uuid, ${BEAUTY_STORE_ID}::uuid, now())`;
+      await setContext(transaction, {
+        actorId: otherMemberId,
+        actorType: 'member',
+        storeId: BEAUTY_STORE_ID,
+      });
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+          (store_id, after_sale_id, from_status, to_status, event, actor_type,
+            actor_id, correlation_id)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+            'APPROVED', 'RETURN_PENDING', 'START_RETURN', 'MEMBER',
+            ${otherMemberId}::uuid,
+            pg_catalog.current_setting('app.correlation_id', true))`,
+        '42501',
+      );
+      await setContext(transaction, {
+        actorId: fixture.memberId,
+        actorType: 'member',
+        storeId: BEAUTY_STORE_ID,
+      });
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+          (store_id, after_sale_id, from_status, to_status, event, actor_type,
+            actor_id, correlation_id)
+          VALUES (${FASHION_STORE_ID}::uuid, ${afterSaleId}::uuid,
+            'APPROVED', 'RETURN_PENDING', 'START_RETURN', 'MEMBER',
+            ${fixture.memberId}::uuid,
+            pg_catalog.current_setting('app.correlation_id', true))`,
+        '42501',
+      );
+      await transaction.$executeRaw`INSERT INTO after_sale_return_shipments
+        (id, store_id, after_sale_id, order_id, member_id, carrier_name,
+          tracking_number_digest, tracking_number_masked, submitted_by, updated_at)
+        VALUES (${returnShipmentId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+          ${afterSaleId}::uuid, ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
+          'Member carrier',
+          ${createHash('sha256').update(`tracking-${returnShipmentId}`).digest('hex')},
+          '***B0', ${fixture.memberId}::uuid, now())`;
+      await expectDatabaseFailure(
+        transaction,
+        () =>
+          transaction.$executeRawUnsafe(
+            'SET CONSTRAINTS "after_sale_return_shipments_b0_atomic_guard" IMMEDIATE',
+          ),
+        '23514',
+      );
+      await expect(startReturn()).resolves.toBe(1);
+      await expect(
+        transaction.$executeRawUnsafe(
+          'SET CONSTRAINTS "after_sale_return_shipments_b0_atomic_guard" IMMEDIATE',
+        ),
+      ).resolves.toBe(0);
+      const duplicateReturnShipmentId = randomUUID();
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`INSERT INTO after_sale_return_shipments
+          (id, store_id, after_sale_id, order_id, member_id, carrier_name,
+            tracking_number_digest, tracking_number_masked, submitted_by, updated_at)
+          VALUES (${duplicateReturnShipmentId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+            ${afterSaleId}::uuid, ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
+            'Second member carrier',
+            ${createHash('sha256').update(`tracking-${duplicateReturnShipmentId}`).digest('hex')},
+            '***B1', ${fixture.memberId}::uuid, now())`,
+        '23505',
+      );
+      expect(
+        await transaction.$queryRaw<Array<{ shipment_count: bigint }>>`
+          SELECT pg_catalog.count(*)::bigint AS shipment_count
+          FROM after_sale_return_shipments
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+            AND after_sale_id = ${afterSaleId}::uuid
+        `,
+      ).toEqual([{ shipment_count: 1n }]);
+
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+          (store_id, after_sale_id, from_status, to_status, event, actor_type,
+            actor_id, correlation_id)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+            'RETURN_PENDING', 'RETURN_IN_TRANSIT', 'RETURN_SHIPPED', 'MEMBER',
+            ${fixture.memberId}::uuid,
+            pg_catalog.current_setting('app.correlation_id', true))`,
+        '42501',
+      );
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+          (store_id, after_sale_id, from_status, to_status, event, actor_type,
+            actor_id, correlation_id)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+            'RETURN_PENDING', 'INSPECTION_PENDING', 'RETURN_RECEIVED', 'MEMBER',
+            ${fixture.memberId}::uuid,
+            pg_catalog.current_setting('app.correlation_id', true))`,
+        '42501',
+      );
+
+      await setContext(transaction, {
+        actorId: otherMemberId,
+        actorType: 'member',
+        storeId: BEAUTY_STORE_ID,
+      });
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+          (store_id, after_sale_id, from_status, to_status, event, actor_type,
+            actor_id, correlation_id)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+            'RETURN_PENDING', 'RETURN_IN_TRANSIT', 'RETURN_SHIPPED', 'MEMBER',
+            ${otherMemberId}::uuid,
+            pg_catalog.current_setting('app.correlation_id', true))`,
+        '42501',
+      );
+      await setContext(transaction, {
+        actorId: fixture.memberId,
+        actorType: 'member',
+        storeId: BEAUTY_STORE_ID,
+      });
+      expect(
+        await transaction.$queryRaw`SELECT event, actor_type FROM after_sale_transitions
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+            AND after_sale_id = ${afterSaleId}::uuid AND actor_type = 'MEMBER'`,
+      ).toEqual([{ actor_type: 'MEMBER', event: 'START_RETURN' }]);
+    });
+  });
+
+  it('binds SYSTEM transitions to the dedicated scope, allowlist, store and correlation', async () => {
+    await withCommittedCommerceFixture(async (fixture) => {
+      const { afterSaleId, refundProcessingAfterSaleId } = await owner.$transaction(
+        async (transaction) => {
+          const primary = await createAfterSaleFixture(transaction, fixture, {
+            approvedTotalVnd: 50_000,
+          });
+          const refundProcessing = await createAfterSaleFixture(transaction, fixture, {
+            approvedTotalVnd: 50_000,
+          });
+          await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+          await transaction.$executeRaw`UPDATE after_sales
+            SET status = 'REFUND_PROCESSING', version = version + 1, updated_at = now()
+            WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+              AND id = ${refundProcessing.afterSaleId}::uuid`;
+          await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+          return {
+            afterSaleId: primary.afterSaleId,
+            refundProcessingAfterSaleId: refundProcessing.afterSaleId,
+          };
+        },
+      );
+      const systemContext = createAfterSaleSystemContext({
+        actorId: randomUUID(),
+        correlationId: `m63-b0-system-${randomUUID()}`,
+        storeId: BEAUTY_STORE_ID,
+      });
+
+      await runtime.$transaction(async (transaction) => {
+        await transaction.$executeRaw`
+          SELECT
+            set_config('app.store_id', ${systemContext.storeId}, true),
+            set_config('app.actor_id', ${systemContext.actor.id}, true),
+            set_config('app.actor_type', 'system', true),
+            set_config('app.correlation_id', ${systemContext.correlationId}, true),
+            set_config('app.system_scope', '', true)
+        `;
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+            (store_id, after_sale_id, from_status, to_status, event, actor_type,
+              actor_id, correlation_id)
+            VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+              'APPROVED', 'REVIEW_REQUIRED', 'REQUIRE_REVIEW', 'SYSTEM',
+              ${systemContext.actor.id}::uuid, ${systemContext.correlationId})`,
+          '42501',
+        );
+      });
+
+      await withAfterSaleSystemTransaction(runtime, systemContext, async (transaction) => {
+        expect(
+          await transaction.$queryRaw`SELECT
+              pg_catalog.current_setting('app.store_id', true) AS store_id,
+              pg_catalog.current_setting('app.actor_id', true) AS actor_id,
+              pg_catalog.current_setting('app.actor_type', true) AS actor_type,
+              pg_catalog.current_setting('app.correlation_id', true) AS correlation_id,
+              pg_catalog.current_setting('app.system_scope', true) AS system_scope`,
+        ).toEqual([
+          {
+            actor_id: systemContext.actor.id,
+            actor_type: 'system',
+            correlation_id: systemContext.correlationId,
+            store_id: systemContext.storeId,
+            system_scope: systemContext.systemScope,
+          },
+        ]);
+
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+            (store_id, after_sale_id, from_status, to_status, event, actor_type,
+              actor_id, correlation_id)
+            VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+              'APPROVED', 'REVIEW_REQUIRED', 'REQUIRE_REVIEW', 'SYSTEM',
+              ${randomUUID()}::uuid, ${systemContext.correlationId})`,
+          '42501',
+        );
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+            (store_id, after_sale_id, from_status, to_status, event, actor_type,
+              actor_id, correlation_id)
+            VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+              'APPROVED', 'REVIEW_REQUIRED', 'REQUIRE_REVIEW', 'ADMIN',
+              ${systemContext.actor.id}::uuid, ${systemContext.correlationId})`,
+          '42501',
+        );
+
+        for (const refundResult of [
+          { event: 'REFUND_SUCCEEDED', toStatus: 'REFUNDED' },
+          { event: 'REFUND_FAILED', toStatus: 'REFUND_PENDING' },
+          { event: 'REFUND_CANCELLED', toStatus: 'REFUND_PENDING' },
+        ] as const) {
+          await expectDatabaseFailure(
+            transaction,
+            () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+              (store_id, after_sale_id, from_status, to_status, event, actor_type,
+                actor_id, correlation_id)
+              VALUES (${BEAUTY_STORE_ID}::uuid, ${refundProcessingAfterSaleId}::uuid,
+                'REFUND_PROCESSING', ${refundResult.toStatus}::after_sale_status,
+                ${refundResult.event}, 'SYSTEM', ${systemContext.actor.id}::uuid,
+                ${systemContext.correlationId})`,
+            '23514',
+          );
+        }
+
+        for (const event of ['APPROVE', 'LEGACY_APPROVE', 'CONFIRM_COD', 'RETURN_SHIPPED']) {
+          await expectDatabaseFailure(
+            transaction,
+            () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+              (store_id, after_sale_id, from_status, to_status, event, actor_type,
+                actor_id, correlation_id)
+              VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+                'APPROVED', 'APPROVED', ${event}, 'SYSTEM',
+                ${systemContext.actor.id}::uuid, ${systemContext.correlationId})`,
+            '42501',
+          );
+        }
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+            (store_id, after_sale_id, from_status, to_status, event, actor_type,
+              actor_id, correlation_id)
+            VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+              'APPROVED', 'COMPLETED', 'COMPLETE', 'SYSTEM',
+              ${systemContext.actor.id}::uuid, ${systemContext.correlationId})`,
+          '23514',
+        );
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+            (store_id, after_sale_id, from_status, to_status, event, actor_type,
+              actor_id, correlation_id)
+            VALUES (${FASHION_STORE_ID}::uuid, ${afterSaleId}::uuid,
+              'APPROVED', 'REVIEW_REQUIRED', 'REQUIRE_REVIEW', 'SYSTEM',
+              ${systemContext.actor.id}::uuid, ${systemContext.correlationId})`,
+          '42501',
+        );
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+            (store_id, after_sale_id, from_status, to_status, event, actor_type,
+              actor_id, correlation_id)
+            VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+              'APPROVED', 'REVIEW_REQUIRED', 'REQUIRE_REVIEW', 'SYSTEM',
+              ${systemContext.actor.id}::uuid, ${`mismatched-${randomUUID()}`})`,
+          '42501',
+        );
+        await expect(
+          transaction.$executeRaw`INSERT INTO after_sale_transitions
+            (store_id, after_sale_id, from_status, to_status, event, actor_type,
+              actor_id, correlation_id)
+            VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+              'APPROVED', 'REVIEW_REQUIRED', 'REQUIRE_REVIEW', 'SYSTEM',
+              ${systemContext.actor.id}::uuid, ${systemContext.correlationId})`,
+        ).resolves.toBe(1);
+      });
+      expect(
+        await owner.$queryRaw`SELECT status FROM after_sales
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+            AND id = ${refundProcessingAfterSaleId}::uuid`,
+      ).toEqual([{ status: 'REFUND_PROCESSING' }]);
+
+      await owner.$transaction(async (transaction) => {
+        await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await transaction.$executeRaw`UPDATE after_sales
+          SET status = 'REFUNDED', completed_at = now(), version = version + 1,
+            updated_at = now()
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`;
+        await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+      });
+      await withAfterSaleSystemTransaction(runtime, systemContext, async (transaction) => {
+        await expect(
+          transaction.$executeRaw`INSERT INTO after_sale_transitions
+            (store_id, after_sale_id, from_status, to_status, event, actor_type,
+              actor_id, correlation_id)
+            VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+              'REFUNDED', 'COMPLETED', 'COMPLETE', 'SYSTEM',
+              ${systemContext.actor.id}::uuid, ${systemContext.correlationId})`,
+        ).resolves.toBe(1);
+      });
+      expect(
+        await owner.$queryRaw`SELECT status FROM after_sales
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`,
+      ).toEqual([{ status: 'COMPLETED' }]);
     });
   });
 

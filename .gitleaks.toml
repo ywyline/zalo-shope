@@ -26,3 +26,8 @@ id = "generic-api-key"
     paths = ['''^packages/logger/src/index\.spec\.ts$''']
     regexTarget = "secret"
     regexes = ['''^(M37_API_KEY_SECRET|M37_CORRELATION_SECRET)$''']
+
+    [[rules.allowlists]]
+    description = "Published local/test after-sale cursor HMAC placeholders rejected in production"
+    regexTarget = "secret"
+    regexes = ['''^(bG9jYWxfYWZ0ZXJfc2FsZV9jdXJzb3JfaG1hY19rZXk|dGVzdF9hZnRlcl9zYWxlX2N1cnNvcl9obWFjX2tleV8x)$''']

@@ -1,10 +1,10 @@
 # P0 分阶段开发计划
 
-> 状态：已批准，M0 已完成，M1 实施完成但验收有保留；M2.1-M2.8.4、M3.1-M3.7、M4 与 M5.1-M5.4 已完成自动化收口；M5.5-M5.7 仓库自动化已实施但外部验收仍阻塞；M6.1 契约与 M6.2 数据层已完成；M6.3 未开始
+> 状态：已批准，M0 已完成，M1 实施完成但验收有保留；M2.1-M2.8.4、M3.1-M3.7、M4 与 M5.1-M5.4 已完成自动化收口；M5.5-M5.7 仓库自动化已实施但外部验收仍阻塞；M6.1、M6.2、M6.3-A、M6.3-B0 与 B1 已完成；B2-B7、UI 与生产启用未授权；P0 整体未完成
 >
-> 版本：0.6
+> 版本：0.10
 >
-> 日期：2026-07-27
+> 日期：2026-07-29
 >
 > 依赖：`REQUIREMENTS.md`、`AGENTS.md`、`docs/architecture/system-architecture.md`
 
@@ -77,10 +77,40 @@ scope、只追加/列级授权以及政策快照、售后结算、库存/换货�
 初始第六段 `20260727115000_m62_integrity_closeout` 关闭 legacy 初态/决定、settlement 聚合锁、返件/
 凭证/COD、库存、换货、共享 shipment 并发和 definer ACL 旁路；后续五段前向修复补齐容量占用、
 immutable order allocation、M5/M6 退款锁序和 fail-closed actor scope。定向数据库 38/38、完整
-integration 26 个文件/201 项、35 段迁移演练及 `verify` 51 个文件/352 项单元测试通过。所有商城政策快照
+integration 26 个文件/202 项、35 段迁移演练及 `verify` 51 个文件/352 项单元测试通过。所有商城政策快照
 enforcement 保持 OFF，未创建生产政策，checkout writer/readiness、买家/管理员运行时、worker、UI
-和真实外部调用均未交付，M6.3 未开始。
+和真实外部调用均未交付；M6.2 完成当时尚未进入 M6.3。
 M5.5-M5.7、整个 M5 与 P0 仍不标记完成，原有外部上线门禁保持不变。
+
+M6.3 授权记录（2026-07-28）：用户要求按严谨工作流继续下一阶段，授权进入 M6.3。按
+`docs/plans/m6.3-implementation-plan.md`，先实施 checkout 政策快照/readiness/enforcement 与物流
+purpose 分流的 M6.3-A，再进入售后申请、审核、返件和结算协调的 M6.3-B；A 完成不等于 M6.3、M6、
+M5 或 P0 完成，也不放宽真实供应商与 Zalo 宿主门禁。
+
+M6.3-A 实现与门禁进度（2026-07-28）：checkout 政策解析/同事务快照 writer、绑定活动投影与
+runtime capability 的 readiness、受审逐商城 enforcement API、新增商城自动 OFF provisioning，以及
+既有 M5 物流全链路 purpose 分流已实现；创建/取消 provider reference 竞态已改为可靠重试，两类非订单
+purpose 不修改原订单的真实数据库证据已补齐。四段前向迁移、定向 unit 55/55、M6.2 数据库 39/39、
+M4 15/15、M5.6 13/13、完整 integration 26 个文件/206 项和 39 段迁移演练已通过；`verify`（54 个
+文件/381 项单元测试）、21/21 E2E、交付候选 Gitleaks、`git diff --check` 与生产依赖 high 门禁均通过；
+审计另有 3 项 React Router moderate 公告并已明确结转。M6.3-A 完成当时 B1-B7 运行时均未开始。
+所有商城继续默认 OFF，没有生产政策、返件/换货运单或真实外部调用；详见
+`docs/reports/m6.3-a-completion-report.md`。
+M6.3-B 的契约/状态机前置差异与修复顺序已另记
+`docs/plans/m6.3-b0-decision-plan.md`。用户于 2026-07-28 接受其中推荐默认值并只授权 B0 契约与前向
+修复。B0 已完成：domain/contracts 35/35、数据库 44/44、M5.7 9/9、完整 integration 211/211、40 段
+迁移演练和 `verify`（54 个文件/388 项单元测试）通过；生产依赖 high 门禁、交付候选 Gitleaks、差异检查
+与独立高风险复审通过。B0 无新 UI/运行时，因此 E2E 为 `NOT_APPLICABLE`；B0 完成当时 B1-B7
+仍未开始、未授权。详见 `docs/reports/m6.3-b0-completion-report.md`。
+
+M6.3-B1 授权与实现记录（授权 2026-07-28，实施收口 2026-07-29）：用户在了解跨商城泄漏、敏感
+字段过度投影、游标精度/轮换和 Redis 失败关闭风险后明确“按照建议执行”，只授权会员/管理员售后
+列表与详情四个 GET。现已实现显式 store/owner/RBAC + FORCE RLS、严格 Prisma `select`/响应 allowlist、
+`REPEATABLE READ` 两阶段 `limit + 1` 分页、PostgreSQL 六位微秒 `(timestamp,id)` tuple seek、1–3 把
+HMAC key ring 游标、商城+主体 60/120 读限流、`Retry-After`、correlation ID 与
+`Cache-Control: private, no-store`。管理员无 status 查询新增专用前向索引，Prisma 同步数据库既有
+售后退款链接唯一约束以消除 schema drift。B1 没有 UI 或写 handler；B2-B7、生产政策/启用、供应商
+调用、部署和发布仍未授权，M6.3、M6、M5 与 P0 均不因此标记完成。
 
 ## 1. 总体范围
 
@@ -228,6 +258,9 @@ M5.5-M5.7、整个 M5 与 P0 仍不标记完成，原有外部上线门禁保持
 ### M6：售后、会员、内容、分享与基础营销完善
 
 目标：补齐 P0 交易后流程和 Zalo 主动分享体验。
+
+当前局部状态：M6.3-B1 只交付商城/主体隔离的售后列表与详情读取，不交付下列完整 M6 产品范围。
+只读响应中的凭证/结算安全摘要不能据此解释为对象读取、申请、审核、返件、退款、结算或 UI 可用。
 
 交付：
 

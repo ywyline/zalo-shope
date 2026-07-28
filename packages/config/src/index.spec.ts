@@ -23,6 +23,7 @@ const validEnvironment = {
 
 const validProductionEnvironment = {
   ...validEnvironment,
+  AFTER_SALE_CURSOR_HMAC_KEYS: Buffer.alloc(32, 4).toString('base64url'),
   AUTH_JWT_SECRET: 'j'.repeat(64),
   NODE_ENV: 'production',
   PII_ENCRYPTION_KEY: Buffer.alloc(32, 3).toString('base64'),
@@ -34,6 +35,7 @@ const validProductionEnvironment = {
 };
 
 const productionPlaceholderFields = [
+  'AFTER_SALE_CURSOR_HMAC_KEYS',
   'AUTH_JWT_SECRET',
   'PII_ENCRYPTION_KEY',
   'PII_HASH_KEY',
@@ -69,6 +71,7 @@ describe('parseRuntimeConfig', () => {
     const config = parseRuntimeConfig(validEnvironment);
 
     expect(config.NODE_ENV).toBe('development');
+    expect(config.AFTER_SALE_CURSOR_TTL_SECONDS).toBe(900);
     expect(config.API_PORT).toBe(3000);
     expect(config.WORKER_PORT).toBe(3001);
     expect(config.INVENTORY_EXPIRATION_INTERVAL_MS).toBe(5_000);
@@ -90,6 +93,50 @@ describe('parseRuntimeConfig', () => {
     expect(config.S3_FORCE_PATH_STYLE).toBe(true);
     expect(config.S3_SESSION_TOKEN).toBeUndefined();
     expect(config.CONTENT_EXTERNAL_TARGET_HOSTS).toEqual([]);
+  });
+
+  it('validates the dedicated rotatable after-sale cursor key ring', () => {
+    const current = Buffer.alloc(32, 4).toString('base64url');
+    const previous = Buffer.alloc(32, 5).toString('base64url');
+    expect(
+      parseRuntimeConfig({
+        ...validEnvironment,
+        AFTER_SALE_CURSOR_HMAC_KEYS: `${current},${previous}`,
+      }).AFTER_SALE_CURSOR_HMAC_KEYS,
+    ).toBe(`${current},${previous}`);
+    expect(() =>
+      parseRuntimeConfig({ ...validEnvironment, AFTER_SALE_CURSOR_HMAC_KEYS: 'too-short' }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnvironment,
+        AFTER_SALE_CURSOR_HMAC_KEYS: `${current},${current}`,
+      }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
+  it('rejects a repository cursor key mixed into either position of a production key ring', () => {
+    const realKey = Buffer.alloc(32, 6).toString('base64url');
+    const placeholders = ['.env.example', '.env.test.example'].map((fileName) => {
+      const placeholder = readExampleEnvironment(fileName).AFTER_SALE_CURSOR_HMAC_KEYS;
+      if (!placeholder) throw new Error(`${fileName} is missing AFTER_SALE_CURSOR_HMAC_KEYS`);
+      return placeholder;
+    });
+
+    for (const placeholder of placeholders) {
+      expect(() =>
+        parseRuntimeConfig({
+          ...validProductionEnvironment,
+          AFTER_SALE_CURSOR_HMAC_KEYS: `${placeholder},${realKey}`,
+        }),
+      ).toThrow(InvalidEnvironmentError);
+      expect(() =>
+        parseRuntimeConfig({
+          ...validProductionEnvironment,
+          AFTER_SALE_CURSOR_HMAC_KEYS: `${realKey},${placeholder}`,
+        }),
+      ).toThrow(InvalidEnvironmentError);
+    }
   });
 
   it('rejects an outbox retry cap below its base delay', () => {

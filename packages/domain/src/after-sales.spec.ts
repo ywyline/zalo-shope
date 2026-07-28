@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertAfterSaleEvidenceAccessAllowed,
+  assertAfterSaleEvidenceCreationAllowed,
+  assertAfterSaleEventActorAllowed,
+  assertAfterSaleSystemEventAllowed,
+  assertAfterSaleApprovalQuantities,
   assertAfterSaleQuantityAvailable,
   assertAfterSaleRefundAmountAllowed,
   assertAfterSaleReturnWindowOpen,
@@ -10,8 +14,11 @@ import {
   calculateAfterSaleReturnDeadlineEpochMs,
   calculateOrderItemRefundAllocationVnd,
   calculateRemainingAfterSaleRefundVnd,
+  createAfterSaleSystemContext,
   doesAfterSaleQuantityOccupyCapacity,
   resolveAfterSaleReview,
+  resolveAfterSaleCasePolicy,
+  resolveAuthoritativeOrderItemDelivery,
   resolveLegacyAfterSaleReview,
   summarizeCompleteAfterSaleInspection,
   transitionAfterSale,
@@ -24,7 +31,8 @@ import {
   transitionAfterSaleOnlineRefundRequested,
   transitionAfterSaleRefundReleased,
   transitionAfterSaleReturnExpired,
-  transitionAfterSaleReturnShipment,
+  assertAfterSaleReturnSubmissionAllowed,
+  transitionAfterSaleReturnSubmitted,
   transitionExchangeToRefund,
 } from './after-sales';
 
@@ -88,11 +96,11 @@ describe('M6 after-sale state machine', () => {
 
   it('freezes multi-event return and refund command timelines', () => {
     expect(
-      transitionAfterSaleReturnShipment('RETURN_REFUND', 'APPROVED', {
+      transitionAfterSaleReturnSubmitted('RETURN_REFUND', 'APPROVED', {
         nowEpochMs: 999,
         returnDeadlineEpochMs: 1_000,
       }),
-    ).toEqual({ events: ['START_RETURN', 'RETURN_SHIPPED'], status: 'RETURN_IN_TRANSIT' });
+    ).toEqual({ events: ['START_RETURN'], status: 'RETURN_PENDING' });
     expect(transitionAfterSaleOnlineRefundRequested('REFUND_ONLY', 'APPROVED')).toEqual({
       events: ['QUEUE_REFUND', 'REFUND_REQUESTED'],
       status: 'REFUND_PROCESSING',
@@ -160,7 +168,7 @@ describe('M6 after-sale state machine', () => {
       }),
     ).toEqual({ events: ['RETURN_EXPIRED'], status: 'REJECTED' });
     expect(() =>
-      transitionAfterSaleReturnShipment('RETURN_REFUND', 'APPROVED', {
+      transitionAfterSaleReturnSubmitted('RETURN_REFUND', 'APPROVED', {
         nowEpochMs: 1_000,
         returnDeadlineEpochMs: 1_000,
       }),
@@ -179,6 +187,75 @@ describe('M6 after-sale state machine', () => {
         returnDeadlineEpochMs: 1_000,
       }),
     ).toThrow('AFTER_SALE_RETURN_WINDOW_INVALID');
+  });
+
+  it('keeps member return submissions separate from authoritative shipping facts', () => {
+    expect(() =>
+      assertAfterSaleReturnSubmissionAllowed('RETURN_REFUND', 'APPROVED', {
+        nowEpochMs: 999,
+        returnDeadlineEpochMs: 1_000,
+      }),
+    ).not.toThrow();
+    expect(() => assertAfterSaleEventActorAllowed('MEMBER', 'START_RETURN')).not.toThrow();
+    expect(() => assertAfterSaleEventActorAllowed('MEMBER', 'RETURN_SHIPPED')).toThrow(
+      'AFTER_SALE_ACTOR_NOT_ALLOWED',
+    );
+    expect(
+      transitionAfterSaleReturnSubmitted('RETURN_REFUND', 'APPROVED', {
+        nowEpochMs: 999,
+        returnDeadlineEpochMs: 1_000,
+      }),
+    ).toEqual({ events: ['START_RETURN'], status: 'RETURN_PENDING' });
+    expect(transitionAfterSale('RETURN_REFUND', 'RETURN_PENDING', 'RETURN_SHIPPED')).toBe(
+      'RETURN_IN_TRANSIT',
+    );
+  });
+
+  it('allows SYSTEM to append only frozen convergence events', () => {
+    const systemContext = createAfterSaleSystemContext({
+      actorId: 'after-sale-worker',
+      correlationId: 'correlation-1',
+      storeId: 'store-1',
+    });
+    expect(systemContext).toEqual({
+      actor: { id: 'after-sale-worker', type: 'system' },
+      correlationId: 'correlation-1',
+      storeId: 'store-1',
+      systemScope: 'after-sale-transition',
+    });
+    expect(() =>
+      createAfterSaleSystemContext({
+        actorId: ' ',
+        correlationId: 'correlation-1',
+        storeId: 'store-1',
+      }),
+    ).toThrow('AFTER_SALE_ACTOR_NOT_ALLOWED');
+    for (const event of [
+      'RETURN_EXPIRED',
+      'REFUND_SUCCEEDED',
+      'REFUND_FAILED',
+      'REFUND_CANCELLED',
+      'REQUIRE_REVIEW',
+      'COMPLETE',
+    ] as const) {
+      expect(() => assertAfterSaleSystemEventAllowed(systemContext, event)).not.toThrow();
+    }
+    for (const event of [
+      'APPROVE',
+      'LEGACY_APPROVE',
+      'RESUME_REVIEW',
+      'REFUND_REQUESTED',
+      'RETURN_SHIPPED',
+      'RETURN_RECEIVED',
+    ] as const) {
+      expect(() => assertAfterSaleSystemEventAllowed(systemContext, event)).toThrow(
+        'AFTER_SALE_ACTOR_NOT_ALLOWED',
+      );
+    }
+    expect(transitionAfterSale('REFUND_ONLY', 'REFUNDED', 'COMPLETE')).toBe('COMPLETED');
+    expect(() => transitionAfterSale('REFUND_ONLY', 'APPROVED', 'COMPLETE')).toThrow(
+      'AFTER_SALE_STATE_CONFLICT',
+    );
   });
 
   it('resumes manual review only to the recorded, type-compatible state', () => {
@@ -459,6 +536,54 @@ describe('M6 after-sale state machine', () => {
 });
 
 describe('M6 after-sale quantity and refund capacity', () => {
+  it('requires every requested line to receive one bounded approval decision', () => {
+    expect(() =>
+      assertAfterSaleApprovalQuantities({
+        approvedItems: [
+          { approvedQuantity: 1, orderItemId: 'line-1' },
+          { approvedQuantity: 0, orderItemId: 'line-2' },
+        ],
+        requestedItems: [
+          { orderItemId: 'line-1', requestedQuantity: 2 },
+          { orderItemId: 'line-2', requestedQuantity: 1 },
+        ],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAfterSaleApprovalQuantities({
+        approvedItems: [{ approvedQuantity: 1, orderItemId: 'line-1' }],
+        requestedItems: [
+          { orderItemId: 'line-1', requestedQuantity: 2 },
+          { orderItemId: 'line-2', requestedQuantity: 1 },
+        ],
+      }),
+    ).toThrow('AFTER_SALE_QUANTITY_INVALID');
+    expect(() =>
+      assertAfterSaleApprovalQuantities({
+        approvedItems: [
+          { approvedQuantity: 3, orderItemId: 'line-1' },
+          { approvedQuantity: 0, orderItemId: 'line-2' },
+        ],
+        requestedItems: [
+          { orderItemId: 'line-1', requestedQuantity: 2 },
+          { orderItemId: 'line-2', requestedQuantity: 1 },
+        ],
+      }),
+    ).toThrow('AFTER_SALE_QUANTITY_EXCEEDS_AVAILABLE');
+    expect(() =>
+      assertAfterSaleApprovalQuantities({
+        approvedItems: [
+          { approvedQuantity: 0, orderItemId: 'line-1' },
+          { approvedQuantity: 0, orderItemId: 'line-2' },
+        ],
+        requestedItems: [
+          { orderItemId: 'line-1', requestedQuantity: 2 },
+          { orderItemId: 'line-2', requestedQuantity: 1 },
+        ],
+      }),
+    ).toThrow('AFTER_SALE_QUANTITY_INVALID');
+  });
+
   it('prevents concurrent cases from exceeding an order item quantity', () => {
     expect(() =>
       assertAfterSaleQuantityAvailable({
@@ -577,6 +702,133 @@ describe('M6 after-sale quantity and refund capacity', () => {
         requestedApprovedQuantity: 1,
       }),
     ).toBe(34);
+  });
+});
+
+describe('M6 after-sale policy and evidence admission', () => {
+  const policy = {
+    payloadHash: 'a'.repeat(64),
+    policyId: 'policy-1',
+    policyVersionId: 'policy-version-1',
+    policyVersionNumber: 3,
+  };
+
+  it('permits a case only when every line has the same policy, version and hash', () => {
+    expect(resolveAfterSaleCasePolicy([policy, { ...policy }])).toEqual({
+      legacyPolicyReview: false,
+      policy,
+    });
+    expect(resolveAfterSaleCasePolicy([null, null])).toEqual({
+      legacyPolicyReview: true,
+      policy: null,
+    });
+    expect(() =>
+      resolveAfterSaleCasePolicy([policy, { ...policy, payloadHash: 'b'.repeat(64) }]),
+    ).toThrow('AFTER_SALE_POLICY_MISMATCH');
+    expect(() => resolveAfterSaleCasePolicy([policy, null])).toThrow('AFTER_SALE_POLICY_MISMATCH');
+  });
+
+  it('derives delivery only from complete ORDER_OUTBOUND shipment-item facts', () => {
+    expect(
+      resolveAuthoritativeOrderItemDelivery({
+        orderedQuantity: 3,
+        shipmentItems: [
+          {
+            deliveredAtEpochMs: 1_000,
+            purpose: 'ORDER_OUTBOUND',
+            quantity: 1,
+            shipmentId: 'outbound-1',
+            status: 'DELIVERED',
+          },
+          {
+            deliveredAtEpochMs: 2_000,
+            purpose: 'ORDER_OUTBOUND',
+            quantity: 2,
+            shipmentId: 'outbound-2',
+            status: 'DELIVERED',
+          },
+          {
+            deliveredAtEpochMs: 3_000,
+            purpose: 'AFTER_SALE_RETURN',
+            quantity: 3,
+            shipmentId: 'return-1',
+            status: 'DELIVERED',
+          },
+        ],
+      }),
+    ).toEqual({ deliveredAtEpochMs: 2_000, proven: true });
+    expect(
+      resolveAuthoritativeOrderItemDelivery({
+        orderedQuantity: 3,
+        shipmentItems: [
+          {
+            deliveredAtEpochMs: 1_000,
+            purpose: 'ORDER_OUTBOUND',
+            quantity: 1,
+            shipmentId: 'outbound-1',
+            status: 'DELIVERED',
+          },
+        ],
+      }),
+    ).toEqual({ proven: false, reason: 'OUTBOUND_QUANTITY_UNPROVEN' });
+    expect(
+      resolveAuthoritativeOrderItemDelivery({
+        orderedQuantity: 1,
+        shipmentItems: [
+          {
+            deliveredAtEpochMs: null,
+            purpose: 'ORDER_OUTBOUND',
+            quantity: 1,
+            shipmentId: 'outbound-1',
+            status: 'DELIVERED',
+          },
+        ],
+      }),
+    ).toEqual({ proven: false, reason: 'DELIVERY_TIMESTAMP_UNPROVEN' });
+  });
+
+  it('fails evidence-required admission closed until every real capability is available', () => {
+    const availableCapabilities = {
+      claimAvailable: true,
+      deletionCompensationAvailable: true,
+      malwareScanningAvailable: true,
+      protectedReadAvailable: true,
+      uploadValidationAvailable: true,
+    };
+    expect(() =>
+      assertAfterSaleEvidenceCreationAllowed({
+        capabilities: availableCapabilities,
+        evidenceRequired: true,
+        readyEvidenceCount: 1,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAfterSaleEvidenceCreationAllowed({
+        capabilities: { ...availableCapabilities, malwareScanningAvailable: false },
+        evidenceRequired: true,
+        readyEvidenceCount: 1,
+      }),
+    ).toThrow('AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE');
+    expect(() =>
+      assertAfterSaleEvidenceCreationAllowed({
+        capabilities: availableCapabilities,
+        evidenceRequired: true,
+        readyEvidenceCount: 0,
+      }),
+    ).toThrow('AFTER_SALE_EVIDENCE_REQUIRED');
+    expect(() =>
+      assertAfterSaleEvidenceCreationAllowed({
+        capabilities: {
+          claimAvailable: false,
+          deletionCompensationAvailable: false,
+          malwareScanningAvailable: false,
+          protectedReadAvailable: false,
+          uploadValidationAvailable: false,
+        },
+        evidenceRequired: false,
+        readyEvidenceCount: 0,
+      }),
+    ).not.toThrow();
   });
 });
 
