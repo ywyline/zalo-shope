@@ -12,6 +12,7 @@
     "migrate:deploy": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",
     "preflight:m63-b2a": "tsx prisma/preflight-m63-b2a.ts",
+    "preflight:m63-b2b-d0": "tsx prisma/preflight-m63-b2b-d0.ts",
     "search:rebuild": "tsx prisma/rebuild-search.ts",
     "seed": "tsx prisma/seed.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p prisma/tsconfig.json --noEmit",

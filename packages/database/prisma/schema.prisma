@@ -168,6 +168,7 @@ model Store {
   afterSaleInspections           AfterSaleInspection[]
   afterSaleInspectionAllocations AfterSaleInspectionAllocation[]
   afterSaleEvidenceFiles         AfterSaleEvidenceFile[]
+  afterSaleEvidenceObjects       AfterSaleEvidenceObject[]
   afterSaleEvidenceTransitions   AfterSaleEvidenceTransition[]
   afterSaleSettlements           AfterSaleSettlement[]
   afterSaleRefunds               AfterSaleRefund[]
@@ -1392,7 +1393,7 @@ model AfterSalePolicy {
   draftProducts      AfterSalePolicyDraftProduct[]
   activeAssignments  AfterSaleActivePolicyAssignment[]
   orderItemSnapshots OrderItemAfterSalePolicySnapshot[]
-  afterSales         AfterSale[]                       @relation("AfterSalePolicyCases")
+  afterSales         AfterSale[]                        @relation("AfterSalePolicyCases")
   storeSettings      StoreAfterSaleSetting[]
 
   @@unique([storeId, id])
@@ -1433,7 +1434,7 @@ model AfterSalePolicyVersion {
   assignments        AfterSalePolicyVersionAssignment[]
   activeAssignments  AfterSaleActivePolicyAssignment[]
   orderItemSnapshots OrderItemAfterSalePolicySnapshot[]
-  afterSales         AfterSale[]                       @relation("AfterSalePolicyVersionCases")
+  afterSales         AfterSale[]                        @relation("AfterSalePolicyVersionCases")
   storeSettings      StoreAfterSaleSetting[]
 
   @@unique([storeId, id])
@@ -1787,59 +1788,94 @@ model AfterSaleInspectionAllocation {
 }
 
 model AfterSaleEvidenceFile {
-  id                     String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId                String                  @map("store_id") @db.Uuid
-  memberId               String                  @map("member_id") @db.Uuid
-  uploadSessionId        String                  @map("upload_session_id") @db.Uuid
-  afterSaleId            String?                 @map("after_sale_id") @db.Uuid
-  objectKey              String?                 @unique @map("object_key") @db.Text
-  derivativeObjectKeys   Json?                   @map("derivative_object_keys")
-  scanTemporaryObjectKey String?                 @map("scan_temporary_object_key") @db.Text
-  mimeType               String                  @map("mime_type") @db.VarChar(64)
-  byteSize               BigInt                  @map("byte_size")
-  checksumSha256         String                  @map("checksum_sha256") @db.Char(64)
-  originalFilename       String?                 @map("original_filename") @db.VarChar(255)
-  status                 AfterSaleEvidenceStatus @default(PENDING)
-  scanResultCode         String?                 @map("scan_result_code") @db.VarChar(64)
-  claimDeadlineAt        DateTime?               @map("claim_deadline_at") @db.Timestamptz(6)
-  claimedAt              DateTime?               @map("claimed_at") @db.Timestamptz(6)
-  retentionDeadlineAt    DateTime?               @map("retention_deadline_at") @db.Timestamptz(6)
-  legalHoldActive        Boolean                 @default(false) @map("legal_hold_active")
-  heldAt                 DateTime?               @map("held_at") @db.Timestamptz(6)
-  heldBy                 String?                 @map("held_by") @db.Uuid
-  holdReason             String?                 @map("hold_reason") @db.VarChar(500)
-  deleteAttemptCount     Int                     @default(0) @map("delete_attempt_count")
-  nextDeleteAttemptAt    DateTime?               @map("next_delete_attempt_at") @db.Timestamptz(6)
-  deleteErrorCode        String?                 @map("delete_error_code") @db.VarChar(64)
-  deletedAt              DateTime?               @map("deleted_at") @db.Timestamptz(6)
-  version                Int                     @default(1)
-  createdAt              DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt              DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                       String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                  String                  @map("store_id") @db.Uuid
+  memberId                 String                  @map("member_id") @db.Uuid
+  uploadSessionId          String                  @map("upload_session_id") @db.Uuid
+  afterSaleId              String?                 @map("after_sale_id") @db.Uuid
+  objectKey                String?                 @unique @map("object_key") @db.Text
+  derivativeObjectKeys     Json?                   @map("derivative_object_keys")
+  scanTemporaryObjectKey   String?                 @map("scan_temporary_object_key") @db.Text
+  mimeType                 String                  @map("mime_type") @db.VarChar(64)
+  byteSize                 BigInt                  @map("byte_size")
+  checksumSha256           String                  @map("checksum_sha256") @db.Char(64)
+  originalFilename         String?                 @map("original_filename") @db.VarChar(255)
+  status                   AfterSaleEvidenceStatus @default(PENDING)
+  scanResultCode           String?                 @map("scan_result_code") @db.VarChar(64)
+  uploadDeadlineAt         DateTime?               @map("upload_deadline_at") @db.Timestamptz(6)
+  confirmedAt              DateTime?               @map("confirmed_at") @db.Timestamptz(6)
+  scanRequestedAt          DateTime?               @map("scan_requested_at") @db.Timestamptz(6)
+  scanCompletedAt          DateTime?               @map("scan_completed_at") @db.Timestamptz(6)
+  scanGeneration           Int                     @default(0) @map("scan_generation")
+  scannerEngine            String?                 @map("scanner_engine") @db.VarChar(64)
+  scannerEngineVersion     String?                 @map("scanner_engine_version") @db.VarChar(64)
+  scannerSignatureVersion  String?                 @map("scanner_signature_version") @db.VarChar(128)
+  claimDeadlineAt          DateTime?               @map("claim_deadline_at") @db.Timestamptz(6)
+  claimedAt                DateTime?               @map("claimed_at") @db.Timestamptz(6)
+  ordinaryAccessDeadlineAt DateTime?               @map("ordinary_access_deadline_at") @db.Timestamptz(6)
+  retentionDeadlineAt      DateTime?               @map("retention_deadline_at") @db.Timestamptz(6)
+  legalHoldActive          Boolean                 @default(false) @map("legal_hold_active")
+  heldAt                   DateTime?               @map("held_at") @db.Timestamptz(6)
+  heldBy                   String?                 @map("held_by") @db.Uuid
+  holdReason               String?                 @map("hold_reason") @db.VarChar(500)
+  deleteAttemptCount       Int                     @default(0) @map("delete_attempt_count")
+  nextDeleteAttemptAt      DateTime?               @map("next_delete_attempt_at") @db.Timestamptz(6)
+  deleteErrorCode          String?                 @map("delete_error_code") @db.VarChar(64)
+  deleteExhaustedAt        DateTime?               @map("delete_exhausted_at") @db.Timestamptz(6)
+  deletedAt                DateTime?               @map("deleted_at") @db.Timestamptz(6)
+  version                  Int                     @default(1)
+  createdAt                DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   store       Store                         @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_evidence_files_store_id_fkey")
   member      Member                        @relation(fields: [storeId, memberId], references: [storeId, id], onDelete: Restrict, map: "after_sale_evidence_files_member_fkey")
   afterSale   AfterSale?                    @relation(fields: [storeId, afterSaleId, memberId], references: [storeId, id, memberId], onDelete: Restrict, map: "after_sale_evidence_files_case_member_fkey")
   holder      AdminUser?                    @relation("AfterSaleEvidenceHeldBy", fields: [heldBy], references: [id], onDelete: Restrict, map: "after_sale_evidence_files_held_by_fkey")
+  objects     AfterSaleEvidenceObject[]
   transitions AfterSaleEvidenceTransition[]
 
   @@unique([storeId, id])
   @@index([storeId, memberId, uploadSessionId])
   @@index([storeId, afterSaleId, createdAt])
-  @@index([status, nextDeleteAttemptAt])
+  @@index([storeId, memberId, status, id])
+  @@index([storeId, status, nextDeleteAttemptAt, id])
   @@map("after_sale_evidence_files")
 }
 
+model AfterSaleEvidenceObject {
+  id             String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId        String                      @map("store_id") @db.Uuid
+  evidenceFileId String                      @map("evidence_file_id") @db.Uuid
+  role           AfterSaleEvidenceObjectRole @map("object_role")
+  objectKey      String?                     @unique @map("object_key") @db.Text
+  objectKeyHash  String                      @unique @map("object_key_hash") @db.Char(64)
+  deletedAt      DateTime?                   @map("deleted_at") @db.Timestamptz(6)
+  version        Int                         @default(1)
+  createdAt      DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  store        Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_evidence_objects_store_id_fkey")
+  evidenceFile AfterSaleEvidenceFile @relation(fields: [storeId, evidenceFileId], references: [storeId, id], onDelete: Restrict, map: "after_sale_evidence_objects_file_fkey")
+
+  @@unique([storeId, id])
+  @@index([storeId, evidenceFileId, role, id])
+  @@map("after_sale_evidence_objects")
+}
+
 model AfterSaleEvidenceTransition {
-  id             String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId        String                   @map("store_id") @db.Uuid
-  evidenceFileId String                   @map("evidence_file_id") @db.Uuid
-  fromStatus     AfterSaleEvidenceStatus? @map("from_status")
-  toStatus       AfterSaleEvidenceStatus  @map("to_status")
-  event          String                   @db.VarChar(64)
-  actorType      AuditActorType           @map("actor_type")
-  actorId        String                   @map("actor_id") @db.Uuid
-  errorCode      String?                  @map("error_code") @db.VarChar(64)
-  createdAt      DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  id              String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId         String                   @map("store_id") @db.Uuid
+  evidenceFileId  String                   @map("evidence_file_id") @db.Uuid
+  fromStatus      AfterSaleEvidenceStatus? @map("from_status")
+  toStatus        AfterSaleEvidenceStatus  @map("to_status")
+  event           String                   @db.VarChar(64)
+  actorType       AuditActorType           @map("actor_type")
+  actorId         String                   @map("actor_id") @db.Uuid
+  errorCode       String?                  @map("error_code") @db.VarChar(64)
+  correlationId   String                   @map("correlation_id") @db.VarChar(128)
+  evidenceVersion Int                      @map("evidence_version")
+  scanGeneration  Int                      @map("scan_generation")
+  createdAt       DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
 
   store        Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_evidence_transitions_store_id_fkey")
   evidenceFile AfterSaleEvidenceFile @relation(fields: [storeId, evidenceFileId], references: [storeId, id], onDelete: Restrict, map: "after_sale_evidence_transitions_file_fkey")
@@ -3183,6 +3219,14 @@ enum AfterSaleEvidenceStatus {
   DELETE_FAILED
 
   @@map("after_sale_evidence_status")
+}
+
+enum AfterSaleEvidenceObjectRole {
+  ORIGINAL
+  DERIVATIVE
+  SCAN_TEMPORARY
+
+  @@map("after_sale_evidence_object_role")
 }
 
 enum AfterSaleSettlementMethod {

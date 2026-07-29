@@ -19,6 +19,7 @@ export function createAfterSaleReadSelect(locale: AfterSaleLocale) {
       select: {
         claimDeadlineAt: true,
         id: true,
+        ordinaryAccessDeadlineAt: true,
         retentionDeadlineAt: true,
         status: true,
         version: true,
@@ -200,7 +201,7 @@ export class AfterSalesProjector {
       evidence.status === 'READY_UNCLAIMED'
         ? evidence.claimDeadlineAt
         : evidence.status === 'READY'
-          ? evidence.retentionDeadlineAt
+          ? evidence.ordinaryAccessDeadlineAt
           : null;
     if (deadline !== null && now < deadline) {
       return {

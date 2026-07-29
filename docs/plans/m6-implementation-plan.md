@@ -1,9 +1,10 @@
 # M6 售后、会员、内容与主动分享专项实施计划
 
-> 状态：已批准；M6.1、M6.2、M6.3-A、M6.3-B0、B1 与 B2a 仓库实施已完成；
-> B2/B2b、B3-B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭；M6 整体未完成
+> 状态：已批准；M6.1、M6.2、M6.3-A、M6.3-B0、B1、B2a、B2b-D0 与 B2b-D1 repository +
+> local/test storage validation 已完成且适用仓库门禁通过；B2/B2b、B3-B7、
+> M6.3、UI 与生产启用未完成或未授权并保持失败关闭；M6 整体未完成
 >
-> 版本：0.8
+> 版本：1.0
 >
 > 日期：2026-07-29
 >
@@ -91,6 +92,43 @@ ACTIVE-only RLS 方案会破坏该历史读又不能提供列级草稿隔离，�
 仓库内 `verify`（60 个文件/427 项单元测试、格式/lint/typecheck、生产构建、Prisma validate）、完整 integration 29 个文件/234 项、
 M2→current 42 段迁移演练、生产依赖 high、OpenAPI 结构检查、tracked+13 个 untracked 候选 Gitleaks、`git diff --check` 与独立高风险复审均通过，
 所以 B2a 仓库实施标记 `COMPLETE`。这不代表任何 staging/production 目标库已 preflight 或可 rollout，也不完成 B2/B2b、M6.3、M6 或 P0。
+
+M6.3-B2b-D0 授权与仓库实施完成记录（2026-07-29）：B2a 后用户再次要求按严谨工作流继续下一
+阶段。完整 B2b 依赖专用对象存储、真实 scanner、保护读取、生产保留政策与 worker 外部证据，不能
+一次安全交付，因此本轮只实施
+`docs/plans/m6.3-b2b-d0-implementation-plan.md` 的数据库生命周期与可靠排队底座。D0 增加
+evidence upload/confirm/scan/access/exhaustion 元数据、规范对象 ledger、独立
+`after-sale-evidence-lifecycle` SYSTEM scope、会员配额并发锁、SYSTEM 重扫请求、严格 scan/expire/delete outbox 与
+dead-letter reconciliation 原语，并修正 B1 已 claim READY 投影以 ordinary access deadline 控制读取。
+
+D0 迁移要求 evidence/transition/outbox/idempotency 四类既有 runtime 事实全空，非空以 `55000`
+停止；本地 owner preflight 为四类事实均 0，runtime RLS 连接按预期以 `42501` 失败关闭。迁移已进入
+M2→current 第 43 段的 fresh/redeploy/down-forward/fingerprint/五类事实门禁演练；数据库、商城隔离、
+配额并发、消息原子性、generation、hold、ledger 删除、第五次告警/第八次耗尽和三类 dead letter
+已有自动化证据。最终仓库门禁与精确计数见
+`docs/reports/m6.3-b2b-d0-completion-report.md`，D0 repository implementation 单独标记
+`COMPLETE`。
+
+该结论明确不包含 HTTP、worker 注册、对象存储、真实 MIME/magic/checksum/provider 校验、scanner、
+保护 URL、外部告警、生产参数审批/配置、目标库 rollout 或真实用户文件。上述外部能力保持
+`NOT_RUN/BLOCKED`；B2b/B2、B3-B7、M6.3、M6 和 P0 均未完成，也未因 D0 自动获得下一切片授权。
+
+M6.3-B2b-D1 授权与当前收口记录（2026-07-29）：用户在 D0 后再次要求继续下一阶段，本轮只实施
+`docs/plans/m6.3-b2b-d1-evidence-storage-plan.md` 的专用对象存储与内容校验切片。仓库新增独立
+`AfterSaleEvidenceObjectStorageProvider`、默认 disabled 且失败关闭的 `EVIDENCE_STORAGE_*` 配置、
+local/test MinIO content/evidence bucket 和 upload/read/delete 最小 IAM，以及实际 bytes 长度、SHA-256、
+Content-Type 和四类 magic 的有界流式校验。D1 不修改数据库；M2→current 仍为 43 段且演练通过。
+
+D1 定向 config/integrations 单元 65/65、真实 MinIO 7/7、完整 integration 31 文件/250 项通过；MinIO
+初始化连续两次成功并强制固定 evidence bucket 版本控制从未启用。生产依赖 high 审计退出码 0，且仍
+披露 3 项 moderate；OpenAPI 文件 diff=0，结构引用为 556/112/0/0。最终 `verify`（62 个单元文件/482
+项）、46 个交付候选文件逐文件与 committed history Gitleaks、`git diff --check` 和独立高风险复审均
+通过，详见 `docs/reports/m6.3-b2b-d1-evidence-storage-completion-report.md`。
+
+因此只将 D1 repository implementation + local/test storage validation 标记 `COMPLETE`。D1 没有
+HTTP、worker、scanner、D0 outbox 消费、B3 claim 调用方、管理员读取审计或生产 KMS/lifecycle/
+versioning/Object Lock/rollout；五项 runtime capability 与 OpenAPI status 不变。B2b/B2、B3-B7、M6.3、
+M6 和 P0 继续未完成。
 
 ## 2. 目标与非目标
 
@@ -225,8 +263,9 @@ M2→current 42 段迁移演练、生产依赖 high、OpenAPI 结构检查、tra
 
 ### M6.3：售后申请、审核、退货与结算协调
 
-实施顺序细分为 M6.3-A 前置安全收口和 M6.3-B 售后运行时；当前 M6.3-A 与 M6.3-B0/B1/B2a 仓库实施已完成。
-B2/B2b、B3-B7 仍未完成或未授权并失败关闭。A/B0/B1/B2a 的局部交付也不代表 M6.3 完成，详见
+实施顺序细分为 M6.3-A 前置安全收口和 M6.3-B 售后运行时；当前 M6.3-A 与
+M6.3-B0/B1/B2a/B2b-D0 仓库实施，以及 B2b-D1 repository + local/test storage validation 已完成。
+B2/B2b、B3-B7 仍未完成或未授权并失败关闭。A/B0/B1/B2a/D0/D1 的局部交付也不代表 M6.3 完成，详见
 `docs/plans/m6.3-implementation-plan.md`。
 
 - B1 只读列表/详情使用严格响应投影和三语历史政策回退；不得因 RLS 没有列级保护而使用宽
@@ -238,6 +277,12 @@ B2/B2b、B3-B7 仍未完成或未授权并失败关闭。A/B0/B1/B2a 的局部�
   草稿与当前投影隔离；发布/停用在商城锁下原子同步不可变版本、活动投影与 enforcement readiness，破坏 ready 则整事务回滚。
 - B2a 政策/settings 读写使用管理员 120/30 次每 60 秒限流、correlation/no-store 和严格输入；稳定冲突只公开
   `details.reason_code`。两个索引迁移不改写 RLS，保留会员历史政策读取。
+- B2b-D0 仅提供凭证数据库生命周期：规范对象 ledger、独立 SYSTEM scope、配额锁、严格
+  scan/expire/delete outbox、版本/generation/hold 竞争和 dead-letter reconciliation。D0 不注册凭证
+  HTTP/worker、不接对象存储或 scanner、不提供保护 URL，也不启用生产 capability。
+- B2b-D1 仅提供独立 storage adapter、失败关闭配置和 local/test MinIO bucket/IAM/真实 bytes 校验。
+  adapter 没有 API/worker 调用方，不消费 D0 outbox；签名 GET、幂等 DELETE 和 magic 校验不能据此
+  变成保护读取、删除补偿或 malware scanning 运行时。
 - 买家提交/取消、管理员审核、返件登记与可信物流事实、待验收读取和售后时间线；完整返件验收写路径
   及 exactly-once 库存恢复属于 M6.4。
 - ONLINE 通过内部原语关联 M5 Refund，并消费成功/失败/取消/不确定权威结果；COD 使用可从退款响应
@@ -280,6 +325,10 @@ B2/B2b、B3-B7 仍未完成或未授权并失败关闭。A/B0/B1/B2a 的局部�
 - `packages/domain/src/share.ts`：分享目标、locale 回退和固定 Mini App 路径规则。
 - `packages/domain/src/privacy.ts`：隐私请求受理、人工补充和履约终态的纯状态机。
 - `packages/contracts/src/after-sales.ts`、`member.ts`、`share.ts`：严格 Zod DTO。
+- `packages/config/src/index.ts`、`packages/integrations/src/after-sale-evidence-storage.ts`：D1
+  server-only 配置与专用 storage adapter；不与 catalog/content provider 复用。
+- `.env.example`、`.env.test.example`、`docker-compose.yml`、`infra/minio/`：D1 local/test bucket、
+  最小身份、幂等 bootstrap 与版本控制从未启用门禁。
 - `packages/database/prisma/`：从 M6.2 起新增 schema、前向迁移、回滚门禁和种子权限目录。
 - `apps/api/src/after-sales*`：从 M6.3 起实现售后运行时 API。
 - `apps/api/src/member*`：从 M6.5 起实现会员运行时 API。
@@ -308,6 +357,13 @@ B2/B2b、B3-B7 仍未完成或未授权并失败关闭。A/B0/B1/B2a 的局部�
   `down.sql` 只删除这两个索引，不修改 RLS 或事实。ACTIVE-only RLS 会破坏 B1 会员历史政策读且不能隐藏 head 草稿列，因此不采用。
 - B2a 只读兼容性预检以 `REPEATABLE READ` 分批复验既有 code、草稿/hash/products/head、不可变版本/三语/assignment/标量与时间。
   本地测试库已通过（`policies=0, versions=0`）；路由 rollout 前必须针对每个精确目标库重新执行并留证，失败时只允许受审前向修复。
+- B2b-D0 的 `20260729120000_m63_b2b_d0_evidence_lifecycle` 只允许在 evidence files/transitions、
+  evidence outbox/idempotency 事实全空时前滚；非空以 `55000` 失败，不能猜测对象状态。`down.sql`
+  额外检查 ledger，只允许五类事实全空的 local/test 恢复精确 M6.2 约束；生产或已有凭证事实环境只
+  允许向前修复。应用回滚必须保留该底座，直到未来兼容 worker 把对象与消息收敛至安全终态。
+- B2b-D1 不增加 schema、RLS 或迁移；M2→current 保持 43 段。应用回滚将 evidence provider 保持
+  disabled 即可；MinIO bootstrap 可幂等重跑，但不得递归删除 bucket 作为回滚。未来已有真实对象时，
+  只能沿 D0 ledger 与兼容 worker 收敛。
 - 应用回滚可关闭新建售后/分享入口，但必须保留兼容 worker 处理已有退款、结算、库存预留和运单至终态。
 
 ## 7. 风险、外部依赖和停止条件
@@ -319,12 +375,17 @@ B2/B2b、B3-B7 仍未完成或未授权并失败关闭。A/B0/B1/B2a 的局部�
 - M5 外部支付、退款、GHN、结算和 Zalo 宿主仍未验收。若真实契约改变 M6 假设，先更新本计划、
   数据字典、OpenAPI、迁移和安全测试。
 - M6.2 只交付数据事实边界；其历史范围保持不变。当前后续运行时已新增 B1 会员/管理员售后列表与详情，并完成 B2a 七个
-  政策管理接口的仓库实施。收藏、历史、隐私、分享以及售后申请/取消/审核/凭证/返件/退款/结算仍未交付；表、权限目录、
-  只读响应或政策控制面存在不等于售后写路径、凭证能力或完整产品可用。
+  政策管理接口；D0 仅新增凭证数据库生命周期与可靠排队底座，D1 仅新增未接线的 storage adapter 与
+  local/test MinIO 校验。收藏、历史、隐私、分享以及售后申请/取消/审核/凭证 HTTP/
+  返件/退款/结算仍未交付；表、原语、权限目录、只读响应或政策控制面存在不等于真实凭证能力、售后写路径或完整产品可用。
 - 证据对象视为敏感且不可信；必须限制类型、magic bytes、大小、数量、扫描状态、保留期和下载授权。
   到期立即停止普通访问；无 legal hold 时幂等删除原件、衍生物与扫描临时对象，失败有界重试并告警；
   legal hold 只延迟删除，不延长普通访问，删除后仅保留受 RLS 保护的最小审计元数据。会员和普通
   管理员响应只投影 `PENDING/READY/UNAVAILABLE`，不得区分隔离、删除中、删除失败或已删除。
+- D0 已实现上述规则的数据库形状、配额/版本/消息/删除 guard；D1 已在 adapter 层实现 local/test
+  provider 真实 bytes 校验与幂等删除，但没有 confirm/worker 调用方、真实扫描或网络后数据库协调。
+  不得把 adapter 测试列为 scanner、保护读取审计、删除补偿、生产 IAM/KMS/lifecycle 或 retention 的
+  验收证据。版本化 bucket 物理删除和 AWS 最小 read IAM 不存在对象 `403` 语义仍阻塞生产。
 - M6.3-A 已按重新授权关闭 checkout enforcement 与既有 shipment purpose 前置风险；最终静态、
   浏览器、交付候选敏感信息和生产依赖 high 门禁已通过，3 项 moderate 已明确结转。A 已完成，
   但不自动进入 M6.3-B。
@@ -343,6 +404,16 @@ B2/B2b、B3-B7 仍未完成或未授权并失败关闭。A/B0/B1/B2a 的局部�
 - B2a 政策：规范 payload/hash、权限互不隐含、近期 MFA、strict DTO、双商城目标、幂等复放/异参、ACTIVE 草稿不污染 checkout、
   并发目标冲突、不可变历史、enforcement 下发布/停用安全回滚、游标跨资源/跨 policy 重放、30/60 写限流与完整审计。
   仓库只读兼容性预检已在本地测试库通过；目标库 rollout 前仍必须再执行并留证。B2a 无 UI，专项浏览器 E2E 为 `NOT_APPLICABLE`。
+- B2b-D0：专用 SYSTEM actor/scope 与越权拒绝、owner/cross-store FORCE RLS、对象 ledger/path/hash、
+  数量/字节并发配额、确认+scan outbox 原子性、generation/version 乱序、claim/普通访问/retention、
+  hold 与删除竞争、第五次告警/第八次耗尽、scan/expire/delete dead-letter 安全收敛和消息敏感字段
+  不泄漏。D0 无 UI/HTTP/真实对象/scanner，专项 E2E 为 `NOT_APPLICABLE`，外部验收为
+  `NOT_RUN/BLOCKED`。
+- B2b-D1：config/integrations 65/65、真实 MinIO 7/7、完整 integration 31 文件/250 项和 43 段迁移
+  回归通过；覆盖四种真实对象、create-only 签名、metadata/content 欺骗、content/evidence 与三身份
+  反向 IAM、幂等删除和最终无残留。初始化连续两次通过且 evidence bucket 版本控制必须从未启用。
+  D1 无 UI/HTTP，专项 E2E 为 `NOT_APPLICABLE`；production provider/versioning/Object Lock、scanner、
+  worker 与 rollout 为 `NOT_RUN/BLOCKED`。
 - E2E：双商城三语仅退款、退货退款、换货、收藏、历史、隐私入口、六类分享目标和异常恢复。
 - 真机：Android/iPhone 中由用户主动分享并打开正确商城、语言和对象；Web 预览不替代宿主证据。
 - 阶段门禁：定向测试、`corepack pnpm verify`、相关集成/E2E、迁移演练、生产依赖审计、Gitleaks、
@@ -354,3 +425,9 @@ OpenAPI YAML 重复键为 0，本地引用 556 个、唯一目标 112 个、外�
 13 个 untracked 候选通过，pathless stdin 只对固定非密钥 `M63_IDEMPOTENCY_KEY_SECRET` 使用精确 allowlist，未放宽规则；`git diff --check` 和独立高风险复审通过。
 首轮全仓 ESLint 在本机约 2 GiB 默认堆下 OOM，临时以 `NODE_OPTIONS=--max-old-space-size=4096` 重跑后通过，未修改运行配置。B2a 无 UI，专项 E2E 为
 `NOT_APPLICABLE`。上述证据完成 B2a 仓库实施，不替代目标库逐库 preflight，也不完成 B2/B2b 或 M6.3。
+D0 的独立最终证据、`NOT_RUN/BLOCKED` 项和限制见
+`docs/reports/m6.3-b2b-d0-completion-report.md`；D0 repository implementation 的局部完成同样不
+完成 B2b/B2、M6.3 或 M6。
+D1 当前证据见 `docs/reports/m6.3-b2b-d1-evidence-storage-completion-report.md`。生产依赖 high 与
+OpenAPI 回归、最终 `verify`、Gitleaks 和差异复审均已有通过证据。该局部完成同样不完成
+B2b/B2、M6.3、M6 或 P0。

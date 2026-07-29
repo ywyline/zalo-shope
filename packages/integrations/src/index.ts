@@ -437,3 +437,4 @@ export * from './secret-reference-resolver';
 export * from './ghn-contract';
 export * from './ghn-shipping-provider';
 export * from './shipping-provider-resolver';
+export * from './after-sale-evidence-storage';

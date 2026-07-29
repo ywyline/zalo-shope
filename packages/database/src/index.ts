@@ -1,6 +1,10 @@
 import { PrismaClient } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
-import type { AfterSaleSystemContext, StoreContext } from '@zalo-shop/domain';
+import type {
+  AfterSaleEvidenceSystemContext,
+  AfterSaleSystemContext,
+  StoreContext,
+} from '@zalo-shop/domain';
 
 export * from '@prisma/client';
 
@@ -54,6 +58,25 @@ export async function withAfterSaleSystemTransaction<T>(
   }, options);
 }
 
+export async function withAfterSaleEvidenceSystemTransaction<T>(
+  client: PrismaClient,
+  context: AfterSaleEvidenceSystemContext,
+  callback: (transaction: StoreTransaction) => Promise<T>,
+  options?: StoreTransactionOptions,
+): Promise<T> {
+  return client.$transaction(async (transaction) => {
+    await transaction.$executeRaw`
+      SELECT
+        set_config('app.store_id', ${context.storeId}, true),
+        set_config('app.actor_id', ${context.actor.id}, true),
+        set_config('app.actor_type', ${context.actor.type}, true),
+        set_config('app.correlation_id', ${context.correlationId}, true),
+        set_config('app.system_scope', ${context.systemScope}, true)
+    `;
+    return callback(transaction);
+  }, options);
+}
+
 export async function withPlatformAuditTransaction<T>(
   client: PrismaClient,
   actorId: string,
@@ -90,6 +113,7 @@ export async function withAdminAssignmentDiscoveryTransaction<T>(
 export * from './inventory-primitives';
 export * from './after-sale-policy-primitives';
 export * from './after-sale-policy-management-primitives';
+export * from './after-sale-evidence-primitives';
 export * from './order-primitives';
 export * from './payment-primitives';
 export * from './payment-callback-primitives';

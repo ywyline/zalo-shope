@@ -72,6 +72,7 @@ const M6_MIGRATIONS = [
   '20260728104000_m63_b0_after_sale_contract_guards',
   '20260728110000_m63_b1_after_sale_admin_read_index',
   '20260729100000_m63_b2a_policy_control_plane',
+  '20260729120000_m63_b2b_d0_evidence_lifecycle',
 ] as const;
 
 type MigrationRecord = {
@@ -483,6 +484,33 @@ async function assertM63B2ReadIndexes(client: PrismaClientType): Promise<void> {
   });
 }
 
+async function assertM63B2bD0Indexes(client: PrismaClientType): Promise<void> {
+  await assertIndexShape(client, {
+    expectedKeys: ['store_id', 'member_id', 'status', 'id'],
+    expectedUnique: false,
+    indexName: 'after_sale_evidence_files_store_id_member_id_status_id_idx',
+    tableName: 'after_sale_evidence_files',
+  });
+  await assertIndexShape(client, {
+    expectedKeys: ['store_id', 'status', 'next_delete_attempt_at', 'id'],
+    expectedUnique: false,
+    indexName: 'after_sale_evidence_files_store_id_status_next_delete_attem_idx',
+    tableName: 'after_sale_evidence_files',
+  });
+  await assertIndexShape(client, {
+    expectedKeys: ['object_key'],
+    expectedUnique: true,
+    indexName: 'after_sale_evidence_objects_object_key_key',
+    tableName: 'after_sale_evidence_objects',
+  });
+  await assertIndexShape(client, {
+    expectedKeys: ['store_id', 'evidence_file_id', 'object_role', 'id'],
+    expectedUnique: false,
+    indexName: 'after_sale_evidence_objects_store_id_evidence_file_id_objec_idx',
+    tableName: 'after_sale_evidence_objects',
+  });
+}
+
 async function preflightOwner(client: PrismaClientType): Promise<void> {
   const records = await client.$queryRawUnsafe<OwnerPreflightRecord[]>(`
     SELECT
@@ -558,6 +586,15 @@ async function run(): Promise<void> {
   const m5BoundaryIndex = allMigrationNames.indexOf(M5_MIGRATIONS.at(-1) ?? '');
   if (m5BoundaryIndex < 0) fail('the approved M5 boundary migration was not found');
   const m5BoundaryMigrationNames = allMigrationNames.slice(0, m5BoundaryIndex + 1);
+  const d0MigrationName = '20260729120000_m63_b2b_d0_evidence_lifecycle';
+  const d0BoundaryIndex = allMigrationNames.indexOf(d0MigrationName);
+  if (
+    d0BoundaryIndex < 1 ||
+    allMigrationNames[d0BoundaryIndex - 1] !== '20260729100000_m63_b2a_policy_control_plane'
+  ) {
+    fail('the approved M6.3-B2a to B2b-D0 migration boundary was not found');
+  }
+  const m63B2aBoundaryMigrationNames = allMigrationNames.slice(0, d0BoundaryIndex);
 
   const adminDatabaseUrl = new URL(ownerDatabaseUrl);
   adminDatabaseUrl.pathname = '/postgres';
@@ -590,6 +627,11 @@ async function run(): Promise<void> {
       tempDirectory,
       'm5-boundary',
       m5BoundaryMigrationNames,
+    );
+    const m63B2aSchemaPath = await createMigrationTree(
+      tempDirectory,
+      'm63-b2a-boundary',
+      m63B2aBoundaryMigrationNames,
     );
 
     validateScratchDatabaseName(scratchDatabaseName);
@@ -748,10 +790,194 @@ async function run(): Promise<void> {
     });
 
     const fullSchemaPath = join(PRISMA_ROOT, 'schema.prisma');
+    const d0MigrationPath = join(MIGRATIONS_ROOT, d0MigrationName, 'migration.sql');
+    const d0DownPath = join(MIGRATIONS_ROOT, d0MigrationName, 'down.sql');
+    const [d0MigrationSql, d0DownSql] = await Promise.all([
+      readFile(d0MigrationPath, 'utf8'),
+      readFile(d0DownPath, 'utf8'),
+    ]);
+    const d0ForwardGuardStart = d0MigrationSql.indexOf('DO $$');
+    const d0ForwardGuardEnd = d0MigrationSql.indexOf(
+      'CREATE TYPE public.after_sale_evidence_object_role',
+    );
+    const d0DownGuardStart = d0DownSql.indexOf('DO $$');
+    const d0DownGuardEnd = d0DownSql.indexOf(
+      'DROP TRIGGER outbox_messages_evidence_contract_guard',
+    );
+    if (
+      d0ForwardGuardStart < 0 ||
+      d0ForwardGuardEnd <= d0ForwardGuardStart ||
+      d0DownGuardStart < 0 ||
+      d0DownGuardEnd <= d0DownGuardStart
+    ) {
+      fail('the M6.3-B2b-D0 migration guard boundaries could not be isolated');
+    }
+    const d0ForwardGuardSql = d0MigrationSql.slice(d0ForwardGuardStart, d0ForwardGuardEnd).trim();
+    const d0DownGuardSql = d0DownSql.slice(d0DownGuardStart, d0DownGuardEnd).trim();
+    const d0EvidenceId = 'f2e00000-0000-4000-8000-000000000001';
+    const d0TransitionId = 'f2e00000-0000-4000-8000-000000000002';
+    const d0OutboxId = 'f2e00000-0000-4000-8000-000000000003';
+    const d0IdempotencyId = 'f2e00000-0000-4000-8000-000000000004';
+    const d0LedgerId = 'f2e00000-0000-4000-8000-000000000005';
+    const d0StoreId = 'f2000000-0000-4000-8000-000000000001';
+    const d0MemberId = 'f2020000-0000-4000-8000-000000000001';
+    const d0ObjectKey = `test/${d0StoreId}/staged/${d0EvidenceId}/original`;
+
+    runPrisma(['migrate', 'deploy', '--schema', m63B2aSchemaPath], scratchDatabaseUrl);
+    await assertMigrationState(scratchClient, m63B2aBoundaryMigrationNames);
+    const [b2aEvidenceShape] = await scratchClient.$queryRaw<Array<{ ledger_exists: boolean }>>`
+      SELECT to_regclass('public.after_sale_evidence_objects') IS NOT NULL AS ledger_exists
+    `;
+    if (b2aEvidenceShape?.ledger_exists) {
+      fail('the D0 evidence ledger unexpectedly exists at the M6.3-B2a boundary');
+    }
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_evidence_files (
+          id, store_id, member_id, upload_session_id, object_key, mime_type, byte_size,
+          checksum_sha256, original_filename, status, updated_at
+        ) VALUES (
+          ${d0EvidenceId}::uuid, ${d0StoreId}::uuid, ${d0MemberId}::uuid,
+          ${randomUUID()}::uuid, ${d0ObjectKey}, 'image/jpeg', 1024,
+          ${createHash('sha256').update('m63-b2b-d0-forward-evidence').digest('hex')},
+          'forward-evidence-guard.jpg', 'PENDING', clock_timestamp()
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(d0ForwardGuardSql),
+      '55000',
+      'M6.3-B2b-D0 forward evidence-file guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_evidence_files
+        WHERE store_id = ${d0StoreId}::uuid AND id = ${d0EvidenceId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      // The B2a transition shape deliberately predates D0's version/generation columns.
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_evidence_transitions (
+          id, store_id, evidence_file_id, from_status, to_status, event, actor_type,
+          actor_id, error_code
+        ) VALUES (
+          ${d0TransitionId}::uuid, ${d0StoreId}::uuid, ${d0EvidenceId}::uuid,
+          'PENDING', 'FAILED', 'SCAN_FAILED', 'SYSTEM',
+          '00000000-0000-4000-8000-000000000006'::uuid, 'FORWARD_TRANSITION_GUARD'
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(d0ForwardGuardSql),
+      '55000',
+      'M6.3-B2b-D0 forward transition guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_evidence_transitions
+        WHERE store_id = ${d0StoreId}::uuid AND id = ${d0TransitionId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO outbox_messages (
+          id, store_id, aggregate_type, aggregate_id, event_type, event_version,
+          idempotency_key, payload, available_at, max_attempts, updated_at
+        ) VALUES (
+          ${d0OutboxId}::uuid, ${d0StoreId}::uuid, 'AFTER_SALE_EVIDENCE',
+          ${d0EvidenceId}::uuid, 'migration.guard.aggregate-only', 1,
+          'm63-b2b-d0-forward-aggregate-only', '{"guard":"aggregate-only"}'::jsonb,
+          clock_timestamp(), 3, clock_timestamp()
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(d0ForwardGuardSql),
+      '55000',
+      'M6.3-B2b-D0 forward aggregate-only outbox guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM outbox_messages
+        WHERE store_id = ${d0StoreId}::uuid AND id = ${d0OutboxId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO idempotency_records (
+          id, store_id, member_id, operation, idempotency_key, request_hash, response, expires_at
+        ) VALUES (
+          ${d0IdempotencyId}::uuid, ${d0StoreId}::uuid, ${d0MemberId}::uuid,
+          'after-sale-evidence-migration-guard', 'm63-b2b-d0-forward-idempotency',
+          ${createHash('sha256').update('m63-b2b-d0-forward-idempotency').digest('hex')},
+          '{"guard":"idempotency"}'::jsonb, clock_timestamp() + interval '1 day'
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(d0ForwardGuardSql),
+      '55000',
+      'M6.3-B2b-D0 forward idempotency guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM idempotency_records
+        WHERE store_id = ${d0StoreId}::uuid AND id = ${d0IdempotencyId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    const [cleanB2aEvidenceRuntime] = await scratchClient.$queryRaw<
+      Array<{
+        evidence_count: bigint;
+        idempotency_count: bigint;
+        outbox_count: bigint;
+        transition_count: bigint;
+      }>
+    >`
+      SELECT
+        (SELECT count(*) FROM after_sale_evidence_files) AS evidence_count,
+        (SELECT count(*) FROM after_sale_evidence_transitions) AS transition_count,
+        (SELECT count(*) FROM outbox_messages
+          WHERE aggregate_type = 'AFTER_SALE_EVIDENCE'
+             OR event_type LIKE 'after-sale.evidence.%') AS outbox_count,
+        (SELECT count(*) FROM idempotency_records
+          WHERE operation LIKE 'after-sale-evidence-%') AS idempotency_count
+    `;
+    if (
+      cleanB2aEvidenceRuntime?.evidence_count !== 0n ||
+      cleanB2aEvidenceRuntime.transition_count !== 0n ||
+      cleanB2aEvidenceRuntime.outbox_count !== 0n ||
+      cleanB2aEvidenceRuntime.idempotency_count !== 0n
+    ) {
+      fail('the M6.3-B2b-D0 forward guard fixtures were not independently cleaned');
+    }
+
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B1ReadIndexes(scratchClient);
     await assertM63B2ReadIndexes(scratchClient);
+    await assertM63B2bD0Indexes(scratchClient);
     const upgradedM5Facts = await scratchClient.$queryRaw<
       Array<{
         after_sale_id: string | null;
@@ -837,6 +1063,7 @@ async function run(): Promise<void> {
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B1ReadIndexes(scratchClient);
     await assertM63B2ReadIndexes(scratchClient);
+    await assertM63B2bD0Indexes(scratchClient);
     const afterRepeatFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterRepeatFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during repeated deployment');
@@ -898,6 +1125,7 @@ async function run(): Promise<void> {
             'after_sale_policy_status', 'after_sale_policy_target_type',
             'return_shipping_payer', 'after_sale_inspection_disposition',
             'after_sale_operation_status', 'after_sale_evidence_status',
+            'after_sale_evidence_object_role',
             'after_sale_settlement_method', 'after_sale_settlement_status',
             'after_sale_inventory_action_type', 'after_sale_return_shipment_status',
             'exchange_fulfillment_status', 'after_sale_legacy_decision_type',
@@ -916,7 +1144,8 @@ async function run(): Promise<void> {
               'after_sale_transitions', 'after_sale_operations',
               'after_sale_legacy_decisions', 'after_sale_order_allocations',
               'after_sale_inspections', 'after_sale_inspection_allocations',
-              'after_sale_evidence_files', 'after_sale_evidence_transitions',
+              'after_sale_evidence_files', 'after_sale_evidence_objects',
+              'after_sale_evidence_transitions',
               'after_sale_settlements', 'after_sale_refunds',
               'after_sale_inventory_actions', 'after_sale_return_shipments',
               'exchange_fulfillments', 'member_favorites', 'member_product_views',
@@ -983,9 +1212,213 @@ async function run(): Promise<void> {
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B1ReadIndexes(scratchClient);
     await assertM63B2ReadIndexes(scratchClient);
+    await assertM63B2bD0Indexes(scratchClient);
     const afterForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterForwardRepairFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during the M5/M6 forward repair exercise');
+    }
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_evidence_files (
+          id, store_id, member_id, upload_session_id, object_key, mime_type, byte_size,
+          checksum_sha256, original_filename, status, upload_deadline_at, updated_at
+        ) VALUES (
+          ${d0EvidenceId}::uuid, ${d0StoreId}::uuid, ${d0MemberId}::uuid,
+          ${randomUUID()}::uuid, ${d0ObjectKey}, 'image/jpeg', 1024,
+          ${createHash('sha256').update('m63-b2b-d0-down-evidence').digest('hex')},
+          'down-evidence-guard.jpg', 'PENDING', clock_timestamp() + interval '15 minutes',
+          clock_timestamp()
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(d0DownGuardSql),
+      '55000',
+      'M6.3-B2b-D0 down evidence-file guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_evidence_files
+        WHERE store_id = ${d0StoreId}::uuid AND id = ${d0EvidenceId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_evidence_objects (
+          id, store_id, evidence_file_id, object_role, object_key, object_key_hash, updated_at
+        ) VALUES (
+          ${d0LedgerId}::uuid, ${d0StoreId}::uuid, ${d0EvidenceId}::uuid, 'ORIGINAL',
+          ${d0ObjectKey}, ${createHash('sha256').update(d0ObjectKey).digest('hex')},
+          clock_timestamp()
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(d0DownGuardSql),
+      '55000',
+      'M6.3-B2b-D0 down evidence-object ledger guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_evidence_objects
+        WHERE store_id = ${d0StoreId}::uuid AND id = ${d0LedgerId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_evidence_transitions (
+          id, store_id, evidence_file_id, from_status, to_status, event, actor_type,
+          actor_id, error_code, correlation_id, evidence_version, scan_generation
+        ) VALUES (
+          ${d0TransitionId}::uuid, ${d0StoreId}::uuid, ${d0EvidenceId}::uuid,
+          'PENDING', 'FAILED', 'SCAN_FAILED', 'SYSTEM',
+          '00000000-0000-4000-8000-000000000006'::uuid, 'DOWN_TRANSITION_GUARD',
+          'm63-b2b-d0-down-transition', 1, 0
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(d0DownGuardSql),
+      '55000',
+      'M6.3-B2b-D0 down transition guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_evidence_transitions
+        WHERE store_id = ${d0StoreId}::uuid AND id = ${d0TransitionId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO outbox_messages (
+          id, store_id, aggregate_type, aggregate_id, event_type, event_version,
+          idempotency_key, payload, available_at, max_attempts, updated_at
+        ) VALUES (
+          ${d0OutboxId}::uuid, ${d0StoreId}::uuid, 'AFTER_SALE_EVIDENCE',
+          ${d0EvidenceId}::uuid, 'migration.guard.aggregate-only', 1,
+          'm63-b2b-d0-down-aggregate-only', '{"guard":"aggregate-only"}'::jsonb,
+          clock_timestamp(), 3, clock_timestamp()
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(d0DownGuardSql),
+      '55000',
+      'M6.3-B2b-D0 down aggregate-only outbox guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM outbox_messages
+        WHERE store_id = ${d0StoreId}::uuid AND id = ${d0OutboxId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO idempotency_records (
+          id, store_id, member_id, operation, idempotency_key, request_hash, response, expires_at
+        ) VALUES (
+          ${d0IdempotencyId}::uuid, ${d0StoreId}::uuid, ${d0MemberId}::uuid,
+          'after-sale-evidence-migration-guard', 'm63-b2b-d0-down-idempotency',
+          ${createHash('sha256').update('m63-b2b-d0-down-idempotency').digest('hex')},
+          '{"guard":"idempotency"}'::jsonb, clock_timestamp() + interval '1 day'
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(d0DownGuardSql),
+      '55000',
+      'M6.3-B2b-D0 down idempotency guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM idempotency_records
+        WHERE store_id = ${d0StoreId}::uuid AND id = ${d0IdempotencyId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    const [cleanD0EvidenceRuntime] = await scratchClient.$queryRaw<
+      Array<{
+        evidence_count: bigint;
+        idempotency_count: bigint;
+        ledger_count: bigint;
+        outbox_count: bigint;
+        transition_count: bigint;
+      }>
+    >`
+      SELECT
+        (SELECT count(*) FROM after_sale_evidence_files) AS evidence_count,
+        (SELECT count(*) FROM after_sale_evidence_objects) AS ledger_count,
+        (SELECT count(*) FROM after_sale_evidence_transitions) AS transition_count,
+        (SELECT count(*) FROM outbox_messages
+          WHERE aggregate_type = 'AFTER_SALE_EVIDENCE'
+             OR event_type LIKE 'after-sale.evidence.%') AS outbox_count,
+        (SELECT count(*) FROM idempotency_records
+          WHERE operation LIKE 'after-sale-evidence-%') AS idempotency_count
+    `;
+    if (
+      cleanD0EvidenceRuntime?.evidence_count !== 0n ||
+      cleanD0EvidenceRuntime.ledger_count !== 0n ||
+      cleanD0EvidenceRuntime.transition_count !== 0n ||
+      cleanD0EvidenceRuntime.outbox_count !== 0n ||
+      cleanD0EvidenceRuntime.idempotency_count !== 0n
+    ) {
+      fail('the M6.3-B2b-D0 down guard fixtures were not independently cleaned');
+    }
+
+    runPrisma(
+      ['db', 'execute', '--file', d0DownPath, '--schema', fullSchemaPath],
+      scratchDatabaseUrl,
+    );
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations"
+      WHERE migration_name = ${d0MigrationName}
+    `;
+    runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
+    await assertMigrationState(scratchClient, allMigrationNames);
+    await assertM63B2bD0Indexes(scratchClient);
+    const [d0RoundTripShape] = await scratchClient.$queryRaw<
+      Array<{ ledger_exists: boolean; object_role_exists: boolean }>
+    >`
+      SELECT
+        to_regclass('public.after_sale_evidence_objects') IS NOT NULL AS ledger_exists,
+        EXISTS (
+          SELECT 1 FROM pg_type type
+          JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+          WHERE namespace.nspname = 'public'
+            AND type.typname = 'after_sale_evidence_object_role'
+        ) AS object_role_exists
+    `;
+    if (!d0RoundTripShape?.ledger_exists || !d0RoundTripShape.object_role_exists) {
+      fail('M6.3-B2b-D0 down/forward exercise did not restore its schema objects');
+    }
+    const afterD0RoundTripFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
+    if (afterD0RoundTripFingerprint !== beforeUpgradeFingerprint) {
+      fail('M1/M2 fixture fingerprint changed during the D0 down/forward exercise');
     }
 
     await scratchClient.$transaction(async (transaction) => {
@@ -1449,6 +1882,7 @@ async function run(): Promise<void> {
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B1ReadIndexes(scratchClient);
     await assertM63B2ReadIndexes(scratchClient);
+    await assertM63B2bD0Indexes(scratchClient);
 
     console.log(
       `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair and rollback guards`,

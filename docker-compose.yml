@@ -37,8 +37,8 @@ services:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: server /data --console-address ':9001'
     environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minio_local}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minio_local_development_only}
+      MINIO_ROOT_USER: ${MINIO_BOOTSTRAP_ROOT_USER:-minio_bootstrap_root_local}
+      MINIO_ROOT_PASSWORD: ${MINIO_BOOTSTRAP_ROOT_PASSWORD:-minio_bootstrap_root_local_development_only}
     ports:
       - '9000:9000'
       - '9001:9001'
@@ -56,13 +56,30 @@ services:
       minio:
         condition: service_healthy
     environment:
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minio_local}
-      S3_BUCKET: ${S3_BUCKET:-zalo-shop-local}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:-minio_local_development_only}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - mc alias set local http://minio:9000 "$${S3_ACCESS_KEY}" "$${S3_SECRET_KEY}" && mc mb --ignore-existing "local/$${S3_BUCKET}"
+      CONTENT_STORAGE_ACCESS_KEY: ${S3_ACCESS_KEY:-minio_content_local}
+      CONTENT_STORAGE_BUCKET: ${S3_BUCKET:-zalo-shop-local}
+      CONTENT_STORAGE_SECRET_KEY: ${S3_SECRET_KEY:-minio_content_local_development_only}
+      EVIDENCE_STORAGE_BUCKET: ${EVIDENCE_STORAGE_BUCKET:-zalo-shop-evidence-local}
+      EVIDENCE_STORAGE_DELETE_ACCESS_KEY: ${EVIDENCE_STORAGE_DELETE_ACCESS_KEY:-minio_evidence_delete_local}
+      EVIDENCE_STORAGE_DELETE_SECRET_KEY: ${EVIDENCE_STORAGE_DELETE_SECRET_KEY:-minio_evidence_delete_local_only}
+      EVIDENCE_STORAGE_READ_ACCESS_KEY: ${EVIDENCE_STORAGE_READ_ACCESS_KEY:-minio_evidence_read_local}
+      EVIDENCE_STORAGE_READ_SECRET_KEY: ${EVIDENCE_STORAGE_READ_SECRET_KEY:-minio_evidence_read_local_only}
+      EVIDENCE_STORAGE_UPLOAD_ACCESS_KEY: ${EVIDENCE_STORAGE_UPLOAD_ACCESS_KEY:-minio_evidence_upload_local}
+      EVIDENCE_STORAGE_UPLOAD_SECRET_KEY: ${EVIDENCE_STORAGE_UPLOAD_SECRET_KEY:-minio_evidence_upload_local_only}
+      MINIO_BOOTSTRAP_ROOT_PASSWORD: ${MINIO_BOOTSTRAP_ROOT_PASSWORD:-minio_bootstrap_root_local_development_only}
+      MINIO_BOOTSTRAP_ROOT_USER: ${MINIO_BOOTSTRAP_ROOT_USER:-minio_bootstrap_root_local}
+      TEST_CONTENT_STORAGE_ACCESS_KEY: minio_content_test
+      TEST_CONTENT_STORAGE_SECRET_KEY: minio_content_test_only
+      TEST_EVIDENCE_STORAGE_DELETE_ACCESS_KEY: minio_evidence_delete_test
+      TEST_EVIDENCE_STORAGE_DELETE_SECRET_KEY: minio_evidence_delete_test_only
+      TEST_EVIDENCE_STORAGE_READ_ACCESS_KEY: minio_evidence_read_test
+      TEST_EVIDENCE_STORAGE_READ_SECRET_KEY: minio_evidence_read_test_only
+      TEST_EVIDENCE_STORAGE_UPLOAD_ACCESS_KEY: minio_evidence_upload_test
+      TEST_EVIDENCE_STORAGE_UPLOAD_SECRET_KEY: minio_evidence_upload_test_only
+    entrypoint: ['/bin/sh', '/minio/init.sh']
+    volumes:
+      - ./infra/minio/init.sh:/minio/init.sh:ro
+      - ./infra/minio/policies:/policies:ro
 
 volumes:
   minio-data:

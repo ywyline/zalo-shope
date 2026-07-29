@@ -34,6 +34,23 @@ const validProductionEnvironment = {
   S3_SECRET_KEY: 's'.repeat(32),
 };
 
+const validEvidenceStorageEnvironment = {
+  ...validEnvironment,
+  EVIDENCE_STORAGE_BUCKET: 'zalo-shop-evidence-test',
+  EVIDENCE_STORAGE_DELETE_ACCESS_KEY: 'evidence-delete',
+  EVIDENCE_STORAGE_DELETE_SECRET_KEY: 'evidence-delete-secret',
+  EVIDENCE_STORAGE_ENDPOINT: 'http://localhost:9000',
+  EVIDENCE_STORAGE_FORCE_PATH_STYLE: 'true',
+  EVIDENCE_STORAGE_PROVIDER: 's3',
+  EVIDENCE_STORAGE_READ_ACCESS_KEY: 'evidence-read',
+  EVIDENCE_STORAGE_READ_SECRET_KEY: 'evidence-read-secret',
+  EVIDENCE_STORAGE_REGION: 'us-east-1',
+  EVIDENCE_STORAGE_SERVER_SIDE_ENCRYPTION: 'none',
+  EVIDENCE_STORAGE_UPLOAD_ACCESS_KEY: 'evidence-upload',
+  EVIDENCE_STORAGE_UPLOAD_SECRET_KEY: 'evidence-upload-secret',
+  NODE_ENV: 'test',
+};
+
 const productionPlaceholderFields = [
   'AFTER_SALE_CURSOR_HMAC_KEYS',
   'AUTH_JWT_SECRET',
@@ -82,6 +99,10 @@ describe('parseRuntimeConfig', () => {
     expect(config.OUTBOX_WORKER_RETRY_BASE_DELAY_MS).toBe(1_000);
     expect(config.OUTBOX_WORKER_RETRY_MAX_DELAY_MS).toBe(300_000);
     expect(config.PAYMENT_PROVIDER).toBe('disabled');
+    expect(config.EVIDENCE_STORAGE_PROVIDER).toBe('disabled');
+    expect(config.EVIDENCE_STORAGE_READ_URL_TTL_SECONDS).toBe(60);
+    expect(config.EVIDENCE_STORAGE_REQUEST_TIMEOUT_MS).toBe(10_000);
+    expect(config.EVIDENCE_STORAGE_UPLOAD_URL_TTL_SECONDS).toBe(300);
     expect(config.PAYMENT_RECONCILIATION_ENABLED).toBe(false);
     expect(config.ZALO_CHECKOUT_REQUEST_TIMEOUT_MS).toBe(5_000);
     expect(config.ZALO_CHECKOUT_RESPONSE_LIMIT_BYTES).toBe(131_072);
@@ -93,6 +114,131 @@ describe('parseRuntimeConfig', () => {
     expect(config.S3_FORCE_PATH_STYLE).toBe(true);
     expect(config.S3_SESSION_TOKEN).toBeUndefined();
     expect(config.CONTENT_EXTERNAL_TARGET_HOSTS).toEqual([]);
+  });
+
+  it('enables evidence storage only with separate bucket and role credentials', () => {
+    const config = parseRuntimeConfig(validEvidenceStorageEnvironment);
+    expect(config).toMatchObject({
+      EVIDENCE_STORAGE_BUCKET: 'zalo-shop-evidence-test',
+      EVIDENCE_STORAGE_FORCE_PATH_STYLE: true,
+      EVIDENCE_STORAGE_PROVIDER: 's3',
+      EVIDENCE_STORAGE_SERVER_SIDE_ENCRYPTION: 'none',
+    });
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEvidenceStorageEnvironment,
+        EVIDENCE_STORAGE_BUCKET: validEnvironment.S3_BUCKET,
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEvidenceStorageEnvironment,
+        EVIDENCE_STORAGE_READ_ACCESS_KEY:
+          validEvidenceStorageEnvironment.EVIDENCE_STORAGE_UPLOAD_ACCESS_KEY,
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEvidenceStorageEnvironment,
+        EVIDENCE_STORAGE_DELETE_SECRET_KEY: validEnvironment.S3_SECRET_KEY,
+      }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
+  it('keeps partial evidence configuration disabled and fails closed when enabled', () => {
+    expect(
+      parseRuntimeConfig({
+        ...validEnvironment,
+        EVIDENCE_STORAGE_BUCKET: 'unused-evidence-bucket',
+      }).EVIDENCE_STORAGE_PROVIDER,
+    ).toBe('disabled');
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnvironment,
+        EVIDENCE_STORAGE_BUCKET: 'evidence-bucket',
+        EVIDENCE_STORAGE_PROVIDER: 's3',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
+  it.each([
+    'ftp://objects.example.test',
+    'http://user:password@objects.example.test',
+    'http://objects.example.test?bucket=evidence',
+    'http://objects.example.test#evidence',
+  ])('rejects an unsafe evidence storage endpoint: %s', (endpoint) => {
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEvidenceStorageEnvironment,
+        EVIDENCE_STORAGE_ENDPOINT: endpoint,
+      }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
+  it.each([
+    ['EVIDENCE_STORAGE_BUCKET', 'Invalid/Bucket'],
+    ['EVIDENCE_STORAGE_BUCKET', '-invalid-bucket'],
+    ['EVIDENCE_STORAGE_BUCKET', 'invalid..bucket'],
+    ['EVIDENCE_STORAGE_BUCKET', '192.168.0.1'],
+    ['EVIDENCE_STORAGE_REGION', 'US_EAST_1'],
+  ] as const)('rejects an invalid evidence storage %s', (field, value) => {
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEvidenceStorageEnvironment,
+        [field]: value,
+      }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
+  it('requires HTTPS and a non-placeholder KMS configuration for production evidence storage', () => {
+    const productionEvidence = {
+      ...validEvidenceStorageEnvironment,
+      ...validProductionEnvironment,
+      EVIDENCE_STORAGE_BUCKET: 'production-evidence-fixture',
+      EVIDENCE_STORAGE_DELETE_ACCESS_KEY: 'd'.repeat(24),
+      EVIDENCE_STORAGE_DELETE_SECRET_KEY: 'D'.repeat(40),
+      EVIDENCE_STORAGE_ENDPOINT: 'https://evidence.example.test',
+      EVIDENCE_STORAGE_KMS_KEY_ID: 'arn:aws:kms:ap-southeast-1:123456789012:key/example',
+      EVIDENCE_STORAGE_READ_ACCESS_KEY: 'r'.repeat(24),
+      EVIDENCE_STORAGE_READ_SECRET_KEY: 'R'.repeat(40),
+      EVIDENCE_STORAGE_SERVER_SIDE_ENCRYPTION: 'aws:kms',
+      EVIDENCE_STORAGE_UPLOAD_ACCESS_KEY: 'u'.repeat(24),
+      EVIDENCE_STORAGE_UPLOAD_SECRET_KEY: 'U'.repeat(40),
+      NODE_ENV: 'production',
+    };
+    expect(parseRuntimeConfig(productionEvidence).EVIDENCE_STORAGE_PROVIDER).toBe('s3');
+    expect(() =>
+      parseRuntimeConfig({ ...productionEvidence, EVIDENCE_STORAGE_ENDPOINT: 'http://s3.test' }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...productionEvidence,
+        EVIDENCE_STORAGE_KMS_KEY_ID: '',
+        EVIDENCE_STORAGE_SERVER_SIDE_ENCRYPTION: 'AES256',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...productionEvidence,
+        EVIDENCE_STORAGE_BUCKET: 'zalo-shop-evidence-local',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
+  it('does not expose invalid evidence secrets in configuration errors', () => {
+    const secret = 'tiny';
+    try {
+      parseRuntimeConfig({
+        ...validEvidenceStorageEnvironment,
+        EVIDENCE_STORAGE_DELETE_SECRET_KEY: secret,
+      });
+      throw new Error('expected evidence storage validation to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidEnvironmentError);
+      expect(String(error)).toContain('EVIDENCE_STORAGE_DELETE_SECRET_KEY');
+      expect(String(error)).not.toContain(secret);
+    }
   });
 
   it('validates the dedicated rotatable after-sale cursor key ring', () => {

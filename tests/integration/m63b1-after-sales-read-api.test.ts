@@ -26,7 +26,8 @@ describe.sequential('M6.3-B1 after-sale read API', () => {
   const owner = new PrismaClient({ datasourceUrl: config.DATABASE_URL });
   const runtime = createRuntimePrismaClient(config.DATABASE_RUNTIME_URL);
   const suffix = randomUUID().slice(0, 8);
-  const evidenceRetentionDeadline = new Date(Date.now() + 24 * 60 * 60 * 1_000);
+  const evidenceOrdinaryAccessDeadline = new Date(Date.now() + 24 * 60 * 60 * 1_000);
+  const evidenceRetentionDeadline = new Date(Date.now() + 48 * 60 * 60 * 1_000);
   const fixture = {
     adminDeniedId: randomUUID(),
     adminDeniedRoleId: randomUUID(),
@@ -373,17 +374,20 @@ describe.sequential('M6.3-B1 after-sale read API', () => {
       });
 
       const primaryCaseId = fixture.beautyCaseIds[0];
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
       await transaction.$executeRaw`INSERT INTO after_sale_evidence_files
         (id, store_id, member_id, upload_session_id, after_sale_id, object_key,
           derivative_object_keys, scan_temporary_object_key, mime_type, byte_size,
           checksum_sha256, original_filename, status, scan_result_code, claimed_at,
-          retention_deadline_at, delete_error_code, version, created_at, updated_at)
+          ordinary_access_deadline_at, retention_deadline_at, delete_error_code,
+          version, created_at, updated_at)
         VALUES (${fixture.evidenceId}::uuid, ${BEAUTY_STORE_ID}::uuid,
           ${fixture.beautyMemberId}::uuid, ${randomUUID()}::uuid,
           ${primaryCaseId}::uuid, 'PRIVATE_OBJECT_KEY_MARKER',
           '["PRIVATE_DERIVATIVE_KEY_MARKER"]'::jsonb, 'PRIVATE_SCAN_KEY_MARKER',
           'image/jpeg', 128, ${digest('evidence')}, 'PRIVATE_FILENAME_MARKER.jpg',
-          'READY', 'CLEAN', now(), ${evidenceRetentionDeadline}::timestamptz,
+          'READY', 'CLEAN', now(), ${evidenceOrdinaryAccessDeadline}::timestamptz,
+          ${evidenceRetentionDeadline}::timestamptz,
           'PRIVATE_DELETE_ERROR_MARKER', 2, now(), now())`;
       await transaction.$executeRaw`INSERT INTO after_sale_return_shipments
         (id, store_id, after_sale_id, order_id, member_id, carrier_name,
@@ -417,6 +421,7 @@ describe.sequential('M6.3-B1 after-sale read API', () => {
         SELECT store_id, ${fixture.settlementId}::uuid, id, order_id,
           ${fixture.paymentAttemptId}::uuid, ${fixture.refundId}::uuid, 100000
         FROM after_sales WHERE id = ${primaryCaseId}::uuid`;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
     });
 
     beautyMemberToken = accessToken({

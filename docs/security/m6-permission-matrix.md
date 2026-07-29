@@ -1,7 +1,8 @@
 # M6 售后、会员与分享权限矩阵
 
-> 状态：M6.1 契约已冻结；M6.2 权限目录/数据库 scope 已迁移；M6.3-A settings、M6.3-B0、B1 与 B2a 仓库实施已完成并验证；
-> B2/B2b、B3-B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭
+> 状态：M6.1 契约已冻结；M6.2 权限目录/数据库 scope 已迁移；M6.3-A settings、
+> M6.3-B0、B1、B2a、B2b-D0 与 B2b-D1 repository + local/test storage validation 已完成且适用仓库
+> 门禁通过；B2/B2b、B3-B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭
 >
 > 日期：2026-07-29
 
@@ -12,8 +13,11 @@ M6.2 已登记下列 12 项 STORE 权限且不自动给生产角色扩权；loca
 共享退款锁序及 definer NULL actor fail-closed。收藏、历史继续使用 owner scope。M6.3-A 仅实现
 `GET/PUT /v1/admin/after-sale-settings` 的运行时 RBAC、审计和幂等边界；M6.3-B1 随后只实现会员/
 管理员售后列表与详情。B2a 随后实现政策读取、草稿、发布和停用的独立运行时 RBAC，并在收口时为已有 settings GET/PUT
-补齐严格输入、成功 correlation/no-store 和共享的管理员 READ/WRITE 限流。其他售后写入、凭证文件访问、会员、分享
-controller/service/worker/UI 仍未交付。本矩阵中除明确标为 M6.3-A、B1 或 B2a 已实现的动作外，其余动作行是 B0 已冻结、等待 B2b/B3-B7
+补齐严格输入、成功 correlation/no-store 和共享的管理员 READ/WRITE 限流。D0 随后只建立凭证
+数据库生命周期、专用 SYSTEM scope、对象 ledger、配额锁、严格 outbox 与 reconciliation 原语；它
+没有启用任何凭证 HTTP、worker、对象存储、scanner 或生产角色。D1 后续只新增内部 storage adapter、
+失败关闭配置和 local/test MinIO bucket/IAM/真实 bytes 校验，不增加 STORE 权限，也没有 HTTP/worker
+调用方。其他售后写入、凭证文件访问、会员、分享 controller/service/worker/UI 仍未交付。本矩阵中除明确标为 M6.3-A、B1、B2a、D0 数据层或 D1 local/test storage 已实现的动作外，其余动作行是 B0 已冻结、等待完整 B2b/B3-B7
 或后续里程碑另行授权实施的契约，不代表按钮、API、worker 或生产角色授权已经交付。
 B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transaction actor，不是可授予管理员
 角色的权限，也不能复用固定管理员 UUID。
@@ -43,7 +47,7 @@ B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transac
 | 动作                 | 必要权限                                                | 额外控制                                                                                           |
 | -------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | 管理售后列表/详情    | `store.after-sales.read`                                | B1 已实现；中央商城授权 + 显式 store scope + FORCE RLS、签名游标/locale/限流、严格 select/no-store |
-| 查看凭证             | `store.after-sales.evidence.read`                       | B2 契约；扫描与 claim 能力 fail-closed、每次读取审计、短期 no-store URL                            |
+| 查看凭证             | `store.after-sales.evidence.read`                       | 完整 B2b 契约；D0 未注册读取路由/URL，此权限尚不能调用；未来每次读取审计                           |
 | 审批/拒绝            | `store.after-sales.review`                              | B4 契约；近期 MFA、确认词、reason、expected version、幂等键、逐行 approved_quantity                |
 | 旧订单一次性例外决定 | `store.after-sales.review`                              | 当前管理员、未污染初态、policy basis、无副作用且只能一次                                           |
 | 创建商家主动退款售后 | `store.after-sales.review`                              | B3 契约；同政策/version/hash、权威交付事实、服务端金额、近期 MFA、幂等和审计                       |
@@ -80,18 +84,18 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
 
 ## 3. 买家能力
 
-| 能力              | 身份与范围               | 控制                                                                                      |
-| ----------------- | ------------------------ | ----------------------------------------------------------------------------------------- |
-| 查看售后列表/详情 | 当前商城认证会员本人     | B1 已实现；显式 store/member scope + FORCE RLS、签名游标、严格 select、no-store           |
-| 创建/取消售后     | 当前商城认证会员本人     | B3 契约；同 policy/version/hash、权威交付、服务端金额；当前未授权、未注册写路由           |
-| 上传/读取凭证     | 当前会员、当前售后单     | B2；校验/扫描/claim/保护读取/删除补偿任一不可用时要求证据的申请失败关闭                   |
-| 提交返件信息      | 当前会员、已批准返件     | B5 契约；只写 SUBMITTED 并追加 START_RETURN 到 RETURN_PENDING；当前未授权、不能标记运输中 |
-| 收藏              | 当前会员、当前商城商品   | PUT/DELETE 幂等；下架商品只返回受限摘要                                                   |
-| 浏览历史          | 当前会员、当前商城商品   | 最多 100；可单删/清空；匿名不写入                                                         |
-| 会员中心          | 当前会员                 | 复用本人资料、地址、券和订单事实，不返回管理字段                                          |
-| 隐私请求受理/查询 | 当前会员、当前商城       | 真实 SUBMITTED 事实；不声称导出/删除/注销已完成                                           |
-| 创建/解析分享     | 当前商城；创建可选会员   | 只接受公共 code/locale/受限来源；服务端解析已发布目标                                     |
-| 记录分享结果      | interaction token 持有人 | token 绑定 shortCode/交互/有效期；仅完成/取消统计                                         |
+| 能力              | 身份与范围               | 控制                                                                                                  |
+| ----------------- | ------------------------ | ----------------------------------------------------------------------------------------------------- |
+| 查看售后列表/详情 | 当前商城认证会员本人     | B1 已实现；显式 store/member scope + FORCE RLS、签名游标、严格 select、no-store                       |
+| 创建/取消售后     | 当前商城认证会员本人     | B3 契约；同 policy/version/hash、权威交付、服务端金额；当前未授权、未注册写路由                       |
+| 上传/读取凭证     | 当前会员、当前售后单     | 完整 B2b；D0 只有数据库原语，D1 只有未接线 storage adapter；无 HTTP/scanner，任一能力不可用时失败关闭 |
+| 提交返件信息      | 当前会员、已批准返件     | B5 契约；只写 SUBMITTED 并追加 START_RETURN 到 RETURN_PENDING；当前未授权、不能标记运输中             |
+| 收藏              | 当前会员、当前商城商品   | PUT/DELETE 幂等；下架商品只返回受限摘要                                                               |
+| 浏览历史          | 当前会员、当前商城商品   | 最多 100；可单删/清空；匿名不写入                                                                     |
+| 会员中心          | 当前会员                 | 复用本人资料、地址、券和订单事实，不返回管理字段                                                      |
+| 隐私请求受理/查询 | 当前会员、当前商城       | 真实 SUBMITTED 事实；不声称导出/删除/注销已完成                                                       |
+| 创建/解析分享     | 当前商城；创建可选会员   | 只接受公共 code/locale/受限来源；服务端解析已发布目标                                                 |
+| 记录分享结果      | interaction token 持有人 | token 绑定 shortCode/交互/有效期；仅完成/取消统计                                                     |
 
 会员不能通过订单 UUID、订单行 UUID、售后号、商品 code、分享短码、游标或 Header 访问其他会员
 或商城数据。RLS 只作纵深防御，服务查询仍显式包含 `store_id/member_id`。
@@ -112,6 +116,23 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
   validator 绕过表 RLS/trigger。
 - `COMPLETE` 仅允许从 `REFUNDED -> COMPLETED`，用于所有批准资金事实已经确定后的无副作用、
   确定性收口；它不能创建/更新 M5 refund、settlement、库存动作、运单或换货事实。
+
+### 4.1 SYSTEM 凭证生命周期 principal
+
+- D0 新增的 evidence SYSTEM principal 不是 RBAC 权限、管理员 token 或上节售后 SYSTEM 的扩展。
+  transaction-local 上下文必须精确设置 `actor_type=system`、
+  `system_scope=after-sale-evidence-lifecycle`、当前 `store_id`、稳定 actor
+  `00000000-0000-4000-8000-000000000006` 和非空 correlation ID。普通 StoreContext、任意管理员
+  UUID 或 `system_scope=after-sale-transition` 均被 FORCE RLS/trigger 拒绝。
+- 该 principal 只允许重扫请求、扫描结果、到期、逐对象删除、删除失败/重试/耗尽与 dead-letter reconciliation
+  所需的生命周期事实，以及受控 DERIVATIVE/SCAN_TEMPORARY ledger 写入。它不能 claim、审核售后、
+  作 legacy 决定、设置/解除 legal hold、创建退款/库存/物流事实或执行任何人工动作。
+- evidence transition 仍由父行受控 lifecycle 变化（含同状态重扫）自动追加。除会员 `CLAIM` 外，D0 lifecycle transition 必须由该
+  SYSTEM principal 产生，并记录固定 SYSTEM actor、精确 from/to、稳定 event/error code 与 correlation
+  ID。运行角色不能直接 INSERT/UPDATE/DELETE transition，也不能直接执行 definer validator。
+- scan/expire/delete outbox 写入还受严格 actor 规则：会员只能在初始化/确认/claim 的允许事务排队
+  scan/expire；delete 只能由 evidence SYSTEM 排队。所有消息只携带
+  `store_id/evidence_id/expected_version`，未来 worker 不得把消息当作授权或权威状态。
 
 ## 5. 分享和公开兜底边界
 
@@ -148,11 +169,23 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
 - `app_security.lock_m63_after_sale_setting()` 是唯一有意允许 runtime 直接 EXECUTE 的 definer 例外。
   它固定安全 `search_path`，只读取 `app_security.current_store_id()`，只返回并锁定当前商城 enforcement
   布尔值；设置行缺失时失败关闭，不能更新设置、枚举商城或扩大任何 policy 权限。
-- evidence bucket/prefix 按环境和商城隔离。普通 catalog/content 权限不能读取售后凭证；管理员
-  下载 URL 短期、一次用途并带 no-store，日志只记录内部对象 ID 和审计结果。
-- 凭证清理 worker 使用独立最小对象删除权限，只按数据库中已持久化的精确商城对象 key 删除原件和
+- D0 的 `after_sale_evidence_objects` 启用 FORCE RLS。owner member 只可在初始化事务插入与当前
+  `PENDING` 父行绑定的 ORIGINAL；专用 SYSTEM 可读取/插入 ledger，但列级 UPDATE 仅开放
+  `object_key/deleted_at/version/updated_at`，trigger 进一步限制为无 hold 的 `DELETION_PENDING` 逐对象
+  删除事实。运行角色没有 DELETE；父行与 ledger 的 deferred guard 禁止 `DELETED` 仍保留活动 key。
+- D0 已撤销旧 evidence 宽 INSERT/UPDATE policy，分别建立 member 初始化/确认/claim、admin legal
+  hold 和 evidence SYSTEM lifecycle policy。应用 RBAC 仍必须保护未来管理员 HTTP；数据库 admin hold
+  policy 只是既有治理字段的数据边界，D0 没有提供设置/解除 hold 的 API。
+- D1 已在 local/test 建立与 content 分离的固定 evidence bucket，以及不可互相替代的 upload/read/delete
+  最小身份；content 身份不能访问 evidence，三种 evidence 身份不能访问 content 或执行角色外动作。
+  bootstrap root 只用于创建 bucket/user/policy，应用与测试证据不得使用 root。production bucket/IAM/
+  KMS/lifecycle/versioning/Object Lock 仍未验收，不能沿用 local/test 结论。
+- 管理员下载 URL 仍只是完整 B2b 契约。D1 内部 adapter 能创建短期 `private, no-store` 目标，但没有
+  HTTP 授权、无差别错误或每次访问审计；持有 `store.after-sales.evidence.read` 仍不能读取对象。
+- 未来凭证清理 worker 必须使用 D1 独立最小对象删除权限，只按数据库 ledger 中已持久化的精确商城对象 key 删除原件和
   衍生物；进入删除事务前重新锁行并检查截止点与 legal hold。legal hold 不赋予普通读取权限，删除失败
-  只记录稳定错误类别并有界重试，日志不得包含签名 URL、对象正文或供应商原始错误。
+  只记录稳定错误类别并有界重试，日志不得包含签名 URL、对象正文或供应商原始错误。D0 提供数据库
+  原语，D1 提供未接线的 provider adapter；仍没有 worker 注册、网络后重锁或删除补偿运行时。
 - 会员与普通管理员只看到 `PENDING/READY/UNAVAILABLE` 安全投影；隔离、删除中、删除失败和已删除
   只保留在受限内部事实中，不能通过售后详情、上传响应、错误码或时序差异泄露。
 - COD 收款信息与转账证据按敏感数据加密；常规 API、审计快照和日志仅返回掩码或存在性。
@@ -193,6 +226,19 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
   稳定 `409` 只公开 `details.reason_code`。
 - B2a 还必须在注册路由前对目标库执行只读兼容性预检，覆盖旧 code、草稿/hash/product/head、版本/三语/assignment/
   标量与发布时间。本地测试库已 `PASS (policies=0, versions=0)`，但不能作为 staging/production 目标库证据。
+- D0 必测错误 actor/scope、管理员冒用 SYSTEM、跨商城/跨会员已知 UUID、直接 transition/宽列 UPDATE、
+  非规范对象路径/hash/role 和父行/ledger 半删除；数据库与服务层两层都须失败关闭。
+- D0 必测同会员并发数量/字节配额，初始化/确认/重扫/scan 结果/claim/expire/delete 与严格 outbox 同事务，
+  payload 无对象 key/hash/MIME/checksum/scanner/deadline/hold/error marker，以及旧 generation/version、
+  重复/乱序和 DEAD_LETTER 不得放行或倒退。真实 worker lease 丢失属于完整 B2b 外部演练，D0 未运行。
+- D0 必测 upload/claim/ordinary-access/retention 排他截止，已 claim READY 后晚到恶意结果仍使用
+  retention 清理截止；hold 阻止删除但不延长普通访问；解除后 reconciliation 重排。删除必须覆盖
+  ORIGINAL/DERIVATIVE/SCAN_TEMPORARY 精确 ledger 集合，第 5 次形成告警条件、第 8 次耗尽且不再
+  自动重试。
+- D0 owner preflight 的本地四类事实为 0；runtime RLS 连接以 SQLSTATE `42501` 失败关闭。任何
+  staging/production 仍须对精确目标库重新执行并留证，非空不得 rollout。D0 没有 UI、HTTP、对象、
+  scanner 或外部告警，相关验收为 `NOT_APPLICABLE` 或 `NOT_RUN/BLOCKED`，不能使用数据库 fixture
+  冒充。
 
 M6.3-A 已补充 settings GET/PUT 的跨商城、Header/查询不一致、read/enforce 权限互不隐含、近期 MFA、
 确认词、expected version、同键复放/异参冲突、24 小时商城 scope、精确 before/after 审计、
@@ -246,3 +292,42 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
 - 定向权限/限流/契约单测、完整 integration 29 个文件/234 项、M2→current 42 段迁移、`verify`、OpenAPI 结构检查、生产依赖/Gitleaks 与
   独立高风险复审均通过，因此 B2a 仓库实施为 `COMPLETE`。目标库仍须逐库 preflight；B2/B2b、B3-B7、M6.3、UI、生产政策/enforcement/部署
   继续未完成或未授权且失败关闭。
+
+## 10. B2b-D0 授权与当前边界
+
+- D0 没有新增可授予的 STORE permission code，也不自动给任何生产角色扩权。
+  `store.after-sales.evidence.read` 仍只是完整 B2b 管理员保护读取契约；没有 HTTP 路由、短期 URL 或
+  每次读取审计实现时，持有该权限也不能读取对象。
+- member 的 D0 数据库能力只存在于受限初始化、确认和未来 B3 transaction-scoped claim 原语：全部
+  绑定当前 store + owner、精确 version、配额锁和排他 deadline。D0 不暴露可单独调用的 claim 路由，
+  也不允许会员插入衍生/扫描临时对象、提交 scanner 结果、设置 hold 或删除 ledger。
+- evidence SYSTEM 只通过内部构造的不可变 context 使用。它不接受 access token、请求体 actor/store/
+  scope，也不由 worker 名称自动获得。未来 worker 处理每条消息前仍须建立精确商城 context、锁定
+  evidence/ledger、复核 version/generation/deadline/hold，并在网络事务外调用 provider。
+- D0 的本地参数和自动化 fixture 不是生产授权。upload/claim/access/retention TTL、数量/字节配额、
+  删除重试/告警、专用 bucket/IAM/KMS/lifecycle 和 scanner SLA 均需逐环境审批与显式配置；缺项或
+  不合法时未来 capability 必须 false。
+- 因此 D0 只将 database repository implementation 标记 `COMPLETE`；其历史完成时对象存储、scanner、
+  保护读取、worker、外部告警、生产 preflight/rollout 均为 `NOT_RUN/BLOCKED`。D1 后续完成的 local/test
+  storage 子集以下节为准，B2b/B2/M6.3/M6/P0 仍保持未完成。
+
+## 11. B2b-D1 storage IAM 与当前授权边界
+
+- D1 不新增可授予的 STORE permission code、不修改角色 seed，也不自动给生产角色扩权。三种
+  `EVIDENCE_STORAGE_*` 身份是 server-only provider 凭据，不是 RBAC 权限、管理员 token 或 evidence
+  SYSTEM principal。
+- local/test MinIO 已验证 content/evidence bucket 隔离，upload 只能 create-only PUT、read 只能
+  HEAD/GET、delete 只能 DELETE；三者不得互相替代。root 只允许 bootstrap，任何应用/测试请求使用 root
+  都不构成验收证据。
+- D1 adapter 不接受请求方提供 store/actor/scope 取得权限。规范 key 中的 store/evidence UUID 必须与
+  服务端对象身份逐段一致；provider 错误只返回稳定分类，禁止泄露 key、签名 query、凭据或正文。
+- D1 没有调用 D0 evidence SYSTEM principal、数据库 claim 或 outbox。未来 worker 仍须为每条消息建立
+  精确 store SYSTEM context、重读并锁定 ledger/version/deadline/hold，在网络操作后再次重锁提交事实。
+- `store.after-sales.evidence.read` 继续只是未来管理员保护读取契约；没有路由和访问审计时不能使用。
+  内部 `createProtectedReadTarget` 存在不使 `protectedReadAvailable=true`。
+- 当前 delete-only adapter 不支持 version ID。固定 local/test evidence bucket 必须从未启用版本控制；
+  production versioning/Object Lock/物理版本删除方案未冻结前，`deletionCompensationAvailable` 保持
+  false。AWS 最小 read IAM 对不存在对象可能返回 `403`，目标 provider 的稳定错误映射仍待验收。
+- 因此只将 D1 repository implementation + local/test storage validation 标记 `COMPLETE`。最终
+  verify、Gitleaks、`git diff --check` 与独立高风险复审均通过；B2b/B2/M6.3/M6/P0、HTTP、worker、
+  scanner、管理员读取审计、生产 IAM/KMS/lifecycle 与 rollout 均未完成。

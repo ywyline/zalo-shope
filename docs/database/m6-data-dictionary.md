@@ -1,7 +1,8 @@
 # M6 售后、会员与分享数据字典
 
-> 状态：M6.1 契约已冻结；M6.2 schema/RLS、M6.3-A、M6.3-B0、B1 与 B2a 仓库实施已完成并验证；
-> B2/B2b、B3-B7、M6.3、UI 与生产 rollout 未完成或未授权并保持失败关闭
+> 状态：M6.1 契约已冻结；M6.2 schema/RLS、M6.3-A、M6.3-B0、B1、B2a、B2b-D0 与
+> B2b-D1 repository + local/test storage validation 已完成且适用仓库门禁通过；B2/B2b、B3-B7、
+> M6.3、UI 与生产 rollout 未完成或未授权并保持失败关闭
 >
 > 日期：2026-07-29
 
@@ -50,6 +51,20 @@ M6.3-B2a 在现有政策表上实现 policy heads 列表/详情、草稿 `PUT`�
 继续读取售后已绑定的停用/被替换历史版本；不采用会破坏历史读且仍不能提供列级草稿隔离的 ACTIVE-only RLS 改写。仓库已增加
 只读 B2a 兼容性预检，在本地测试库通过且证明 `policies=0, versions=0`；适用仓库门禁均已完成，B2a 仓库实施标记 `COMPLETE`。
 任何目标库 rollout 前仍要逐库重新执行并留证；B2/B2b、B3-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权。
+
+M6.3-B2b-D0 追加 `20260729120000_m63_b2b_d0_evidence_lifecycle`。该迁移补齐 evidence
+上传/确认/扫描/普通访问/删除耗尽字段，新建规范对象 ledger `after_sale_evidence_objects`，为 evidence
+transition 增加 correlation ID，并用独立 `after-sale-evidence-lifecycle` SYSTEM scope、FORCE RLS、
+列级授权、生命周期/ledger 触发器和 deferred outbox commit guard 收口数据库写入。D0 的初始化、
+确认、SYSTEM 重扫请求、scan 结果、transaction-scoped claim、到期、逐对象删除、失败退避与 dead-letter reconciliation
+原语均已加入仓库，但没有 HTTP、worker、对象存储、真实 scanner、保护 URL 或生产配置。目标库必须
+先以只读 preflight 证明 evidence/transition/outbox/idempotency 四类事实均为零；非空时迁移以
+SQLSTATE `55000` 停止并要求受审前向修复。D0 仓库完成不等于 B2b/B2 或 M6.3 完成。
+
+M6.3-B2b-D1 不增加 schema、RLS、数据库函数或迁移；M2→current 仍为 43 段且迁移演练已通过。
+D1 在 integrations/config/infra 层增加独立 evidence S3-compatible adapter、失败关闭配置和 local/test
+MinIO 最小 IAM/真实 bytes 校验，但没有把 provider 接入 D0 confirm/delete 原语、HTTP 或 worker。
+因此数据库中仍不存在由 D1 自动形成的上传验证、扫描、保护读取或 provider 物理删除事实。
 
 ## 1. 统一约定
 
@@ -332,36 +347,77 @@ B0 增加独立 `SYSTEM` 分支，但不把普通 StoreContext 或固定伪管�
   恶意文件扫描、READY/未占用 claim、受保护短期读取与删除补偿能力必须全部可用；任一能力不可用以
   稳定不可用错误失败关闭且不创建售后单，不能把未扫描、静态成功或手工数据库对象当作凭证。
 - 预上传先以 `store_id/member_id/upload_session_id` 和 nullable `after_sale_id` 建立 staged 事实；对象
-  key 固定包含环境/商城/临时上传命名空间，不要求尚不存在的售后 ID。确认并扫描通过后状态为
-  `READY_UNCLAIMED`，带短 `claim_deadline_at`；认领后切为 `READY` 并冻结 `retention_deadline_at`。
+  key 固定为 `{environment}/{store_id}/staged/{evidence_id}/original`，由服务端生成且不依赖尚不存在
+  的售后 ID。初态必须为无扫描/claim/hold/删除事实的 `PENDING`，`scan_generation=0`、
+  `version=1`，并带排他的 `upload_deadline_at`。
+- D0 新增 `confirmed_at/scan_requested_at/scan_completed_at/scan_generation`、
+  `scanner_engine/scanner_engine_version/scanner_signature_version`、
+  `ordinary_access_deadline_at` 与 `delete_exhausted_at`。确认只在上传截止前递增 generation 并与 scan
+  outbox 同事务提交。D0 当时没有对象存储适配器；D1 后续虽已提供独立 adapter 和 local/test 真实
+  bytes 校验，但尚无 HTTP/worker 调用方把它接入该原语。因此 confirm 事务仍不读取 provider 对象，
+  不能表述为已实现的真实上传确认能力。
+- 未来受信 scanner 的规范结果只有精确 `CLEAN` 可把当前 generation 的 `PENDING` 推进为
+  `READY_UNCLAIMED`；恶意进入 `QUARANTINED`，超时、不可用或不确定进入 `FAILED`。D0 测试直接调用
+  scan 结果投影原语，只证明 generation/version 竞争和状态约束，不是 scanner 运行证据。各结果都
+  必须获得显式清理截止并与 expire outbox 同事务提交。
 - 创建售后事务按 evidence IDs 锁行，验证同商城/同会员、认领窗口未过期、扫描通过且从未 claim，
-  再一次性写入 `(store_id, after_sale_id, member_id)`；同一凭证不能复用到第二个售后。claim 后对象
+  再一次性写入 `(store_id, after_sale_id, member_id)`；同一凭证不能复用到第二个售后。D0 已提供
+  transaction-scoped claim 原语并同时冻结 `claimed_at/ordinary_access_deadline_at/
+retention_deadline_at`，但没有 B3 调用方或 HTTP 路由，不能单独 claim 真实业务凭证。claim 后对象
   访问始终通过数据库授权，不依赖可猜对象路径。
 - 保存 MIME、byte size、SHA-256、原文件名、扫描结果和
   `PENDING/READY_UNCLAIMED/READY/FAILED/QUARANTINED/DELETION_PENDING/DELETED/DELETE_FAILED`。
-  `EXPIRE` 只允许在对应 claim/retention 截止点到达且无活动 legal hold 时进入
+  `PENDING` 使用 upload 截止，未 claim 的 scan 结果使用 claim/显式失败保留截止，已 claim `READY`
+  使用 retention 截止。已 claim 后再次进入 `QUARANTINED` 仍使用原 retention 截止，不能回退到旧
+  claim 截止。`EXPIRE` 只允许相应截止点到达且无活动 legal hold 时进入
   `DELETION_PENDING`；`DELETE_SUCCEEDED -> DELETED`，失败记录稳定错误类别并走
   `DELETE_FAILED -> RETRY_DELETE -> DELETION_PENDING`，使用幂等对象删除和有界退避告警。
   `EXPIRE`、`RETRY_DELETE` 和 `DELETE_SUCCEEDED` 不能走无上下文的通用状态转换；每次尝试都必须重新
   锁行并检查截止点和 legal hold，hold 在首次排队或失败后激活时同样阻止重试/成功提交。
 - staged 凭证只能从无扫描结果的安全初态进入扫描流程；可认领状态要求非空且精确的 `CLEAN`
   scan result，NULL 不能绕过。每次状态变化自动追加不可变 transition；删除失败重试必须达到
-  `next_delete_attempt_at`，成功后对象、衍生和扫描临时 key 均清空。
+  `next_delete_attempt_at`。删除策略固定第 5 次形成持久告警条件、第 8 次写
+  `delete_exhausted_at` 并停止自动重排；非耗尽重试至少 60 秒、最多 6 小时。删除成功后所有 ledger
+  对象 key 以及父行兼容 key 均清空。
 - `legal_hold_active/held_at/held_by/reason` 是正交受审事实，不新增可读取状态。M6 普通售后 API 不提供
   设置/解除 legal hold 的入口；M6.2 只为受治理的合规流程保留最小字段。活动 hold 阻止删除，但不延长
   买家或普通管理员的访问窗口；解除后若截止点已过，worker 立即重新排队删除。
-- 到达访问截止点后，即使对象因 legal hold 尚在，普通访问也统一拒绝。只有 `READY` 且未过期对象可
+- `ordinary_access_deadline_at` 与 `retention_deadline_at` 明确分离。到达普通访问截止点后，即使对象
+  因 retention 或 legal hold 尚在，普通访问也统一拒绝。只有 `READY` 且未过期对象可
   签发短期 URL；`PENDING/READY_UNCLAIMED/FAILED/QUARANTINED/DELETION_PENDING/DELETED/DELETE_FAILED`
   均不可读取，响应不能泄露扫描或删除细节。会员和普通管理员 API 不直接投影内部状态：
   `PENDING -> PENDING`，`READY_UNCLAIMED/READY` 在各自有效窗口内投影为 `READY`，其他内部状态或
   已过期对象统一投影为 `UNAVAILABLE` 且 `access_expires_at=null`；访问端点继续使用无差别 `404`。
-- 删除范围包含原对象、缩略图/转码衍生物和扫描临时对象。`DELETED` 后清除对象 key、衍生 key、签名
-  token 和原始错误，只保留商城/售后归属、checksum、byte size、状态转换、截止时间、删除时间、
+- `DELETED` 后清除父行对象 key、衍生/扫描临时兼容投影、原文件名、scanner 身份、scan/delete
+  错误，只保留商城/售后归属、checksum、byte size、generation、状态转换、原始截止时间、删除时间、
   尝试次数与审计元数据；该最小元数据继续受 RLS 与审计保留策略保护。
 - 只允许 JPEG/PNG/WebP 与 MP4，拒绝 SVG、脚本和可执行内容。
 - 每单最多 6 个文件；图片单个最多 10 MiB、视频最多 50 MiB。确认时校验 magic bytes、声明类型、
-  长度和 checksum；未扫描或隔离对象不能读取。
+  长度和 checksum。D1 adapter 已在 local/test MinIO 对实际 bytes 实现该校验，但没有 confirm HTTP/
+  service 调用方；D0 数据库仍只保存/约束声明元数据。未扫描或隔离对象不能读取，magic 通过也不等于
+  scanner `CLEAN`。
 - 买家只能读取本人售后凭证，管理员需要专门权限；短期 no-store URL，每次管理员读取写审计。
+
+### 5.1.1 `after_sale_evidence_objects`
+
+- D0 起该表是新写路径的规范对象清单。字段为 `id/store_id/evidence_file_id/object_role/object_key/
+object_key_hash/deleted_at/version/created_at/updated_at`；角色只允许 `ORIGINAL/DERIVATIVE/
+SCAN_TEMPORARY`。父表使用 `(store_id,evidence_file_id)` 复合外键，表启用 FORCE RLS。
+- 每个 evidence 只允许一个 ORIGINAL；未删除的 SCAN_TEMPORARY 只允许一个；DERIVATIVE 可逐行追加。
+  ORIGINAL 固定在 `staged` 路径，衍生/扫描临时对象分别固定在 `derived`/`scan` 路径，且路径中的商城
+  与 evidence ID 必须匹配权威行。`object_key_hash` 必须是 key 的小写 SHA-256，并全局唯一。
+- ORIGINAL 只能由同商城 owner member 与 `PENDING` evidence 同事务初始化；DERIVATIVE 和
+  SCAN_TEMPORARY 只允许专用 evidence SYSTEM principal 写入。运行角色只能读取/插入以及更新
+  `object_key/deleted_at/version/updated_at`，trigger 进一步要求该更新是无 hold、
+  `DELETION_PENDING` 下的逐对象删除事实。
+- 未删除行必须 `object_key IS NOT NULL AND deleted_at IS NULL`；已删除行必须清空 key 并保留 hash、
+  role、version 与删除时间。父 evidence 进入 `DELETED` 前，deferred binding guard 要求所有对象均已
+  无活动 key；非 `DELETED` 父行则精确存在一个与父兼容 key 相同的活动 ORIGINAL。
+- M6.2 父行 `object_key/derivative_object_keys/scan_temporary_object_key` 暂保留兼容投影。D0 删除
+  原语只按 ledger 的稳定集合与 expected object versions 完成数据库删除事实，不能把任意 JSON 数组
+  或队列完成当作已删除证明。D1 已提供幂等 `removeObject` adapter 并在 local/test 验证 provider
+  success/not-found 语义，但没有 worker 调用它；未来 worker 仍必须先取得 provider 权威结果，再重锁
+  ledger 并提交数据库删除事实。
 
 ### 5.2 `after_sale_settlements` 与 `after_sale_refunds`
 
@@ -524,6 +580,22 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   而会让可能被策略过滤的 runtime 连接以 `42501` 失败，防止零行假通过。本地 owner 连接已通过且 runtime RLS 连接已验证失败关闭；
   本地测试库结果为 `policies=0, versions=0`；
   staging/production 在注册路由前必须对精确目标库再执行并留证，预检失败时禁止 rollout 并只允许受审前向修复。
+- D0 的 evidence SYSTEM principal 与 B0 的售后 transition SYSTEM principal 完全分离。只有
+  `actor_type=system`、`system_scope=after-sale-evidence-lifecycle`、当前商城、稳定 actor
+  `00000000-0000-4000-8000-000000000006` 和非空 correlation ID 同时匹配，才可写 lifecycle/ledger
+  SYSTEM 事实。普通 StoreContext、管理员 UUID 或 `after-sale-transition` scope 均不能提升为该身份。
+- D0 的 outbox trigger 只接受 `after-sale.evidence.scan.requested`、
+  `after-sale.evidence.expire.requested` 与 `after-sale.evidence.delete.requested`；aggregate 固定
+  `AFTER_SALE_EVIDENCE`、event version 固定 1，payload 必须精确为
+  `store_id/evidence_id/expected_version`。deferred commit guard 要求初始化、确认、重扫请求、scan 结果、claim、
+  首次到期和可重试删除失败与对应消息原子提交。对象 key/hash、MIME、checksum、scanner 结果、
+  deadline、hold 和供应商错误不得进入 payload。
+- D0 前向迁移在 evidence files/transitions、`after-sale.evidence.*`/`AFTER_SALE_EVIDENCE` outbox 或
+  `after-sale-evidence-*` idempotency 任一事实存在时以 `55000` 拒绝。`down.sql` 额外检查 ledger，只有
+  五类事实全空的 local/test 才恢复精确 M6.2 列、索引、policy、trigger、FK update action 与 grant。
+  迁移 preflight 使用 `REPEATABLE READ + READ ONLY + row_security=off`；owner 本地测试库四类事实均
+  为 0，runtime RLS 连接按预期以 `42501` 失败关闭。任何 staging/production 目标都必须重新运行并
+  归档，生产或已有凭证事实环境只允许受审前向修复。
 
 ## 9. M6.3-B1 读取与公共 HTTP 运行时
 
@@ -542,8 +614,10 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   `ASC-[A-Z0-9]{16,32}` 公开号，settlement/退款同样只投影公开号；reason ciphertext、管理员字段、
   evidence 对象 key/扫描与删除细节、transition actor/reason、内部资金引用和供应商原始 payload 不
   进入进程宽查询或 HTTP 响应。
-- evidence 只公开 `PENDING/READY/UNAVAILABLE`：未过期 `READY_UNCLAIMED/READY` 映射为 `READY`，
-  其余内部状态或过期对象统一为 `UNAVAILABLE` 且 `access_expires_at=null`。四个成功响应统一
+- evidence 只公开 `PENDING/READY/UNAVAILABLE`：未过期 `READY_UNCLAIMED` 使用
+  `claim_deadline_at`，已 claim `READY` 使用 `ordinary_access_deadline_at`，两者映射为 `READY`；
+  retention 或 legal hold 不能延长普通读取。其余内部状态或过期对象统一为 `UNAVAILABLE` 且
+  `access_expires_at=null`。四个成功响应统一
   `Cache-Control: private, no-store`，避免含原因和历史政策的私有数据被缓存。
 - 列表游标固定 `c1_` 前缀。`AFTER_SALE_CURSOR_HMAC_KEYS` 是 1–3 把唯一、解码后至少 32 字节的
   base64url HMAC-SHA-256 key ring，第一把签发、全部验证；payload 绑定版本、商城、主体类型/ID、
@@ -573,3 +647,58 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   成功响应使用 `private, no-store` 和安全 correlation ID，幂等写额外返回 `Idempotency-Replayed`。
 - B2a 仓库实施已完成：`verify`、完整 integration 29 个文件/234 项、M2→current 42 段迁移演练、生产依赖 high、OpenAPI 结构检查、
   Gitleaks、差异检查与独立高风险复审均通过。目标库逐库 preflight 仍是 rollout 前置条件；详见 `docs/reports/m6.3-b2a-completion-report.md`。
+
+## 11. M6.3-B2b-D0 数据库原语与当前边界
+
+- `initializeAfterSaleEvidenceUpload` 只接受 owner member StoreContext、allowlist MIME、服务端范围内的
+  byte size/checksum/filename、显式 upload TTL 和未 claim 配额。它先取得商城+会员 advisory quota
+  lock，再以数据库权威行汇总数量和字节，原子创建 `PENDING` 父行、ORIGINAL ledger、上传到期
+  outbox 和 24 小时幂等事实。返回的 object key 只是未来专用 storage adapter 的内部输入；D0 没有
+  签发上传 URL 或写对象。
+- `confirmAfterSaleEvidenceUpload` 锁配额与 evidence，校验 owner、expected version、上传排他截止和
+  24 小时幂等，然后原子写 `confirmed_at/scan_requested_at`、递增 generation/version 并排队 scan。
+  规范 ORIGINAL binding 由 deferred 数据库 guard 保护；但没有 provider HEAD/body/magic 读取，故
+  不能证明声明 MIME、长度或 checksum 与真实对象一致。
+- `requestAfterSaleEvidenceRescan` 只允许专用 SYSTEM 对已确认且仍为未归属 `PENDING` 的当前版本
+  发起同状态重扫；它递增 generation/version、追加带 correlation ID 的 `SCAN_REQUESTED` transition，
+  并与新 scan outbox 原子提交。stale 请求只返回未请求，不覆盖当前身份。
+- `applyAfterSaleEvidenceScanResult` 只在专用 SYSTEM 事务接受 current generation/version。精确 CLEAN
+  必须携带 scanner engine/version/signature identity；恶意或不确定使用稳定 allowlist code 并失败关闭。
+  stale/乱序结果返回 no-op，当前状态不被覆盖。该入口是未来 scanner worker 的数据库投影边界，不是
+  scanner adapter。
+- `claimAfterSaleEvidenceInTransaction` 只供未来 B3 在其现有商城会员事务中调用：锁 quota、售后聚合和
+  排序后的 1–6 个 evidence，要求全部为 owner 的未过期 `READY_UNCLAIMED`，一次性写售后归属、普通
+  访问与 retention 截止并排队 retention expire。D0 未注册 B3，因此不存在独立可调用的 claim API。
+- `begin/list/complete/record...Deletion` 原语只在专用 SYSTEM scope 操作权威行和 ledger；每次都复核
+  expected version、截止点、hold 和精确活动对象集合。`complete` 只记录未来 provider 已成功删除或
+  已确认不存在后的数据库事实；D0 本身不会调用 provider。失败固定第 5 次告警、第 8 次耗尽，退避
+  60 秒起、最多 6 小时。
+- `reconcileAfterSaleEvidenceDeadLetter` 只接受同商城、严格消息形状和真实 `DEAD_LETTER`。scan 死信
+  把仍待扫描对象收敛为不可 READY 的 `FAILED` 并安排清理；expire 死信按当前权威 deadline/hold
+  重排或进入删除；delete 死信进入有界 retry/exhausted。旧版本已有当前身份消息时安全
+  `SUPERSEDED`，不得绕过版本/generation/hold 或把死信直接写成成功。
+- D0 没有对 OpenAPI 增加 implemented 标记，也没有 API/controller、worker handler、evidence bucket、
+  IAM/KMS/lifecycle、真实 scanner、保护 URL、管理员读取审计、外部告警或生产政策/配置。该历史完成
+  报告只证明仓库数据层；D1 的后续 local/test storage 进展见下一节。
+  B2b、B2、M6.3 和 M6 继续未完成。
+
+## 12. M6.3-B2b-D1 对象存储校验与数据边界
+
+- D1 不新增数据库列、状态、枚举、RLS、grant、trigger、函数或迁移。D0 的 `after_sale_evidence_files`
+  与 `after_sale_evidence_objects` 继续是唯一数据库权威事实，M2→current 迁移总数保持 43。
+- `AfterSaleEvidenceObjectStorageProvider` 只接受 D0 冻结的 ORIGINAL key
+  `{environment}/{store_id}/staged/{evidence_id}/original`，并校验 environment、store/evidence UUID 与
+  key 逐段一致；adapter 不从客户端输入生成新 key，也不写数据库。
+- create-only 上传把 Content-Length、Content-Type、SHA-256 和 `If-None-Match: *` 全部绑定签名。验证使用独立 read
+  身份执行 HEAD + 有界流式 GET，以实际 bytes 复算长度/checksum，并检测 JPEG/PNG/WebP/MP4 magic；
+  成功只返回规范 MIME、长度与 checksum，不返回对象 key、URL 或供应商正文。
+- D1 local/test MinIO 使用与 content 分离的 bucket 和 upload/read/delete 身份。真实 MinIO D1 7/7、
+  定向 config/integrations 65/65、完整 integration 31 文件/250 项及 43 段迁移回归通过；初始化连续
+  两次通过并要求固定 evidence bucket 版本控制从未启用。
+- 当前 delete adapter 不接收 version ID；版本化 bucket 的普通 DELETE 可能只生成 delete marker，不能
+  证明旧版本正文物理删除。production versioning/Object Lock/lifecycle/历史版本清理保持
+  `BLOCKED/NOT_RUN`。AWS 最小 read IAM 对不存在 key 也可能返回 `403`，稳定错误语义须在目标 provider/
+  staging 验证。
+- D1 没有把 adapter 接入 confirm、scan、claim、protected-read 或 delete worker。OpenAPI runtime status
+  与五项 capability 不变；production storage、scanner、HTTP、worker、管理员读取审计和 rollout 继续
+  未完成。最终 `verify`（62 个单元文件/482 项）、Gitleaks、`git diff --check` 与独立高风险复审均通过。

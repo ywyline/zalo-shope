@@ -2,7 +2,7 @@
 
 > 状态：已批准
 >
-> 版本：0.8
+> 版本：1.0
 >
 > 日期：2026-07-29
 >
@@ -14,8 +14,17 @@
 先完成 M6.3-A checkout 政策快照与物流 purpose 前置安全收口，随后完成 M6.3-B0 契约与前向
 数据库修复。B0 完成时不授权任何 B1-B7 运行时；用户随后按推荐边界单独授权 B1，现已完成四个
 会员/管理员只读接口及适用门禁。2026-07-29 又授权 B2a 政策控制面；七个管理员接口、两个分页索引、只读兼容性
-预检、settings 契约偏差收口与适用仓库门禁均已完成，B2a 仓库实施标记 `COMPLETE`。每个目标库 rollout 前仍须逐库 preflight；
-B2/B2b、B3-B7、M6.3、UI、生产政策/启用、供应商调用、部署与发布仍未完成或未授权并保持失败关闭，原有外部上线门禁保持不变。
+预检、settings 契约偏差收口与适用仓库门禁均已完成，B2a 仓库实施标记 `COMPLETE`。用户随后只授权
+M6.3-B2b-D0 数据库生命周期与可靠排队底座；D0 已建立专用 SYSTEM scope、对象 ledger、并发配额锁、
+严格 outbox 身份和 reconciliation 数据原语。D0 不注册 HTTP 或 worker，不接对象存储/scanner，也不
+启用生产配置。每个目标库 rollout 前仍须逐库 preflight；B2/B2b、B3-B7、M6.3、UI、生产政策/启用、
+供应商调用、部署与发布仍未完成或未授权并保持失败关闭，原有外部上线门禁保持不变。
+
+用户随后授权 B2b-D1。当前仓库已增加独立 evidence S3-compatible adapter、失败关闭配置和本地/测试
+MinIO 最小 IAM/真实 bytes 校验；该局部结论仅为 repository implementation + local/test storage
+validation `COMPLETE`；最终 verify、Gitleaks、差异复审、生产依赖 high 与 OpenAPI 回归均通过。D1
+没有注册 HTTP、worker 或 scanner，也未取得生产 KMS/lifecycle/versioning/Object Lock/rollout 证据；B2/B2b、B3-B7、
+M6.3、M6 和 P0 继续未完成。
 
 ## 1. 决策范围
 
@@ -113,6 +122,9 @@ docs/
 - 缓存键：`{environment}:{store_id}:{domain}:{key}`。
 - 队列任务：消息信封强制包含 `store_id`、事件 ID、版本和 correlation ID。
 - 对象路径：`{environment}/{store_id}/{resource}/{object-id}`，下载前再次授权。
+- 售后凭证使用独立 evidence bucket 与专用 upload/read/delete 身份；ORIGINAL key 固定为
+  `{environment}/{store_id}/staged/{evidence_id}/original`，不得与 catalog/content bucket、凭据或 key
+  空间复用。
 - 导出文件、定时任务、报表物化结果和幂等键均包含商城维度。
 - 日志包含 `store_id`，但手机号、地址、Token、密钥和完整支付载荷默认脱敏。
 
@@ -409,6 +421,72 @@ docs/
   （`policies=0, versions=0`）；适用仓库门禁均已通过，B2a 仓库实施为 `COMPLETE`。每个目标库在 rollout 前仍必须重新执行并留证；
   B2/B2b、B3-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭。
 
+### M6.3-B2b-D0 凭证数据库生命周期与可靠排队边界
+
+- D0 只建立仓库内数据库底座。它没有注册
+  `POST /v1/after-sales/evidence-uploads`、确认、owner 状态或保护读取路由，没有在
+  `apps/worker` 注册 scan/expire/delete handler，也没有对象存储、真实 scanner、短期 URL、外部告警
+  或生产配置。OpenAPI 中相关操作继续是 contract-only；要求凭证的未来 B3 申请仍须在任一外部能力
+  缺失时失败关闭。
+- `after_sale_evidence_files` 新增上传确认、扫描请求/完成/generation、可信 scanner 身份、独立普通
+  访问截止与删除耗尽事实。普通读取与物理保留从此分离：B1 对已 claim 的 `READY` 只使用
+  `ordinary_access_deadline_at`，不能因对象仍处于 retention 或 legal hold 而继续读取；物理清理使用
+  `retention_deadline_at`。活动 hold 只阻止删除，不重写两类原始截止点。
+- 新的 `after_sale_evidence_objects` 是 D0 新写路径的规范对象 ledger。原件、衍生物和扫描临时对象逐行
+  保存 `store_id/evidence_file_id/role/key/hash/version/deleted_at`；原件与活动扫描临时对象有唯一约束，
+  key 路径由环境、商城和 evidence ID 组成。对象逐个形成删除事实，父 evidence 只有在所有 ledger key
+  均清空后才能进入 `DELETED`。M6.2 的父行 key/JSON 字段暂作兼容投影，不再是新删除原语的权威清单。
+- lifecycle mutation 使用固定 SYSTEM actor
+  `00000000-0000-4000-8000-000000000006` 和独立
+  `system_scope=after-sale-evidence-lifecycle`。该 principal 与普通管理员、会员和
+  `after-sale-transition` SYSTEM scope 互不替代；FORCE RLS、列级 grant、触发器和 transition actor
+  allowlist 共同阻止宽更新、跨商城写入和人工动作冒用。transition 继续 append-only，并强制记录
+  correlation ID 与稳定错误类别。
+- 初始化先取得 `(store_id,member_id)` transaction-scoped 配额锁，再按权威表聚合同商城同会员未
+  claim 且未物理删除的数量/字节；claim 和最终删除沿用同一锁序。D0 原语支持 local/test 显式传入
+  TTL/配额，但没有生产默认值或合规结论。上传初始化、确认、SYSTEM 重扫请求、scan 结果、claim、到期、删除失败/
+  完成及 DEAD_LETTER reconciliation 均绑定商城、行版本和必要的 scan generation；过期、重复或乱序
+  事实只能安全 no-op/冲突，不能倒退状态。
+- scan/expire/delete outbox 的 aggregate 固定为 `AFTER_SALE_EVIDENCE`、event version 固定为 1，
+  payload 键集合精确为 `store_id/evidence_id/expected_version`。数据库约束触发器要求确认或关键
+  生命周期变化与对应消息同事务提交，并禁止对象 key、hash、MIME、checksum、scanner 结果、截止点、
+  hold 或供应商错误进入消息。消息只是定位提示，未来 worker 仍必须重读权威行和 ledger。
+- D0 的删除失败模型固定第 5 次形成持久告警条件、第 8 次耗尽，单次重试至少 60 秒且最多 6 小时；
+  耗尽后保留 `DELETE_FAILED`、受保护对象 key 与 `delete_exhausted_at`，不自动无界重试。
+  reconciliation 对 scan/expire/delete dead letter 只收敛为安全失败、重排当前权威版本或耗尽事实，
+  不能把死信直接标成业务成功。
+- 迁移 `20260729120000_m63_b2b_d0_evidence_lifecycle` 要求目标库没有任何既有 evidence、transition、
+  evidence outbox 或 evidence idempotency 事实；非空以 SQLSTATE `55000` 停止，不能猜测外部对象状态。
+  `down.sql` 还检查 ledger 事实，只允许空事实 local/test；生产及任何已有凭证事实环境只允许受审
+  前向修复。应用回滚必须保留 D0 数据底座，直至未来兼容 worker 把所有已存在事实收敛到安全终态。
+- D0 的仓库完成结论只涵盖 schema、迁移、RLS/trigger、数据库原语和自动化证据。它不等于真实
+  MIME/magic/checksum 校验、scanner、对象删除或保护读取已经发生，也不完成 B2b、B2、M6.3、M6、
+  M5 或 P0；外部对象、scanner、URL、告警和生产参数验收均保持 `NOT_RUN/BLOCKED`。
+
+### M6.3-B2b-D1 专用对象存储与内容校验边界
+
+- D1 在 integrations 层新增独立 `AfterSaleEvidenceObjectStorageProvider`，不复用
+  `MediaStorageProvider`。它提供 create-only 上传目标、HEAD + 有界流式 GET 校验、内部短期 no-store
+  读取目标和幂等删除；稳定错误只暴露分类与 retryable，不暴露签名 query、对象 key、凭据或供应商
+  正文。
+- 上传签名绑定规范 ORIGINAL key、Content-Length、Content-Type 与 SHA-256，并强制
+  `If-None-Match: *`。校验不能信任 provider metadata，必须读取实际 bytes，精确复算长度/checksum 并
+  检测 JPEG/PNG/WebP/MP4 magic；magic 通过不等于 malware scan `CLEAN`。
+- config 默认 disabled。启用 S3 mode 时要求 evidence bucket 与 content bucket 分离，upload/read/delete
+  三组 access key/secret 彼此且与 content 凭据不同；production 还要求 HTTPS、`aws:kms` 与 KMS key
+  ID。这里只是启动配置门禁，不证明 provider 侧 KMS grant、lifecycle 或恢复已经验收。
+- local/test MinIO root 只负责 bootstrap。固定 content/evidence bucket、content 身份和三种 evidence
+  身份通过正向/反向 IAM；初始化可幂等重跑，并拒绝固定 evidence bucket 曾启用版本控制。真实 MinIO
+  7/7 覆盖四种对象、签名防篡改、create-only、欺骗、隔离、幂等删除与最终无残留。
+- D1 没有 API/controller、worker handler、D0 outbox 消费、scanner、B3 claim 调用方或管理员读取
+  审计。OpenAPI evidence operations 保持 contract-only，五项 runtime capability 继续不可用。
+- production 仍受两项明确阻断：当前 delete-only adapter 没有 version ID，版本化 bucket 的普通 DELETE
+  可能只创建 delete marker；AWS 最小 read IAM 对不存在对象可能返回 `403` 而非 `404`。必须在目标
+  provider/staging 冻结物理删除和稳定错误语义，不能以 MinIO 替代。
+- 因此只将 D1 repository implementation + local/test storage validation 标记 `COMPLETE`。最终
+  verify（62 个单元文件/482 项）、Gitleaks、差异复审、生产依赖 high 与 OpenAPI 回归均通过；B2b/B2、
+  M6.3、M6、P0、生产 storage、HTTP、worker、scanner、告警与 rollout 均未完成。
+
 ## 7. 身份、安全与隐私
 
 - Mini App 使用 Zalo Token/Header 与服务端会话交换，不依赖普通浏览器 Cookie、LocalStorage 或 SessionStorage 作为认证根。
@@ -420,6 +498,13 @@ docs/
 - 数据删除采用业务允许的删除、匿名化或保留策略，历史订单法定记录不被级联破坏。
 
 ## 8. 第三方集成边界
+
+### 对象存储
+
+catalog/content 继续使用既有 `MediaStorageProvider`；售后凭证只能使用 D1 独立 adapter 和凭据。MinIO
+仅是 local/test S3-compatible 证据，不代表 AWS 或生产 provider。生产上线前必须在精确目标验证
+checksum、create-only、SSE-KMS、最小 IAM、不存在对象错误、超时、物理删除、lifecycle 与恢复；任何
+一项未确认时 evidence runtime capability 保持关闭。
 
 ### Zalo
 
@@ -442,7 +527,9 @@ docs/
 - API 与 worker 构建为独立容器；静态前端按 Zalo 发布流程和管理端托管策略发布。
 - 数据库迁移采用向前兼容的 expand/migrate/contract；破坏性收缩需独立版本执行。
 - 每次发布保留应用回滚版本；数据库变更必须有回滚脚本或明确的向前修复方案。
-- PostgreSQL 执行自动备份和定期恢复演练；对象存储启用版本/生命周期策略。
+- PostgreSQL 执行自动备份和定期恢复演练；content 对象存储按批准策略启用版本/生命周期。evidence
+  bucket 必须先冻结与 D0 ledger/物理删除兼容的 versioning/Object Lock/lifecycle 方案；D1 当前明确
+  阻止在版本控制曾启用的固定本地 bucket 上冒充物理删除完成。
 - 健康检查区分存活与就绪，关键队列积压、回调失败、库存异常和对账差异必须告警。
 
 ## 10. 质量门禁

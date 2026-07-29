@@ -5,5 +5,11 @@
     "noEmit": true,
     "rootDir": ".."
   },
-  "include": ["create-admin.ts", "preflight-m63-b2a.ts", "rebuild-search.ts", "seed.ts"]
+  "include": [
+    "create-admin.ts",
+    "preflight-m63-b2a.ts",
+    "preflight-m63-b2b-d0.ts",
+    "rebuild-search.ts",
+    "seed.ts"
+  ]
 }

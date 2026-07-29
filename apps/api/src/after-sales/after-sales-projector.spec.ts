@@ -24,7 +24,8 @@ function fixture(): AfterSaleReadRecord {
       {
         claimDeadlineAt: null,
         id: '40000000-0000-4000-8000-000000000001',
-        retentionDeadlineAt: new Date('2026-07-29T08:00:00.000Z'),
+        ordinaryAccessDeadlineAt: new Date('2026-07-29T08:00:00.000Z'),
+        retentionDeadlineAt: new Date('2026-08-28T08:00:00.000Z'),
         status: 'READY',
         version: 2,
       },
@@ -148,8 +149,8 @@ describe('AfterSalesProjector', () => {
   it('collapses evidence at the exclusive deadline and all non-public internal states', () => {
     const record = fixture();
     const evidence = record.evidenceFiles[0];
-    if (!evidence?.retentionDeadlineAt) throw new Error('fixture evidence is incomplete');
-    const deadline = evidence.retentionDeadlineAt;
+    if (!evidence?.ordinaryAccessDeadlineAt) throw new Error('fixture evidence is incomplete');
+    const deadline = evidence.ordinaryAccessDeadlineAt;
     expect(projector.project(record, 'vi', deadline).evidence[0]).toEqual({
       access_expires_at: null,
       evidence_id: evidence.id,
@@ -159,6 +160,7 @@ describe('AfterSalesProjector', () => {
     const readyUnclaimed = {
       ...evidence,
       claimDeadlineAt: new Date('2026-07-28T10:00:00.000Z'),
+      ordinaryAccessDeadlineAt: null,
       retentionDeadlineAt: null,
       status: 'READY_UNCLAIMED' as const,
     };

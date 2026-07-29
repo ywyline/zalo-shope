@@ -14,6 +14,7 @@ import {
   calculateAfterSaleReturnDeadlineEpochMs,
   calculateOrderItemRefundAllocationVnd,
   calculateRemainingAfterSaleRefundVnd,
+  createAfterSaleEvidenceSystemContext,
   createAfterSaleSystemContext,
   doesAfterSaleQuantityOccupyCapacity,
   resolveAfterSaleReview,
@@ -256,6 +257,28 @@ describe('M6 after-sale state machine', () => {
     expect(() => transitionAfterSale('REFUND_ONLY', 'APPROVED', 'COMPLETE')).toThrow(
       'AFTER_SALE_STATE_CONFLICT',
     );
+  });
+
+  it('keeps evidence lifecycle SYSTEM identity separate from after-sale transitions', () => {
+    const context = createAfterSaleEvidenceSystemContext({
+      correlationId: 'm63-b2b-d0-correlation',
+      storeId: '10000000-0000-4000-8000-000000000001',
+    });
+
+    expect(context).toEqual({
+      actor: { id: '00000000-0000-4000-8000-000000000006', type: 'system' },
+      correlationId: 'm63-b2b-d0-correlation',
+      storeId: '10000000-0000-4000-8000-000000000001',
+      systemScope: 'after-sale-evidence-lifecycle',
+    });
+    expect(Object.isFrozen(context)).toBe(true);
+    expect(Object.isFrozen(context.actor)).toBe(true);
+    expect(() =>
+      createAfterSaleEvidenceSystemContext({
+        correlationId: ' ',
+        storeId: '10000000-0000-4000-8000-000000000001',
+      }),
+    ).toThrow('AFTER_SALE_ACTOR_NOT_ALLOWED');
   });
 
   it('resumes manual review only to the recorded, type-compatible state', () => {

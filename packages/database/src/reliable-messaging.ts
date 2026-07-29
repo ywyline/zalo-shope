@@ -282,7 +282,7 @@ export type AppendOutboxMessageInput = Readonly<{
 
 export async function appendOutboxMessageInTransaction(
   transaction: StoreTransaction,
-  context: StoreContext,
+  context: Pick<StoreContext, 'storeId'>,
   input: AppendOutboxMessageInput,
 ): Promise<Readonly<{ message: OutboxMessageRecord; replayed: boolean }>> {
   const availableAt = input.availableAt ?? new Date();

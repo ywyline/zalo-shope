@@ -69,6 +69,8 @@ const afterSaleSystemEvents = new Set<AfterSaleEvent>(AFTER_SALE_SYSTEM_EVENTS);
 const afterSaleMemberEvents = new Set<AfterSaleEvent>(['CANCEL', 'START_RETURN']);
 
 export const AFTER_SALE_SYSTEM_SCOPE = 'after-sale-transition' as const;
+export const AFTER_SALE_EVIDENCE_SYSTEM_SCOPE = 'after-sale-evidence-lifecycle' as const;
+export const AFTER_SALE_EVIDENCE_SYSTEM_ACTOR_ID = '00000000-0000-4000-8000-000000000006' as const;
 
 export type AfterSaleSystemContext = Readonly<{
   actor: Readonly<{ id: string; type: 'system' }>;
@@ -79,6 +81,21 @@ export type AfterSaleSystemContext = Readonly<{
 
 export type AfterSaleSystemContextInput = {
   actorId: string;
+  correlationId: string;
+  storeId: string;
+};
+
+export type AfterSaleEvidenceSystemContext = Readonly<{
+  actor: Readonly<{
+    id: typeof AFTER_SALE_EVIDENCE_SYSTEM_ACTOR_ID;
+    type: 'system';
+  }>;
+  correlationId: string;
+  storeId: string;
+  systemScope: typeof AFTER_SALE_EVIDENCE_SYSTEM_SCOPE;
+}>;
+
+export type AfterSaleEvidenceSystemContextInput = {
   correlationId: string;
   storeId: string;
 };
@@ -102,6 +119,20 @@ export function createAfterSaleSystemContext(
     correlationId: requireAfterSaleSystemContextValue(input.correlationId),
     storeId: requireAfterSaleSystemContextValue(input.storeId),
     systemScope: AFTER_SALE_SYSTEM_SCOPE,
+  });
+}
+
+export function createAfterSaleEvidenceSystemContext(
+  input: AfterSaleEvidenceSystemContextInput,
+): AfterSaleEvidenceSystemContext {
+  return Object.freeze({
+    actor: Object.freeze({
+      id: AFTER_SALE_EVIDENCE_SYSTEM_ACTOR_ID,
+      type: 'system' as const,
+    }),
+    correlationId: requireAfterSaleSystemContextValue(input.correlationId),
+    storeId: requireAfterSaleSystemContextValue(input.storeId),
+    systemScope: AFTER_SALE_EVIDENCE_SYSTEM_SCOPE,
   });
 }
 

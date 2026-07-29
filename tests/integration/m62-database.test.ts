@@ -9,7 +9,10 @@ import {
   type StoreTransaction,
   withAfterSaleSystemTransaction,
 } from '@zalo-shop/database';
-import { createAfterSaleSystemContext } from '@zalo-shop/domain';
+import {
+  createAfterSaleEvidenceSystemContext,
+  createAfterSaleSystemContext,
+} from '@zalo-shop/domain';
 
 const BEAUTY_STORE_ID = '10000000-0000-4000-8000-000000000001';
 const FASHION_STORE_ID = '10000000-0000-4000-8000-000000000002';
@@ -34,6 +37,7 @@ const M6_TABLES = [
   'after_sale_inspections',
   'after_sale_inspection_allocations',
   'after_sale_evidence_files',
+  'after_sale_evidence_objects',
   'after_sale_evidence_transitions',
   'after_sale_settlements',
   'after_sale_refunds',
@@ -129,6 +133,24 @@ describe('M6.2 after-sale, member and share database foundation', () => {
     if (context?.actor_type !== null) {
       throw new Error('M6.2 untyped runtime fixture unexpectedly has app.actor_type');
     }
+  }
+
+  async function setEvidenceSystemContext(
+    transaction: StoreTransaction,
+    storeId: string,
+  ): Promise<void> {
+    const context = createAfterSaleEvidenceSystemContext({
+      correlationId: randomUUID(),
+      storeId,
+    });
+    await transaction.$executeRaw`
+      SELECT
+        set_config('app.store_id', ${context.storeId}, true),
+        set_config('app.actor_id', ${context.actor.id}, true),
+        set_config('app.actor_type', ${context.actor.type}, true),
+        set_config('app.correlation_id', ${context.correlationId}, true),
+        set_config('app.system_scope', ${context.systemScope}, true)
+    `;
   }
 
   async function withRollback(
@@ -234,6 +256,14 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         await transaction.$executeRaw`DELETE FROM after_sale_return_shipments fact
           WHERE fact.store_id = ${BEAUTY_STORE_ID}::uuid
             AND fact.after_sale_id IN (SELECT sale.id FROM after_sales sale
+              WHERE sale.store_id = ${BEAUTY_STORE_ID}::uuid
+                AND sale.order_id = ${fixture.orderId}::uuid)`;
+        await transaction.$executeRaw`DELETE FROM after_sale_evidence_objects object
+          USING after_sale_evidence_files evidence
+          WHERE object.store_id = evidence.store_id
+            AND object.evidence_file_id = evidence.id
+            AND evidence.store_id = ${BEAUTY_STORE_ID}::uuid
+            AND evidence.after_sale_id IN (SELECT sale.id FROM after_sales sale
               WHERE sale.store_id = ${BEAUTY_STORE_ID}::uuid
                 AND sale.order_id = ${fixture.orderId}::uuid)`;
         await transaction.$executeRaw`DELETE FROM after_sale_evidence_transitions transition
@@ -1539,77 +1569,58 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           '42501',
         );
 
+        const evidenceObjectKey = `test/${BEAUTY_STORE_ID}/staged/${evidenceId}/original`;
         await transaction.$executeRaw`INSERT INTO after_sale_evidence_files
-          (id, store_id, member_id, upload_session_id, mime_type, byte_size,
-            checksum_sha256, original_filename, status, updated_at)
+          (id, store_id, member_id, upload_session_id, object_key, mime_type, byte_size,
+            checksum_sha256, original_filename, status, upload_deadline_at, updated_at)
           VALUES (${evidenceId}::uuid, ${BEAUTY_STORE_ID}::uuid,
-            ${fixture.memberId}::uuid, ${randomUUID()}::uuid, 'image/jpeg', 1024,
-            ${digest(`evidence-${evidenceId}`)}, 'evidence.jpg', 'PENDING', now())`;
-        await expect(
-          transaction.$executeRaw`UPDATE after_sale_evidence_files
+            ${fixture.memberId}::uuid, ${randomUUID()}::uuid, ${evidenceObjectKey},
+            'image/jpeg', 1024, ${digest(`evidence-${evidenceId}`)}, 'evidence.jpg',
+            'PENDING', now() + interval '15 minutes', now())`;
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`UPDATE after_sale_evidence_files
             SET after_sale_id = ${afterSaleId}::uuid, status = 'READY', claimed_at = now(),
+              ordinary_access_deadline_at = now() + interval '7 days',
               retention_deadline_at = now() + interval '30 days', version = version + 1,
               updated_at = now()
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`,
-        ).resolves.toBe(0);
+          '23514',
+        );
 
         await setContext(transaction, {
           actorId: fixture.adminId,
           actorType: 'admin',
           storeId: BEAUTY_STORE_ID,
         });
-        await transaction.$executeRaw`UPDATE after_sale_evidence_files
-          SET object_key = ${`test/beauty/staged/${evidenceId}`},
-            status = 'READY_UNCLAIMED', scan_result_code = 'CLEAN',
-            claim_deadline_at = now() + interval '1 hour', version = version + 1,
-            updated_at = now()
-          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
-        await setContext(transaction, {
-          actorId: fixture.memberId,
-          actorType: 'member',
-          storeId: BEAUTY_STORE_ID,
-        });
-        await expect(
-          transaction.$executeRaw`UPDATE after_sale_evidence_files
-            SET after_sale_id = ${afterSaleId}::uuid, status = 'READY',
-              claimed_at = now() - interval '2 days',
-              retention_deadline_at = now() - interval '1 day', version = version + 1,
-              updated_at = now()
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`UPDATE after_sale_evidence_files
+            SET status = 'READY_UNCLAIMED', scan_result_code = 'CLEAN',
+              scan_completed_at = now(), claim_deadline_at = now() + interval '1 hour',
+              version = version + 1, updated_at = now()
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`,
-        ).resolves.toBe(1);
-
-        await setContext(transaction, {
-          actorId: fixture.adminId,
-          actorType: 'admin',
-          storeId: BEAUTY_STORE_ID,
-        });
-        await transaction.$executeRaw`UPDATE after_sale_evidence_files
-          SET status = 'DELETION_PENDING', version = version + 1, updated_at = now()
-          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
-        expect(
-          await transaction.$queryRaw`SELECT event FROM after_sale_evidence_transitions
-            WHERE store_id = ${BEAUTY_STORE_ID}::uuid
-              AND evidence_file_id = ${evidenceId}::uuid
-            ORDER BY CASE event
-              WHEN 'SCAN_PASSED' THEN 1 WHEN 'CLAIM' THEN 2 WHEN 'EXPIRE' THEN 3 END`,
-        ).toEqual([{ event: 'SCAN_PASSED' }, { event: 'CLAIM' }, { event: 'EXPIRE' }]);
+          '42501',
+        );
         await setContext(transaction, {
           actorId: fixture.memberId,
           actorType: 'member',
           storeId: BEAUTY_STORE_ID,
         });
-        await expect(
-          transaction.$executeRaw`UPDATE after_sale_evidence_files
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`UPDATE after_sale_evidence_files
             SET status = 'DELETED', object_key = NULL, derivative_object_keys = NULL,
               scan_temporary_object_key = NULL, next_delete_attempt_at = NULL,
               delete_error_code = NULL, deleted_at = now(), version = version + 1,
               updated_at = now()
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`,
-        ).resolves.toBe(0);
+          '23514',
+        );
         expect(
           await transaction.$queryRaw`SELECT status, deleted_at FROM after_sale_evidence_files
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`,
-        ).toEqual([{ deleted_at: null, status: 'DELETION_PENDING' }]);
+        ).toEqual([{ deleted_at: null, status: 'PENDING' }]);
 
         await transaction.$executeRaw`INSERT INTO privacy_requests
           (id, store_id, member_id, public_number, type, description_ciphertext,
@@ -2068,19 +2079,30 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           '23514',
         );
         const nullScanEvidenceId = randomUUID();
+        await setContext(transaction, {
+          actorId: fixture.memberId,
+          actorType: 'member',
+          storeId: BEAUTY_STORE_ID,
+        });
+        const nullScanObjectKey = `test/${BEAUTY_STORE_ID}/staged/${nullScanEvidenceId}/original`;
         await transaction.$executeRaw`INSERT INTO after_sale_evidence_files
-          (id, store_id, member_id, upload_session_id, mime_type, byte_size,
-            checksum_sha256, updated_at)
+          (id, store_id, member_id, upload_session_id, object_key, mime_type, byte_size,
+            checksum_sha256, upload_deadline_at, updated_at)
           VALUES (${nullScanEvidenceId}::uuid, ${BEAUTY_STORE_ID}::uuid,
-            ${fixture.memberId}::uuid, ${randomUUID()}::uuid, 'image/jpeg', 1024,
-            ${digest(`evidence-${nullScanEvidenceId}`)}, now())`;
+            ${fixture.memberId}::uuid, ${randomUUID()}::uuid, ${nullScanObjectKey},
+            'image/jpeg', 1024, ${digest(`evidence-${nullScanEvidenceId}`)},
+            now() + interval '15 minutes', now())`;
+        await transaction.$executeRaw`UPDATE after_sale_evidence_files
+          SET confirmed_at = now(), scan_requested_at = now(), scan_generation = 1,
+            version = version + 1, updated_at = now()
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${nullScanEvidenceId}::uuid`;
+        await setEvidenceSystemContext(transaction, BEAUTY_STORE_ID);
         await expectDatabaseFailure(
           transaction,
           () => transaction.$executeRaw`UPDATE after_sale_evidence_files
-            SET object_key = ${`test/beauty/null-scan/${nullScanEvidenceId}`},
-              status = 'READY_UNCLAIMED', scan_result_code = NULL,
-              claim_deadline_at = now() + interval '1 hour', version = version + 1,
-              updated_at = now()
+            SET status = 'READY_UNCLAIMED', scan_result_code = NULL,
+              scan_completed_at = now(), claim_deadline_at = now() + interval '1 hour',
+              version = version + 1, updated_at = now()
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid
               AND id = ${nullScanEvidenceId}::uuid`,
           '23514',
@@ -4236,100 +4258,186 @@ describe('M6.2 after-sale, member and share database foundation', () => {
       const fixture = await createCommerceFixture(transaction);
       const { afterSaleId } = await createAfterSaleFixture(transaction, fixture);
       const evidenceId = randomUUID();
-      const objectKey = `test/beauty/staged/${evidenceId}`;
-      await setContext(transaction, {
-        actorId: fixture.adminId,
-        actorType: 'admin',
-        storeId: BEAUTY_STORE_ID,
-      });
-      await transaction.$executeRaw`INSERT INTO after_sale_evidence_files
-        (id, store_id, member_id, upload_session_id, mime_type, byte_size,
-          checksum_sha256, original_filename, updated_at)
-        VALUES (${evidenceId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${fixture.memberId}::uuid,
-          ${randomUUID()}::uuid, 'image/jpeg', 1024,
-          ${createHash('sha256').update(`evidence-${evidenceId}`).digest('hex')},
-          'evidence.jpg', now())`;
-      await transaction.$executeRaw`UPDATE after_sale_evidence_files
-        SET object_key = ${objectKey},
-          derivative_object_keys = '["test/beauty/derivative"]'::jsonb,
-          scan_temporary_object_key = 'test/beauty/scan', scan_result_code = 'CLEAN',
-          claim_deadline_at = now() + interval '1 hour', status = 'READY_UNCLAIMED',
-          version = version + 1, updated_at = now()
-        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
+      const objectKey = `test/${BEAUTY_STORE_ID}/staged/${evidenceId}/original`;
+      const uploadDeadlineAt = new Date(Date.now() + 15 * 60 * 1_000);
+
+      const appendEvidenceOutbox = async (input: {
+        availableAt: Date;
+        eventType: string;
+        expectedVersion: number;
+      }): Promise<void> => {
+        const idempotencyKey = `${input.eventType}:${evidenceId}:${input.expectedVersion}`;
+        await transaction.$executeRaw`INSERT INTO outbox_messages
+          (store_id, aggregate_type, aggregate_id, event_type, event_version,
+            idempotency_key, payload, available_at, max_attempts, updated_at)
+          VALUES (${BEAUTY_STORE_ID}::uuid, 'AFTER_SALE_EVIDENCE', ${evidenceId}::uuid,
+            ${input.eventType}, 1, ${idempotencyKey}, ${JSON.stringify({
+              evidence_id: evidenceId,
+              expected_version: input.expectedVersion,
+              store_id: BEAUTY_STORE_ID,
+            })}::jsonb, ${input.availableAt}, 3, clock_timestamp())`;
+      };
+
       await setContext(transaction, {
         actorId: fixture.memberId,
         actorType: 'member',
         storeId: BEAUTY_STORE_ID,
       });
+      await transaction.$executeRaw`INSERT INTO after_sale_evidence_files
+        (id, store_id, member_id, upload_session_id, object_key, mime_type, byte_size,
+          checksum_sha256, original_filename, upload_deadline_at, updated_at)
+        VALUES (${evidenceId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${fixture.memberId}::uuid,
+          ${randomUUID()}::uuid, ${objectKey}, 'image/jpeg', 1024,
+          ${createHash('sha256').update(`evidence-${evidenceId}`).digest('hex')},
+          'evidence.jpg', ${uploadDeadlineAt}, clock_timestamp())`;
+      await transaction.$executeRaw`INSERT INTO after_sale_evidence_objects
+        (store_id, evidence_file_id, object_role, object_key, object_key_hash, updated_at)
+        VALUES (${BEAUTY_STORE_ID}::uuid, ${evidenceId}::uuid, 'ORIGINAL', ${objectKey},
+          ${createHash('sha256').update(objectKey).digest('hex')}, clock_timestamp())`;
+      await appendEvidenceOutbox({
+        availableAt: uploadDeadlineAt,
+        eventType: 'after-sale.evidence.expire.requested',
+        expectedVersion: 1,
+      });
+
+      const confirmedAt = new Date();
       await transaction.$executeRaw`UPDATE after_sale_evidence_files
-        SET after_sale_id = ${afterSaleId}::uuid, status = 'READY',
-          claimed_at = now() - interval '2 days',
-          retention_deadline_at = now() - interval '1 day', version = version + 1,
-          updated_at = now()
+        SET confirmed_at = ${confirmedAt}, scan_requested_at = ${confirmedAt},
+          scan_generation = 1, version = version + 1, updated_at = ${confirmedAt}
         WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
+      await appendEvidenceOutbox({
+        availableAt: confirmedAt,
+        eventType: 'after-sale.evidence.scan.requested',
+        expectedVersion: 2,
+      });
+
+      await setEvidenceSystemContext(transaction, BEAUTY_STORE_ID);
+      const scanCompletedAt = new Date();
+      const claimDeadlineAt = new Date(Date.now() + 60 * 60 * 1_000);
+      await transaction.$executeRaw`UPDATE after_sale_evidence_files
+        SET status = 'READY_UNCLAIMED', scan_result_code = 'CLEAN',
+          scan_completed_at = ${scanCompletedAt}, scanner_engine = 'm62-regression-scanner',
+          scanner_engine_version = '1.0.0', scanner_signature_version = '2026.07.29',
+          claim_deadline_at = ${claimDeadlineAt}, version = version + 1,
+          updated_at = ${scanCompletedAt}
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
+      await appendEvidenceOutbox({
+        availableAt: claimDeadlineAt,
+        eventType: 'after-sale.evidence.expire.requested',
+        expectedVersion: 3,
+      });
+
       await setContext(transaction, {
-        actorId: fixture.adminId,
-        actorType: 'admin',
+        actorId: fixture.memberId,
+        actorType: 'member',
         storeId: BEAUTY_STORE_ID,
       });
+      const claimedAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1_000);
+      const ordinaryAccessDeadlineAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1_000);
+      const retentionDeadlineAt = new Date(Date.now() - 24 * 60 * 60 * 1_000);
       await transaction.$executeRaw`UPDATE after_sale_evidence_files
-        SET status = 'DELETION_PENDING', version = version + 1, updated_at = now()
+        SET after_sale_id = ${afterSaleId}::uuid, status = 'READY', claimed_at = ${claimedAt},
+          ordinary_access_deadline_at = ${ordinaryAccessDeadlineAt},
+          retention_deadline_at = ${retentionDeadlineAt}, version = version + 1,
+          updated_at = clock_timestamp()
         WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
+      await appendEvidenceOutbox({
+        availableAt: retentionDeadlineAt,
+        eventType: 'after-sale.evidence.expire.requested',
+        expectedVersion: 4,
+      });
+
+      await setEvidenceSystemContext(transaction, BEAUTY_STORE_ID);
+      const deletionQueuedAt = new Date();
+      await transaction.$executeRaw`UPDATE after_sale_evidence_files
+        SET status = 'DELETION_PENDING', version = version + 1, updated_at = ${deletionQueuedAt}
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
+      await appendEvidenceOutbox({
+        availableAt: deletionQueuedAt,
+        eventType: 'after-sale.evidence.delete.requested',
+        expectedVersion: 5,
+      });
+
+      await setEvidenceSystemContext(transaction, BEAUTY_STORE_ID);
       await expectDatabaseFailure(
         transaction,
         async () => {
           await transaction.$executeRaw`UPDATE after_sale_evidence_files
             SET status = 'DELETE_FAILED', delete_attempt_count = delete_attempt_count + 1,
               delete_error_code = 'OBJECT_DELETE_FAILED',
-              next_delete_attempt_at = now() + interval '1 hour',
-              version = version + 1, updated_at = now()
+              next_delete_attempt_at = clock_timestamp() + interval '1 hour',
+              version = version + 1, updated_at = clock_timestamp()
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
           await transaction.$executeRaw`UPDATE after_sale_evidence_files
             SET status = 'DELETION_PENDING', delete_error_code = NULL,
-              next_delete_attempt_at = NULL, version = version + 1, updated_at = now()
+              next_delete_attempt_at = NULL, version = version + 1,
+              updated_at = clock_timestamp()
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
         },
         '23514',
       );
+      await setContext(transaction, {
+        actorId: fixture.adminId,
+        actorType: 'admin',
+        storeId: BEAUTY_STORE_ID,
+      });
       await expect(
         transaction.$executeRaw`UPDATE after_sale_evidence_files
-          SET legal_hold_active = true, held_at = now(), held_by = ${fixture.adminId}::uuid,
+          SET legal_hold_active = true, held_at = clock_timestamp(),
+            held_by = ${fixture.adminId}::uuid,
             hold_reason = 'M6.2 legal hold regression', version = version + 1,
-            updated_at = now()
+            updated_at = clock_timestamp()
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`,
       ).resolves.toBe(1);
 
+      await setEvidenceSystemContext(transaction, BEAUTY_STORE_ID);
       await expectDatabaseFailure(
         transaction,
         () => transaction.$executeRaw`UPDATE after_sale_evidence_files
-          SET status = 'DELETED', deleted_at = now(), version = version + 1,
-            updated_at = now()
+          SET status = 'DELETED', deleted_at = clock_timestamp(), version = version + 1,
+            updated_at = clock_timestamp()
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`,
         '23514',
       );
+      await setContext(transaction, {
+        actorId: fixture.adminId,
+        actorType: 'admin',
+        storeId: BEAUTY_STORE_ID,
+      });
       await transaction.$executeRaw`UPDATE after_sale_evidence_files
         SET legal_hold_active = false, held_at = NULL, held_by = NULL, hold_reason = NULL,
-          version = version + 1, updated_at = now()
+          version = version + 1, updated_at = clock_timestamp()
         WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
+      await setEvidenceSystemContext(transaction, BEAUTY_STORE_ID);
       await expectDatabaseFailure(
         transaction,
         () => transaction.$executeRaw`UPDATE after_sale_evidence_files
-          SET status = 'DELETED', retention_deadline_at = now() + interval '1 hour',
-            deleted_at = now(), version = version + 1, updated_at = now()
+          SET status = 'DELETED', retention_deadline_at = clock_timestamp() + interval '1 hour',
+            deleted_at = clock_timestamp(), version = version + 1,
+            updated_at = clock_timestamp()
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`,
         '23514',
       );
 
+      const deletedAt = new Date();
+      await transaction.$executeRaw`UPDATE after_sale_evidence_objects
+        SET object_key = NULL, deleted_at = ${deletedAt}, version = version + 1,
+          updated_at = ${deletedAt}
+        WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+          AND evidence_file_id = ${evidenceId}::uuid AND object_key IS NOT NULL`;
       await transaction.$executeRaw`UPDATE after_sale_evidence_files
         SET status = 'DELETED', object_key = NULL, derivative_object_keys = NULL,
-          scan_temporary_object_key = NULL, scan_result_code = NULL,
-          delete_error_code = NULL, deleted_at = now(), version = version + 1,
-          updated_at = now()
+          scan_temporary_object_key = NULL, original_filename = NULL,
+          scan_result_code = NULL, scanner_engine = NULL, scanner_engine_version = NULL,
+          scanner_signature_version = NULL, next_delete_attempt_at = NULL,
+          delete_error_code = NULL, delete_exhausted_at = NULL, deleted_at = ${deletedAt},
+          version = version + 1, updated_at = ${deletedAt}
         WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
+      await transaction.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
       await expectDatabaseFailure(
         transaction,
         () => transaction.$executeRaw`UPDATE after_sale_evidence_files
-          SET delete_attempt_count = delete_attempt_count + 1, updated_at = now()
+          SET delete_attempt_count = delete_attempt_count + 1, updated_at = clock_timestamp()
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`,
         '42501',
       );
