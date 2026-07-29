@@ -4,7 +4,13 @@ import { Writable } from 'node:stream';
 import pino from 'pino';
 import { describe, expect, it } from 'vitest';
 
-import { createHttpLogger, createLogger, NestPinoLogger, redactSensitiveData } from './index';
+import {
+  createHttpLogger,
+  createLogger,
+  NestPinoLogger,
+  redactSensitiveData,
+  resolveCorrelationId,
+} from './index';
 
 function captureDestination(chunks: string[]): Writable {
   return new Writable({
@@ -61,10 +67,19 @@ async function captureHttpLog(input: {
 }
 
 describe('audit and log redaction', () => {
+  it('accepts only correlation identifiers that satisfy the public minimum length', () => {
+    expect(resolveCorrelationId('valid-id')).toBe('valid-id');
+    expect(resolveCorrelationId('short')).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+  });
+
   it('recursively redacts sensitive keys while preserving safe context', () => {
     expect(
       redactSensitiveData({
         action: 'member.updated',
+        accessReason: 'Operational investigation detail',
+        idempotencyKey: 'sensitive-replay-token',
         nested: {
           phone: '+84912345678',
           profile: { displayName: 'Lan', refreshToken: 'secret-token' },
@@ -73,6 +88,8 @@ describe('audit and log redaction', () => {
       }),
     ).toEqual({
       action: 'member.updated',
+      accessReason: '[REDACTED]',
+      idempotencyKey: '[REDACTED]',
       nested: {
         phone: '[REDACTED]',
         profile: { displayName: 'Lan', refreshToken: '[REDACTED]' },
@@ -100,7 +117,9 @@ describe('audit and log redaction', () => {
   it('redacts credentials from the renamed HTTP request and response log objects', async () => {
     const secrets = {
       authorization: 'Bearer M37_AUTHORIZATION_SECRET',
+      accessReason: 'M63_ACCESS_REASON_SECRET',
       cookie: 'session=M37_COOKIE_SECRET',
+      idempotencyKey: 'M63_IDEMPOTENCY_KEY_SECRET',
       refreshToken: 'M37_REFRESH_TOKEN_SECRET',
       responseCookie: 'session=M37_RESPONSE_COOKIE_SECRET',
       zaloAccessToken: 'M37_ZALO_ACCESS_SECRET',
@@ -110,6 +129,8 @@ describe('audit and log redaction', () => {
       headers: {
         authorization: secrets.authorization,
         cookie: secrets.cookie,
+        'idempotency-key': secrets.idempotencyKey,
+        'x-access-reason': secrets.accessReason,
         'x-refresh-token': secrets.refreshToken,
         'x-zalo-access-token': secrets.zaloAccessToken,
         'x-zalo-phone-token': secrets.zaloPhoneToken,

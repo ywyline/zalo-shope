@@ -89,6 +89,7 @@ export async function withAdminAssignmentDiscoveryTransaction<T>(
 
 export * from './inventory-primitives';
 export * from './after-sale-policy-primitives';
+export * from './after-sale-policy-management-primitives';
 export * from './order-primitives';
 export * from './payment-primitives';
 export * from './payment-callback-primitives';

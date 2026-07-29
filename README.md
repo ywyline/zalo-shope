@@ -2,9 +2,11 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5 已加入按商城解析的 Zalo Checkout 适配器、官方 MAC/查单契约、provider-order 绑定和原始 body webhook 接缝；M5.6 已加入 GHN 适配器、可信仓库/订单物理事实、可靠运单命令、面单代理及三语轨迹工作台；M5.7 已加入退款创建/查询、支付状态投影、逐笔权威查单、本地异常任务和双端三语退款状态。M6.1 已冻结售后、会员收藏/历史和主动分享的数据、权限、API、严格 DTO 与纯领域契约；M6.2 已完成 30 个商城模型/表、11 段迁移、RLS、复合关系、权限目录和数据库完整性 guard。M6.3-A 已完成 checkout 政策解析/同事务快照 writer、readiness/enforcement 管理 API、新商城自动 OFF provisioning 和既有物流 purpose 分流；`verify`、21/21 E2E、生产依赖 high 门禁、交付候选 Gitleaks 与差异检查已通过。审计另有 3 项 React Router moderate 公告，已明确结转且不得写成零漏洞。M6.3-B0 已完成领域、契约、OpenAPI、schema 与前向修复，并通过独立完成报告所列适用门禁；M6.3-B1 已完成会员与管理员售后列表/详情四个只读接口及适用门禁。B2-B7 写路径、证据读取、UI、生产政策/启用、供应商调用、部署和发布仍未授权。所有商城政策 enforcement 继续默认 OFF，没有售后申请、审核、返件、退款或结算运行时，也没有 M6 UI。真实商户/物流凭据、HTTPS 回调、Zalo/GHN sandbox、商户结算文件、GHN COD 回款和真机证据仍未验收，不能标记 M5.5-M5.7、整个 M5、M6.3、M6 或 P0 完成。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5 已加入按商城解析的 Zalo Checkout 适配器、官方 MAC/查单契约、provider-order 绑定和原始 body webhook 接缝；M5.6 已加入 GHN 适配器、可信仓库/订单物理事实、可靠运单命令、面单代理及三语轨迹工作台；M5.7 已加入退款创建/查询、支付状态投影、逐笔权威查单、本地异常任务和双端三语退款状态。M6.1 已冻结售后、会员收藏/历史和主动分享的数据、权限、API、严格 DTO 与纯领域契约；M6.2 已完成 30 个商城模型/表、11 段迁移、RLS、复合关系、权限目录和数据库完整性 guard。M6.3-A 已完成 checkout 政策解析/同事务快照 writer、readiness/enforcement 管理 API、新商城自动 OFF provisioning 和既有物流 purpose 分流；`verify`、21/21 E2E、生产依赖 high 门禁、交付候选 Gitleaks 与差异检查已通过。审计另有 3 项 React Router moderate 公告，已明确结转且不得写成零漏洞。M6.3-B0 已完成领域、契约、OpenAPI、schema 与前向修复，并通过独立完成报告所列适用门禁；M6.3-B1 已完成会员与管理员售后列表/详情四个只读接口及适用门禁。M6.3-B2a 政策列表/详情、草稿、版本列表/详情、发布和停用七个管理员接口及 settings 契约收口已完成仓库实施与适用门禁，状态为 `COMPLETE`。这不授权任何目标库 rollout：每个 staging/production 数据库仍必须逐库执行只读 preflight 并留证。B2/B2b、B3-B7、M6.3、UI、生产政策/enforcement 启用、供应商调用、部署和发布仍未完成或未授权并保持失败关闭。所有商城政策 enforcement 继续默认 OFF，没有售后申请、审核、返件、退款或结算运行时，也没有 M6 UI。真实商户/物流凭据、HTTPS 回调、Zalo/GHN sandbox、商户结算文件、GHN COD 回款和真机证据仍未验收，不能标记 M5.5-M5.7、整个 M5、M6.3、M6 或 P0 完成。
 
-Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。M4 浏览器验收使用真实本地 API、PostgreSQL 和 Zalo 测试桥，不能替代 Zalo 宿主真机。真实 staging S3/CDN、越南权威行政区主数据、近生产规模性能、两个商城的 Zalo Checkout/ZaloPay 与 GHN sandbox 配置/密钥/回调条件、生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。阶段证据见 `docs/reports/m4-completion-report.md`、`docs/reports/m5.1-completion-report.md`、`docs/reports/m5.2-completion-report.md`、`docs/reports/m5.3-completion-report.md`、`docs/reports/m5.4-completion-report.md`、`docs/reports/m5.5-progress-report.md`、`docs/reports/m5.6-progress-report.md`、`docs/reports/m5.7-progress-report.md`、`docs/reports/m6.1-completion-report.md`、`docs/reports/m6.2-completion-report.md`、`docs/reports/m6.3-a-completion-report.md` 与 `docs/reports/m6.3-b0-completion-report.md`。B0 已按其独立报告完成适用门禁；B0 未新增运行时或 UI，因此没有执行或声称 B0 专属 E2E，也不把 M6.3-A 的 E2E 冒充为 B0 证据。
+B2a 仓库内只读预检的本地测试库结果为 `policies=0, versions=0`；它不能替代未获授权的 staging/production 目标库 rollout 前重跑与留证。
+
+Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。M4 浏览器验收使用真实本地 API、PostgreSQL 和 Zalo 测试桥，不能替代 Zalo 宿主真机。真实 staging S3/CDN、越南权威行政区主数据、近生产规模性能、两个商城的 Zalo Checkout/ZaloPay 与 GHN sandbox 配置/密钥/回调条件、生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。阶段证据见 `docs/reports/m4-completion-report.md`、`docs/reports/m5.1-completion-report.md`、`docs/reports/m5.2-completion-report.md`、`docs/reports/m5.3-completion-report.md`、`docs/reports/m5.4-completion-report.md`、`docs/reports/m5.5-progress-report.md`、`docs/reports/m5.6-progress-report.md`、`docs/reports/m5.7-progress-report.md`、`docs/reports/m6.1-completion-report.md`、`docs/reports/m6.2-completion-report.md`、`docs/reports/m6.3-a-completion-report.md`、`docs/reports/m6.3-b0-completion-report.md`、`docs/reports/m6.3-b1-completion-report.md` 与 `docs/reports/m6.3-b2a-completion-report.md`。B0 已按其独立报告完成适用门禁；B0 未新增运行时或 UI，因此没有执行或声称 B0 专属 E2E，也不把 M6.3-A 的 E2E 冒充为 B0 证据。B2a 报告证明仓库实施 `COMPLETE`，不证明目标库 preflight、生产 rollout、B2/B2b 或 M6.3 完成。
 
 ## 应用与包
 
@@ -111,6 +113,17 @@ Mini App 且显式设置 `VITE_ZALO_TEST_BRIDGE=true` 时安装测试桥，之�
 真实 API 与数据库；它不进入正常生产配置，也不替代 Zalo Mini App 宿主真机测试。M4 用例覆盖地址创建、服务端报价、COD 快速双击防重、订单详情/取消、三语标题和移动端横向溢出。
 
 ## 数据库迁移与本地种子
+
+M6.3-B2a 前向迁移 `20260729100000_m63_b2a_policy_control_plane` 只增加 policy heads 的
+`(store_id, updated_at DESC, id DESC)` 和 versions 的
+`(store_id, policy_id, published_at DESC, id DESC)` 两个 keyset 索引。它不修改 RLS、政策事实或活动投影，
+保留 B1 会员售后历史政策读取语义。仓库还提供只读
+`corepack pnpm --filter @zalo-shop/database preflight:m63-b2a`，用于分批校验既有 policy code、规范草稿/hash/
+products/head、全部不可变版本/三语/assignment/标量和发布时间一致性。预检事务设置
+`row_security=off`；该设置不会绕过 RLS，而会让可能被 RLS 过滤的连接以 `42501` 失败，防止误用
+`DATABASE_RUNTIME_URL` 得到虚假的零行通过。必须使用受控的 migration/maintenance `DATABASE_URL`。本地测试库预检已通过，
+结果为 `policies=0, versions=0`；任何 staging/production 路由 rollout 前仍必须针对精确目标库重新执行并保留证据，
+发现不兼容旧政策时先停止 rollout 并实施受审前向修复。
 
 M1 包含商城、身份、RBAC、会话、同意和审计表，并强制 runtime role RLS。M4 迁移新增三级行政区、地址、配送策略、订单、订单行、快照、转换、幂等与会员券核销门禁；权限迁移只登记 M4 权限 code，不给生产角色自动扩权。M6.2 的十一段前向迁移新增售后政策/快照、售后事实、会员收藏/历史、最小隐私请求与分享数据基础，并扩展运单 purpose、容量占用和 M5/M6 退款锁序保护；12 项 M6 STORE 权限同样只登记、不自动赋予生产角色。M6.3-A 的四段前向迁移让快照 guard 支持最近主类目祖先解析，为既有商城补稳定 OFF settings 行，增加当前商城受限行锁，并为后续新增商城自动 provision 同样的 OFF 行；迁移不创建政策、不启用 enforcement，也不扩生产角色权限。B0 前向迁移 `20260728104000_m63_b0_after_sale_contract_guards` 增加售后 header 精确 policy/version 身份、跨行同 policy/hash、逐行整数 VND 余数与窄 SYSTEM transition guard；它不开放任何售后运行时，事实环境只允许向前修复。B1 前向迁移 `20260728110000_m63_b1_after_sale_admin_read_index` 只增加管理员无状态筛选时使用的 `(store_id, updated_at DESC, id DESC)` 读取索引；Prisma 同时补记数据库原有的 `after_sale_refunds(store_id, settlement_id)` 唯一约束以消除 schema drift，不重复创建该索引。种子仅创建可识别的 local/test 商城、行政区测试夹具、三语配置、配送策略、权限目录和系统商城角色，不创建默认管理员、会员、订单、售后政策、售后/分享事实或真实 Zalo ID。staging/production 必须先为每个商城导入并复核带 `source_version` 的越南权威省/区/坊数据；没有有效父链时地址写入和未知偏远省份配置会被服务端拒绝。
 
@@ -301,10 +314,37 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   60 秒窗口，会员 60 次、管理员 120 次，均绑定商城+主体；超限返回 `Retry-After`，Redis 不可用时
   在读取目标前失败关闭为 `503 UPSTREAM_UNAVAILABLE`。四个成功响应统一
   `Cache-Control: private, no-store` 并携带安全 `X-Correlation-Id`。
-- B1 不注册任何写 handler，不创建 UI、worker、政策或外部调用。B2-B7、完整返件验收/M6.4、生产
-  rollout、部署和发布仍需单独授权；B1 可读不表示售后申请、审核、退款或结算可用。
+- B1 本身不注册任何写 handler，不创建 UI、worker、政策或外部调用。随后增加并完成下节 B2a 政策控制面的仓库实施；B2b/B3-B7、完整返件验收/M6.4、
+  生产 rollout、部署和发布仍需单独授权。B1 可读不表示售后申请、审核、退款或结算可用。
 - B1 的最终自动化数字、独立复审修复和残余风险见
   `docs/reports/m6.3-b1-completion-report.md`；B1 完成不代表 M6.3、M6 或 P0 完成。
+
+## M6.3-B2a 政策控制面仓库实施
+
+- 已接入政策列表/详情、草稿 `PUT`、不可变版本列表/详情、发布和停用七个管理员接口。政策读、
+  草稿、发布和停用使用互不隐含的 `policy.read/manage/publish/disable`；发布/停用还要求近期 MFA、
+  匹配确认词、reason、expected version 和商城范围 24 小时幂等。
+- 草稿经严格三语/枚举/目标校验后规范化并保存 SHA-256；ACTIVE head 的下一版草稿不会提前改变 checkout 活动投影。
+  发布在商城 advisory lock 和 policy `FOR UPDATE` 下原子创建版本、三语、冻结 assignment 和活动投影；发布/
+  停用如在 enforcement ON 时破坏 readiness，整个事务失败关闭。时间来自同一数据库
+  `CURRENT_TIMESTAMP`。
+- policy heads 与 versions 使用保留 PostgreSQL 六位微秒的签名 keyset 游标，并绑定商城、管理员、资源、筛选和
+  policy code。B2a 读/写分别复用管理员 120/30 次每 60 秒档位；成功响应使用
+  `Cache-Control: private, no-store` 和 correlation ID。B2a 收口同时修复既有 settings GET/PUT 的严格输入、同类响应头、
+  管理员 READ/WRITE 限流和 Redis 不可用时的 `503`。
+- 稳定 `409` 冲突通过 `details.reason_code` 公开；读取会复验草稿 hash/product replace-set、不可变 payload/标量/
+  三语/assignment，写命令在同事务记录完整 before/after、reason、actor 与 correlation ID。
+- B2a 只增加两个分页索引，不改写 RLS。这是有意的安全/兼容决策：保留 B1 会员历史售后对已绑定政策版本的读取，
+  不用“只读 ACTIVE assignment”的 RLS 让停用/替换后的历史不可读。
+- 仓库内只读兼容性预检已在本地测试库通过（`policies=0, versions=0`），但每个目标库 rollout 前必须重新执行并留证。
+  仓库门禁已通过：`verify` 为 60 个文件/427 项单元测试，完整 integration 为 29 个文件/234 项，M2→current 42 段
+  fresh/redeploy/down-forward/fingerprint/guard 迁移演练、生产依赖 high、Gitleaks、OpenAPI 结构检查、`git diff --check` 与独立高风险复审均完成。
+  生产依赖审计退出码为 0，但仍保留 3 项 moderate 公告；B2a 无 UI，专项 E2E 为 `NOT_APPLICABLE`。
+- 首轮全仓 ESLint 在本机约 2 GiB 默认堆下 OOM；仅为复验进程临时设置 `NODE_OPTIONS=--max-old-space-size=4096` 后完整 `verify` 通过，未修改仓库或运行时配置。
+- OpenAPI 检查未发现 YAML 重复键或外部引用，解析 556 个本地引用、112 个唯一目标；仓库没有专用 OpenAPI 3.1 语义 linter，因此该限制保留在完成报告中。
+- Gitleaks v8.24.3 的 tracked diff 与 13 个 untracked 候选均通过；pathless stdin 仅对固定非密钥 `M63_IDEMPOTENCY_KEY_SECRET` 使用精确 allowlist，未放宽规则。
+- B2b 凭证上传/真实扫描/claim/保护读取/删除补偿、B3-B7、UI、生产政策/enforcement、部署和发布都没有授权；
+  相关能力保持 contract-only 或失败关闭。
 
 ## 环境与密钥
 

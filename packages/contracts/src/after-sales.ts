@@ -69,6 +69,7 @@ export const AFTER_SALE_RATE_LIMIT_POLICY = {
 
 export const afterSaleTypeSchema = z.enum(AFTER_SALE_TYPES);
 export const afterSaleStatusSchema = z.enum(AFTER_SALE_STATUSES);
+export const afterSalePolicyStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'DISABLED']);
 const afterSaleWireDateTimeSchema = z.string().datetime({ offset: true });
 const afterSaleMoneyVndSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const afterSaleTimelineEventSchema = z.enum([
@@ -513,7 +514,7 @@ export const afterSaleCodRefundConfirmRequestSchema = z
   .strict();
 
 export const afterSalePolicyListQuerySchema = paginationSchema
-  .extend({ status: z.enum(['DRAFT', 'ACTIVE', 'DISABLED']).optional(), store_id: uuidSchema })
+  .extend({ status: afterSalePolicyStatusSchema.optional(), store_id: uuidSchema })
   .strict();
 export const afterSalePolicyVersionListQuerySchema = paginationSchema
   .extend({ store_id: uuidSchema })
@@ -577,7 +578,10 @@ function validateAfterSalePolicyContent(
       path: ['allowed_types'],
     });
   }
-  if (new Set(input.product_ids).size !== input.product_ids.length) {
+  if (
+    new Set(input.product_ids.map((productId) => productId.toLowerCase())).size !==
+    input.product_ids.length
+  ) {
     context.addIssue({
       code: 'custom',
       message: 'Product IDs must be unique',
@@ -626,6 +630,83 @@ export const afterSalePolicyDisableSchema = z
   })
   .strict();
 
+export const afterSalePolicyVersionResponseSchema = z
+  .object({
+    code: codeSchema,
+    content: afterSalePolicyContentSchema,
+    effective_at: afterSaleWireDateTimeSchema,
+    payload_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    published_at: afterSaleWireDateTimeSchema,
+    version_number: z.number().int().positive(),
+  })
+  .strict();
+
+export const afterSalePolicySummaryResponseSchema = z
+  .object({
+    code: codeSchema,
+    current_version_number: z.number().int().positive().nullable(),
+    status: afterSalePolicyStatusSchema,
+    version: z.number().int().positive(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if ((input.status === 'DRAFT') !== (input.current_version_number === null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Policy status must match its current immutable version',
+        path: ['current_version_number'],
+      });
+    }
+  });
+
+export const afterSalePolicyDetailResponseSchema = z
+  .object({
+    code: codeSchema,
+    current_version: afterSalePolicyVersionResponseSchema.nullable(),
+    current_version_number: z.number().int().positive().nullable(),
+    draft: afterSalePolicyContentSchema,
+    status: afterSalePolicyStatusSchema,
+    version: z.number().int().positive(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if ((input.status === 'DRAFT') !== (input.current_version === null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Policy status must match its current immutable version',
+        path: ['current_version'],
+      });
+    }
+    if (input.current_version?.code !== undefined && input.current_version.code !== input.code) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Current version must belong to the policy',
+        path: ['current_version', 'code'],
+      });
+    }
+    if ((input.current_version?.version_number ?? null) !== input.current_version_number) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Current version metadata must agree',
+        path: ['current_version_number'],
+      });
+    }
+  });
+
+export const afterSalePolicyPageResponseSchema = z
+  .object({
+    items: z.array(afterSalePolicySummaryResponseSchema),
+    next_cursor: afterSaleCursorSchema.nullable(),
+  })
+  .strict();
+
+export const afterSalePolicyVersionPageResponseSchema = z
+  .object({
+    items: z.array(afterSalePolicyVersionResponseSchema),
+    next_cursor: afterSaleCursorSchema.nullable(),
+  })
+  .strict();
+
 export const afterSaleSettingsEnforcementSchema = z
   .object({
     confirmation_code: z.enum([
@@ -651,3 +732,16 @@ export type AfterSaleAdminReadQuery = z.infer<typeof afterSaleAdminReadQuerySche
 export type AfterSaleCursorScope = z.infer<typeof afterSaleCursorScopeSchema>;
 export type AfterSaleResponse = z.infer<typeof afterSaleResponseSchema>;
 export type AfterSalePageResponse = z.infer<typeof afterSalePageResponseSchema>;
+export type AfterSalePolicyContent = z.infer<typeof afterSalePolicyContentSchema>;
+export type AfterSalePolicyDetailResponse = z.infer<typeof afterSalePolicyDetailResponseSchema>;
+export type AfterSalePolicyDraft = z.infer<typeof afterSalePolicyDraftSchema>;
+export type AfterSalePolicyDisable = z.infer<typeof afterSalePolicyDisableSchema>;
+export type AfterSalePolicyListQuery = z.infer<typeof afterSalePolicyListQuerySchema>;
+export type AfterSalePolicyPageResponse = z.infer<typeof afterSalePolicyPageResponseSchema>;
+export type AfterSalePolicyPublish = z.infer<typeof afterSalePolicyPublishSchema>;
+export type AfterSalePolicySummaryResponse = z.infer<typeof afterSalePolicySummaryResponseSchema>;
+export type AfterSalePolicyVersionListQuery = z.infer<typeof afterSalePolicyVersionListQuerySchema>;
+export type AfterSalePolicyVersionPageResponse = z.infer<
+  typeof afterSalePolicyVersionPageResponseSchema
+>;
+export type AfterSalePolicyVersionResponse = z.infer<typeof afterSalePolicyVersionResponseSchema>;

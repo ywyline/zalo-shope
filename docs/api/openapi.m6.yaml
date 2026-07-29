@@ -1,25 +1,38 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M6 incremental API contract
-  version: 0.6.3-b1
+  version: 0.6.3-b2a
   description: >-
-    M6 incremental contract combined with the M1-M5 contracts. M6.3-A implements only the
-    after-sale settings GET/PUT routes. M6.3-B1 implements only the member/admin after-sale list and
-    detail GET routes; all other after-sale operations assigned to M6.3-B2 through B7 remain
+    M6 incremental contract combined with the M1-M5 contracts. M6.3-A implements the after-sale
+    settings GET/PUT routes, M6.3-B1 implements the member/admin after-sale list and detail GET
+    routes, and M6.3-B2a implements the seven administrator policy-control operations. Evidence
+    lifecycle operations in M6.3-B2b and all operations assigned to B3 through B7 remain
     contract-only. Buyer store ownership comes from the authenticated member and X-Store-Code.
     Admin routes additionally require the matching store_id query parameter. Every after-sale HTTP
     response carries the same X-Correlation-Id propagated through its transaction, transitions,
     audit and logs; error bodies repeat it as correlation_id.
 x-after-sale-b0-contract:
-  runtime_status: m6_3_a_settings_and_m6_3_b1_reads_implemented
+  runtime_status: m6_3_a_settings_m6_3_b1_reads_and_m6_3_b2a_policy_control_implemented
   runtime_operations:
     implemented_m6_3_a: [getAfterSaleSettings, setAfterSalePolicyEnforcement]
     implemented_m6_3_b1:
       [listMemberAfterSales, getMemberAfterSale, listAdminAfterSales, getAdminAfterSale]
+    implemented_m6_3_b2a:
+      [
+        listAfterSalePolicies,
+        getAfterSalePolicy,
+        putAfterSalePolicyDraft,
+        listAfterSalePolicyVersions,
+        getAfterSalePolicyVersion,
+        publishAfterSalePolicy,
+        disableAfterSalePolicy,
+      ]
     contract_only_m6_3_b2_to_b7: all_after_sale_operations_not_listed_as_implemented_above
   list_sort:
     member: created_at_desc_then_id_desc
     admin: updated_at_desc_then_id_desc
+    policy_heads: updated_at_desc_then_id_desc
+    policy_versions: published_at_desc_then_id_desc
   locale_resolution:
     member: authenticated_member_preferred_locale_then_vi
     admin: explicit_locale_then_store_default_then_vi
@@ -36,10 +49,11 @@ x-after-sale-b0-contract:
     admin_write: { limit: 30, scope: 'store_id:admin_id' }
     runtime:
       member_read: implemented_m6_3_b1
-      admin_read: implemented_m6_3_b1
+      admin_read: implemented_m6_3_b1_and_m6_3_b2a
       member_write: contract_only_m6_3_b2_to_b7
-      admin_write: contract_only_m6_3_b2_to_b7
+      admin_write: implemented_m6_3_b2a
     read_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
+    write_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
   system_principal:
     scope: after-sale-transition
     events:
@@ -669,17 +683,20 @@ paths:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
         - { $ref: '#/components/parameters/AccessReason' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
       responses:
         '200':
           description: Store-scoped policy snapshot readiness
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSaleSettings' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleReadLimiterUnavailable' }
     put:
       operationId: setAfterSalePolicyEnforcement
       x-runtime-status: implemented_m6_3_a
@@ -694,6 +711,7 @@ paths:
         - { $ref: '#/components/parameters/StoreIdQuery' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/AccessReason' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
       requestBody:
         required: true
         content:
@@ -704,6 +722,7 @@ paths:
           description: Audited current enforcement state
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
             Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
@@ -713,16 +732,23 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/admin/after-sale-policies:
     get:
       operationId: listAfterSalePolicies
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b2a
       x-rate-limit-tier: admin_read
       summary: List current-store policy heads without mutable published payloads
+      description: >-
+        Results are ordered by updated_at DESC, id DESC. The signed cursor binds the current store,
+        administrator, status filter and the exact ordering tuple; callers restart from the first
+        page when they need a refreshed view.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AccessReason' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
         - { $ref: '#/components/parameters/Cursor' }
         - { $ref: '#/components/parameters/Limit' }
         - { name: status, in: query, schema: { type: string, enum: [DRAFT, ACTIVE, DISABLED] } }
@@ -731,22 +757,30 @@ paths:
           description: Policy heads
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleReadLimiterUnavailable' }
   /v1/admin/after-sale-policies/{policyCode}:
     get:
       operationId: getAfterSalePolicy
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b2a
       x-rate-limit-tier: admin_read
       summary: Read a policy draft/head and immutable version metadata
+      description: >-
+        The mutable draft is returned separately from the current immutable version. Editing a
+        draft never changes ACTIVE checkout resolution before an explicit successful publish.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AccessReason' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
         - {
             name: policyCode,
             in: path,
@@ -758,22 +792,30 @@ paths:
           description: Store-scoped policy
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleReadLimiterUnavailable' }
     put:
       operationId: putAfterSalePolicyDraft
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b2a
       x-rate-limit-tier: admin_write
       summary: Create or replace one store-scoped policy draft
+      description: >-
+        This command only replaces the canonical mutable draft and draft target set. For an ACTIVE
+        policy, the current immutable version and active assignments remain unchanged until publish.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AccessReason' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
         - {
             name: policyCode,
             in: path,
@@ -791,24 +833,33 @@ paths:
           description: Draft only; it is not effective until published
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyDetail' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/admin/after-sale-policies/{policyCode}/versions:
     get:
       operationId: listAfterSalePolicyVersions
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b2a
       x-rate-limit-tier: admin_read
       summary: List immutable current-store policy versions
+      description: >-
+        Results are ordered by published_at DESC, id DESC. The signed cursor additionally binds the
+        policy code, so it cannot be replayed for another policy or another version-history resource.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AccessReason' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
         - { $ref: '#/components/parameters/PolicyCode' }
         - { $ref: '#/components/parameters/Cursor' }
         - { $ref: '#/components/parameters/Limit' }
@@ -817,23 +868,29 @@ paths:
           description: Immutable policy history
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyVersionPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleReadLimiterUnavailable' }
   /v1/admin/after-sale-policies/{policyCode}/versions/{versionNumber}:
     get:
       operationId: getAfterSalePolicyVersion
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b2a
       x-rate-limit-tier: admin_read
       summary: Read one immutable current-store policy version and its frozen content
+      description: The response is an immutable historical version and never substitutes a draft.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AccessReason' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
         - { $ref: '#/components/parameters/PolicyCode' }
         - { $ref: '#/components/parameters/PolicyVersionNumber' }
       responses:
@@ -841,28 +898,37 @@ paths:
           description: Immutable policy version
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyVersion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleReadLimiterUnavailable' }
   /v1/admin/after-sale-policies/{policyCode}/publish:
     post:
       operationId: publishAfterSalePolicy
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b2a
       x-rate-limit-tier: admin_write
       summary: Publish an immutable after-sale policy version
       description: >-
         The transaction locks canonical target keys and returns 409 when another ACTIVE policy
         already owns the same store product, category or store-default target. It atomically writes
         the immutable version, replaces only this policy's active assignment projection and audits
-        the publish; timestamp or last-writer ordering never resolves overlap.
+        the publish; timestamp or last-writer ordering never resolves overlap. Publication is
+        immediately effective at the database transaction time; scheduled publication is not
+        supported. The draft never affects an existing ACTIVE projection before this transaction
+        commits. When enforcement is enabled, readiness/settings are refreshed atomically and any
+        not-ready result fails closed by rolling back the publish.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AccessReason' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
         - { $ref: '#/components/parameters/PolicyCode' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
       requestBody:
@@ -875,27 +941,35 @@ paths:
           description: Published immutable version
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicyVersion' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/admin/after-sale-policies/{policyCode}/disable:
     post:
       operationId: disableAfterSalePolicy
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b2a
       x-rate-limit-tier: admin_write
       summary: Disable a policy for new resolution without changing historical versions
       description: >-
         The server rejects disabling the enforced store default or any policy whose removal would
-        make current-store snapshot resolution not ready. Historical versions remain immutable.
+        make current-store snapshot resolution not ready. When enforcement is enabled, active
+        assignments, readiness and settings are checked and updated in the same transaction; any
+        not-ready result fails closed and rolls back. Historical versions remain immutable.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AccessReason' }
+        - { $ref: '#/components/parameters/CorrelationIdRequest' }
         - { $ref: '#/components/parameters/PolicyCode' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
       requestBody:
@@ -908,6 +982,8 @@ paths:
           description: Disabled policy head; historical snapshots and versions remain readable
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSalePolicySummary' }
@@ -917,6 +993,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/members/me/favorites:
     get:
       operationId: listMemberFavorites
@@ -2327,7 +2404,7 @@ components:
         interaction_token:
           { type: string, minLength: 20, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' }
         outcome: { type: string, enum: [COMPLETED, CANCELLED] }
-    AfterSalePublicConflictCode:
+    AfterSaleConflictReasonCode:
       type: string
       enum:
         [
@@ -2338,6 +2415,18 @@ components:
           AFTER_SALE_POLICY_MISMATCH,
           AFTER_SALE_RETURN_WINDOW_CLOSED,
           AFTER_SALE_REFUND_EXCEEDS_APPROVED,
+          AFTER_SALE_POLICY_NOT_READY,
+          AFTER_SALE_POLICY_SNAPSHOT_INVALID,
+          AFTER_SALE_POLICY_CONCURRENT_CONFLICT,
+          AFTER_SALE_POLICY_IDEMPOTENCY_CONFLICT,
+          AFTER_SALE_POLICY_IDEMPOTENCY_INVALID,
+          AFTER_SALE_POLICY_STATE_CONFLICT,
+          AFTER_SALE_POLICY_TARGET_CONFLICT,
+          AFTER_SALE_POLICY_VERSION_CONFLICT,
+          AFTER_SALE_SETTINGS_CONCURRENT_CONFLICT,
+          AFTER_SALE_SETTINGS_IDEMPOTENCY_CONFLICT,
+          AFTER_SALE_SETTINGS_IDEMPOTENCY_INVALID,
+          AFTER_SALE_SETTINGS_VERSION_CONFLICT,
         ]
     ApiError:
       type: object
@@ -2369,7 +2458,7 @@ components:
           type: object
           additionalProperties: true
           properties:
-            after_sale_code: { $ref: '#/components/schemas/AfterSalePublicConflictCode' }
+            reason_code: { $ref: '#/components/schemas/AfterSaleConflictReasonCode' }
   headers:
     CorrelationId:
       required: true
@@ -2428,7 +2517,8 @@ components:
     Conflict:
       description: >-
         State, version, quantity, amount, policy, inventory or idempotency conflict. After-sale
-        responses expose only details.after_sale_code values from AfterSalePublicConflictCode.
+        responses expose only allowlisted details.reason_code values from
+        AfterSaleConflictReasonCode.
       headers:
         X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
       content:
@@ -2452,6 +2542,17 @@ components:
         before querying the target after-sale resource and ApiError.code is UPSTREAM_UNAVAILABLE. No
         Retry-After header is promised because recovery depends on infrastructure health rather than
         a known rate-limit window.
+      headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    AfterSaleWriteLimiterUnavailable:
+      description: >-
+        The required Redis-backed after-sale write limiter is unavailable. The command fails closed
+        before mutating policy state and ApiError.code is UPSTREAM_UNAVAILABLE. No Retry-After header
+        is promised because recovery depends on infrastructure health rather than a known rate-limit
+        window.
       headers:
         X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
       content:

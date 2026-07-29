@@ -11,6 +11,8 @@ const REDACTED_PATHS = [
   'req.headers["x-zalo-access-token"]',
   'req.headers["x-zalo-phone-token"]',
   'req.headers["x-refresh-token"]',
+  'req.headers["idempotency-key"]',
+  'req.headers["x-access-reason"]',
   'res.headers["set-cookie"]',
   // The HTTP logger exposes the serialized objects as request/response.
   'request.headers.authorization',
@@ -18,11 +20,13 @@ const REDACTED_PATHS = [
   'request.headers["x-zalo-access-token"]',
   'request.headers["x-zalo-phone-token"]',
   'request.headers["x-refresh-token"]',
+  'request.headers["idempotency-key"]',
+  'request.headers["x-access-reason"]',
   'response.headers["set-cookie"]',
 ] as const;
 
 const SENSITIVE_KEY_PATTERN =
-  /api[-_]?key|authorization|cookie|credential|password|secret|session|token|phone|address|mfa|card|payment/i;
+  /api[-_]?key|idempotency[-_]?key|access[-_]?reason|authorization|cookie|credential|password|secret|session|token|phone|address|mfa|card|payment/i;
 
 const URL_HEADER_PATTERN =
   /^(?:content-location|location|referer|referrer|x-envoy-original-path|x-forwarded-uri|x-original-uri|x-original-url|x-rewrite-url)$/i;
@@ -30,11 +34,11 @@ const EMBEDDED_URL_HEADER_PATTERN = /^(?:link|refresh)$/i;
 const NETWORK_IDENTITY_HEADER_PATTERN =
   /^(?:cf-connecting-ip|fastly-client-ip|forwarded|forwarded-for|true-client-ip|x-client-ip|x-cluster-client-ip|x-envoy-external-address|x-forwarded-for|x-real-ip)$/i;
 const CORRELATION_ID_HEADER_PATTERN = /^(?:request-id|x-correlation-id|x-request-id)$/i;
-const SAFE_CORRELATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const SAFE_CORRELATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 const ABSOLUTE_URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s]+/gi;
 const RELATIVE_URL_WITH_QUERY_PATTERN = /\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+[?#][^\s]*/gi;
 const SENSITIVE_ASSIGNMENT_PATTERN =
-  /\b([a-z0-9_-]*(?:api[-_]?key|authorization|cookie|credential|password|secret|session|token|phone|address|mfa|card|payment)[a-z0-9_-]*)=([^&\s]+)/gi;
+  /\b([a-z0-9_-]*(?:api[-_]?key|idempotency[-_]?key|access[-_]?reason|authorization|cookie|credential|password|secret|session|token|phone|address|mfa|card|payment)[a-z0-9_-]*)=([^&\s]+)/gi;
 
 function sanitizeLogString(value: string): string {
   return value

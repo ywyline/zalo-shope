@@ -1,8 +1,10 @@
 # P0 分阶段开发计划
 
-> 状态：已批准，M0 已完成，M1 实施完成但验收有保留；M2.1-M2.8.4、M3.1-M3.7、M4 与 M5.1-M5.4 已完成自动化收口；M5.5-M5.7 仓库自动化已实施但外部验收仍阻塞；M6.1、M6.2、M6.3-A、M6.3-B0 与 B1 已完成；B2-B7、UI 与生产启用未授权；P0 整体未完成
+> 状态：已批准，M0 已完成，M1 实施完成但验收有保留；M2.1-M2.8.4、M3.1-M3.7、M4 与 M5.1-M5.4 已完成自动化收口；
+> M5.5-M5.7 仓库自动化已实施但外部验收仍阻塞；M6.1、M6.2、M6.3-A、M6.3-B0、B1 与 B2a 仓库实施已完成；
+> B2/B2b、B3-B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭；P0 整体未完成
 >
-> 版本：0.10
+> 版本：0.11
 >
 > 日期：2026-07-29
 >
@@ -109,8 +111,22 @@ M6.3-B1 授权与实现记录（授权 2026-07-28，实施收口 2026-07-29）�
 `REPEATABLE READ` 两阶段 `limit + 1` 分页、PostgreSQL 六位微秒 `(timestamp,id)` tuple seek、1–3 把
 HMAC key ring 游标、商城+主体 60/120 读限流、`Retry-After`、correlation ID 与
 `Cache-Control: private, no-store`。管理员无 status 查询新增专用前向索引，Prisma 同步数据库既有
-售后退款链接唯一约束以消除 schema drift。B1 没有 UI 或写 handler；B2-B7、生产政策/启用、供应商
-调用、部署和发布仍未授权，M6.3、M6、M5 与 P0 均不因此标记完成。
+售后退款链接唯一约束以消除 schema drift。B1 没有 UI 或写 handler；B1 收口时 B2-B7、生产政策/启用、供应商调用、部署和发布仍未授权，
+该历史边界随后仅由下述 B2a 授权扩展。M6.3、M6、M5 与 P0 均不因 B1 标记完成。
+
+M6.3-B2a 授权与仓库实施完成记录（2026-07-29）：用户再次要求按严谨工作流程继续下一阶段，本轮只实施 B2a 政策控制面。
+政策 heads 列表/详情、草稿 `PUT`、versions 列表/详情、publish 和 disable 七个管理员接口已落地，并实现独立 RBAC、近期 MFA、
+规范三语 payload/hash、24 小时商城幂等、商城锁/head 行锁、不可变发布/活动投影、enforcement readiness 同事务回滚、微秒签名游标、
+严格响应复验和完整审计。B2a 收口还修复既有 settings GET/PUT 的严格输入、成功 correlation/no-store、管理员 READ/WRITE 分级限流与 Redis
+`503`。迁移只增加 heads/versions 两个分页索引，没有 RLS 改写，保留 B1 会员对售后已绑定历史政策版本的读取。
+
+仓库只读兼容性预检已在本地测试库通过（`policies=0, versions=0`）。最终 `verify`（60 个文件/427 项单元测试和完整静态/构建/Prisma 门禁）、
+完整 integration 29 个文件/234 项、M2→current 42 段迁移演练、生产依赖 high、OpenAPI 结构检查、tracked+13 个 untracked Gitleaks、
+`git diff --check` 与独立高风险复审均通过，因此 B2a 仓库实施标记 `COMPLETE`。首次全仓 ESLint 在本机默认约 2 GiB 堆下 OOM，
+只以临时 `NODE_OPTIONS=--max-old-space-size=4096` 重跑通过，未更改运行配置；OpenAPI 无专用 3.1 语义 linter 是已知限制。生产依赖 high
+命令退出码为 0，但仍保留 3 项 moderate；Gitleaks pathless stdin 仅精确 allowlist 固定非密钥 `M63_IDEMPOTENCY_KEY_SECRET`，未放宽规则。
+但每个目标库 rollout 前仍必须逐库执行 preflight 并留证；B2/B2b、B3-B7、M6.3、UI、生产政策与 enforcement、供应商/部署仍未完成或未授权且失败关闭。
+M6.3、M6、M5 与 P0 均未因此完成。
 
 ## 1. 总体范围
 
@@ -259,8 +275,9 @@ HMAC key ring 游标、商城+主体 60/120 读限流、`Retry-After`、correlat
 
 目标：补齐 P0 交易后流程和 Zalo 主动分享体验。
 
-当前局部状态：M6.3-B1 只交付商城/主体隔离的售后列表与详情读取，不交付下列完整 M6 产品范围。
-只读响应中的凭证/结算安全摘要不能据此解释为对象读取、申请、审核、返件、退款、结算或 UI 可用。
+当前局部状态：M6.3-B1 交付商城/主体隔离的售后列表与详情读取；B2a 政策列表/详情、草稿、版本列表/详情、发布和停用七接口已完成仓库实施。
+B2a 不改写 RLS，保留会员历史政策读取；它也不交付下列完整 M6 产品范围。只读响应中的凭证/结算安全摘要或政策控制面存在，
+不能据此解释为凭证对象读取、售后申请、审核、返件、退款、结算或 UI 可用。B2b/B3-B7/生产政策与 enforcement/部署仍未授权并失败关闭。
 
 交付：
 
@@ -301,16 +318,16 @@ HMAC key ring 游标、商城+主体 60/120 读限流、`Retry-After`、correlat
 
 ## 3. 预计数据模型与 API 演进
 
-| 里程碑 | 主要数据模型变化                                                                                                                     | 主要接口面                                                                                   |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| M0     | 仅迁移框架和连接健康检查，不创建业务表                                                                                               | `/health/live`、`/health/ready`，其余不开放                                                  |
-| M1     | stores、store_configs、members、admin_users、roles、permissions、consents、audit_logs                                                | `/v1/auth`、`/v1/stores`、`/v1/admin/rbac`、`/v1/admin/audit-logs`                           |
-| M2     | brands、categories、attribute_templates、products、skus、translations、compliance_records、page_modules、media                       | `/v1/catalog`、`/v1/admin/catalog`、`/v1/admin/content`                                      |
-| M3     | warehouses、inventory_balances、inventory_reservations、inventory_movements、carts、promotions、coupons                              | `/v1/search`、`/v1/cart`、`/v1/pricing/quote`、`/v1/admin/inventory`、`/v1/admin/promotions` |
-| M4     | addresses、orders、order_items、order_snapshots、order_transitions、idempotency_records                                              | `/v1/checkout`、`/v1/orders`、`/v1/admin/orders`                                             |
-| M5     | payment_attempts、provider_callbacks、refunds、shipments、tracking_events、outbox、inbox                                             | `/v1/payments`、`/v1/webhooks/{provider}`、`/v1/shipments`、后台补偿接口                     |
-| M6     | after_sales、after_sale_items/inspections/evidence/settlements、member_favorites/member_product_views、privacy_requests、share_links | `/v1/after-sales`、`/v1/members/me`、`/v1/shares`                                            |
-| M7     | report_exports、privacy_request_fulfillment、operational_alerts、合规发布记录                                                        | `/v1/admin/reports`、`/v1/admin/privacy-requests`、内部运维接口                              |
+| 里程碑 | 主要数据模型变化                                                                                                                                                   | 主要接口面                                                                                   |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| M0     | 仅迁移框架和连接健康检查，不创建业务表                                                                                                                             | `/health/live`、`/health/ready`，其余不开放                                                  |
+| M1     | stores、store_configs、members、admin_users、roles、permissions、consents、audit_logs                                                                              | `/v1/auth`、`/v1/stores`、`/v1/admin/rbac`、`/v1/admin/audit-logs`                           |
+| M2     | brands、categories、attribute_templates、products、skus、translations、compliance_records、page_modules、media                                                     | `/v1/catalog`、`/v1/admin/catalog`、`/v1/admin/content`                                      |
+| M3     | warehouses、inventory_balances、inventory_reservations、inventory_movements、carts、promotions、coupons                                                            | `/v1/search`、`/v1/cart`、`/v1/pricing/quote`、`/v1/admin/inventory`、`/v1/admin/promotions` |
+| M4     | addresses、orders、order_items、order_snapshots、order_transitions、idempotency_records                                                                            | `/v1/checkout`、`/v1/orders`、`/v1/admin/orders`                                             |
+| M5     | payment_attempts、provider_callbacks、refunds、shipments、tracking_events、outbox、inbox                                                                           | `/v1/payments`、`/v1/webhooks/{provider}`、`/v1/shipments`、后台补偿接口                     |
+| M6     | after_sale_policies/versions、after_sales、after_sale_items/inspections/evidence/settlements、member_favorites/member_product_views、privacy_requests、share_links | `/v1/after-sales`、`/v1/admin/after-sale-policies`、`/v1/members/me`、`/v1/shares`           |
+| M7     | report_exports、privacy_request_fulfillment、operational_alerts、合规发布记录                                                                                      | `/v1/admin/reports`、`/v1/admin/privacy-requests`、内部运维接口                              |
 
 具体表、字段、索引、RLS 策略、状态转换和 OpenAPI 契约必须在对应里程碑编码前形成专项设计并通过审查。公开接口从 `/v1` 起步；兼容期内只做向后兼容新增，破坏性变化使用新版本或明确弃用窗口。
 

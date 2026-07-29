@@ -4,6 +4,7 @@ import type { StoreContext } from '@zalo-shop/domain';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AdminService } from '../admin/admin.service';
+import type { AfterSalesRateLimiter } from '../after-sales/after-sales-rate-limiter';
 import { AfterSalesPolicyService } from './after-sales-policy.service';
 
 const STORE_ID = '10000000-0000-4000-8000-000000000001';
@@ -119,13 +120,21 @@ function serviceWith(transaction: StoreTransaction) {
     authorize,
     authorizeSensitive,
   } as unknown as AdminService;
-  return { authorize, authorizeSensitive, service: new AfterSalesPolicyService(database, admin) };
+  const consume = vi.fn().mockResolvedValue(undefined);
+  const rateLimiter = { consume } as unknown as AfterSalesRateLimiter;
+  return {
+    authorize,
+    authorizeSensitive,
+    consume,
+    service: new AfterSalesPolicyService(database, admin, rateLimiter),
+  };
 }
 
 async function readyEnforcementFixture() {
   const assignment = await readyAssignment();
   const auditCreate = vi.fn().mockResolvedValue({});
   const idempotencyCreate = vi.fn().mockResolvedValue({});
+  const idempotencyDelete = vi.fn().mockResolvedValue({ count: 0 });
   const createSetting = vi.fn(
     ({
       data,
@@ -142,15 +151,23 @@ async function readyEnforcementFixture() {
         updatedBy: string;
         version: number;
       };
-    }) => ({ ...data }),
+    }) => ({
+      ...data,
+      createdAt: new Date('2026-07-29T00:00:00.000Z'),
+      updatedAt: new Date('2026-07-29T00:00:00.000Z'),
+    }),
   );
   const transaction = {
     $executeRaw: vi.fn(),
-    $queryRaw: vi.fn().mockResolvedValue([{ enforce_policy_snapshots: false }]),
+    $queryRaw: vi
+      .fn()
+      .mockResolvedValueOnce([{ current_time: new Date('2026-07-29T00:00:00.000Z') }])
+      .mockResolvedValueOnce([{ enforce_policy_snapshots: false }]),
     afterSaleActivePolicyAssignment: { findMany: vi.fn().mockResolvedValue([assignment]) },
     auditLog: { create: auditCreate },
     idempotencyRecord: {
       create: idempotencyCreate,
+      deleteMany: idempotencyDelete,
       findUnique: vi.fn().mockResolvedValue(null),
     },
     storeAfterSaleSetting: {
@@ -158,7 +175,7 @@ async function readyEnforcementFixture() {
       findUnique: vi.fn().mockResolvedValue(null),
     },
   } as unknown as StoreTransaction;
-  return { auditCreate, idempotencyCreate, transaction };
+  return { auditCreate, idempotencyCreate, idempotencyDelete, transaction };
 }
 
 const enableInput = {
@@ -175,7 +192,7 @@ describe('AfterSalesPolicyService', () => {
       afterSaleActivePolicyAssignment: { findMany: vi.fn().mockResolvedValue([]) },
       storeAfterSaleSetting: { findUnique: vi.fn().mockResolvedValue(null) },
     } as unknown as StoreTransaction;
-    const { authorize, service } = serviceWith(transaction);
+    const { authorize, consume, service } = serviceWith(transaction);
 
     await expect(
       service.getSettings({ accessToken: 'token', storeCode: 'beauty-local' }, STORE_ID),
@@ -192,17 +209,29 @@ describe('AfterSalesPolicyService', () => {
       STORE_ID,
       'store.after-sales.policy.read',
     );
+    expect(consume).toHaveBeenCalledWith({
+      access: 'READ',
+      actorId: ADMIN_ID,
+      actorType: 'ADMIN',
+      storeId: STORE_ID,
+    });
   });
 
   it('fails an enable command closed when the server-side preflight is not ready', async () => {
     const transaction = {
       $executeRaw: vi.fn(),
-      $queryRaw: vi.fn().mockResolvedValue([]),
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([{ current_time: new Date('2026-07-29T00:00:00.000Z') }])
+        .mockResolvedValueOnce([]),
       afterSaleActivePolicyAssignment: { findMany: vi.fn().mockResolvedValue([]) },
-      idempotencyRecord: { findUnique: vi.fn().mockResolvedValue(null) },
+      idempotencyRecord: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
       storeAfterSaleSetting: { findUnique: vi.fn().mockResolvedValue(null) },
     } as unknown as StoreTransaction;
-    const { authorizeSensitive, service } = serviceWith(transaction);
+    const { authorizeSensitive, consume, service } = serviceWith(transaction);
 
     await expect(
       service.setEnforcement(
@@ -222,10 +251,17 @@ describe('AfterSalesPolicyService', () => {
       STORE_ID,
       'store.after-sales.policy.enforce',
     );
+    expect(consume).toHaveBeenCalledWith({
+      access: 'WRITE',
+      actorId: ADMIN_ID,
+      actorType: 'ADMIN',
+      storeId: STORE_ID,
+    });
   });
 
   it('enables a ready store with versioning, hashed idempotency and an audit fact', async () => {
-    const { auditCreate, idempotencyCreate, transaction } = await readyEnforcementFixture();
+    const { auditCreate, idempotencyCreate, idempotencyDelete, transaction } =
+      await readyEnforcementFixture();
     const { service } = serviceWith(transaction);
 
     const execution = await service.setEnforcement(
@@ -245,16 +281,28 @@ describe('AfterSalesPolicyService', () => {
     });
     expect(idempotencyCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
+        expiresAt: new Date('2026-07-30T00:00:00.000Z'),
         idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
         operation: 'after-sale.policy.enforce',
       }),
+    });
+    expect(idempotencyDelete).toHaveBeenCalledWith({
+      where: {
+        expiresAt: { lte: new Date('2026-07-29T00:00:00.000Z') },
+        idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        operation: 'after-sale.policy.enforce',
+        storeId: STORE_ID,
+      },
     });
     expect(auditCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
         afterData: expect.objectContaining({
           current_version_id: '31000000-0000-4000-8000-000000000001',
           default_policy_id: '30000000-0000-4000-8000-000000000001',
+          readiness_checked_by: ADMIN_ID,
           readiness_hash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+          store_id: STORE_ID,
+          updated_by: ADMIN_ID,
         }),
       }),
     });
@@ -274,7 +322,9 @@ describe('AfterSalesPolicyService', () => {
     const admin = {
       authorizeSensitive: vi.fn().mockResolvedValue(context),
     } as unknown as AdminService;
-    const service = new AfterSalesPolicyService(database, admin);
+    const service = new AfterSalesPolicyService(database, admin, {
+      consume: vi.fn().mockResolvedValue(undefined),
+    } as unknown as AfterSalesRateLimiter);
 
     await expect(
       service.setEnforcement(
@@ -299,7 +349,9 @@ describe('AfterSalesPolicyService', () => {
     const admin = {
       authorizeSensitive: vi.fn().mockResolvedValue(context),
     } as unknown as AdminService;
-    const service = new AfterSalesPolicyService(database, admin);
+    const service = new AfterSalesPolicyService(database, admin, {
+      consume: vi.fn().mockResolvedValue(undefined),
+    } as unknown as AfterSalesRateLimiter);
 
     await expect(
       service.setEnforcement(

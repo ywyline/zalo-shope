@@ -56,6 +56,30 @@ describe('AfterSalesRateLimiter', () => {
     ).rejects.toBeInstanceOf(AfterSaleRateLimitException);
   });
 
+  it('uses the frozen admin write tier without changing existing read callers', async () => {
+    vi.setSystemTime(new Date('2026-07-28T08:00:30.000Z'));
+    const allowed = createLimiter(30);
+    await expect(
+      allowed.limiter.consume({
+        access: 'WRITE',
+        actorId: 'admin',
+        actorType: 'ADMIN',
+        storeId: 'store',
+      }),
+    ).resolves.toBeUndefined();
+    expect(allowed.evalMock.mock.calls[0]?.[2]).toContain('after-sale-write:admin');
+
+    const limited = createLimiter(31);
+    await expect(
+      limited.limiter.consume({
+        access: 'WRITE',
+        actorId: 'admin',
+        actorType: 'ADMIN',
+        storeId: 'store',
+      }),
+    ).rejects.toBeInstanceOf(AfterSaleRateLimitException);
+  });
+
   it('fails closed when Redis is unavailable and disconnects on shutdown', async () => {
     const test = createLimiter(new Error('private redis connection details'));
     await expect(

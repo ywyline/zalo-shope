@@ -1,6 +1,7 @@
 # M6 售后、会员与分享权限矩阵
 
-> 状态：M6.1 契约已冻结；M6.2 权限目录/数据库 scope 已迁移；M6.3-A settings 运行时 RBAC、M6.3-B0 契约/前向修复与 B1 只读门禁已完成并验证；B2-B7、UI 与生产启用未授权
+> 状态：M6.1 契约已冻结；M6.2 权限目录/数据库 scope 已迁移；M6.3-A settings、M6.3-B0、B1 与 B2a 仓库实施已完成并验证；
+> B2/B2b、B3-B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭
 >
 > 日期：2026-07-29
 
@@ -10,8 +11,9 @@ M6.2 已登记下列 12 项 STORE 权限且不自动给生产角色扩权；loca
 返件/结算/库存/换货/凭证事实和 definer ACL；后续五段前向修复保持 member scope，补齐容量占用、
 共享退款锁序及 definer NULL actor fail-closed。收藏、历史继续使用 owner scope。M6.3-A 仅实现
 `GET/PUT /v1/admin/after-sale-settings` 的运行时 RBAC、审计和幂等边界；M6.3-B1 随后只实现会员/
-管理员售后列表与详情。其他售后写入、凭证文件访问、政策管理、会员、分享 controller/service/worker/
-UI 仍未交付。本矩阵中除明确标为 M6.3-A 或 B1 已实现的动作外，其余动作行是 B0 已冻结、等待 B2-B7
+管理员售后列表与详情。B2a 随后实现政策读取、草稿、发布和停用的独立运行时 RBAC，并在收口时为已有 settings GET/PUT
+补齐严格输入、成功 correlation/no-store 和共享的管理员 READ/WRITE 限流。其他售后写入、凭证文件访问、会员、分享
+controller/service/worker/UI 仍未交付。本矩阵中除明确标为 M6.3-A、B1 或 B2a 已实现的动作外，其余动作行是 B0 已冻结、等待 B2b/B3-B7
 或后续里程碑另行授权实施的契约，不代表按钮、API、worker 或生产角色授权已经交付。
 B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transaction actor，不是可授予管理员
 角色的权限，也不能复用固定管理员 UUID。
@@ -54,11 +56,11 @@ B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transac
 | 换货运单             | `store.after-sales.exchange` + `store.shipments.create` | purpose=EXCHANGE_OUTBOUND，不推进原订单                                                            |
 | COD 退款申请         | `store.after-sales.cod-refunds.request`                 | 仅 B7 设计；近期 MFA、服务端金额、真实转账证明入口缺失时保持 PENDING/REVIEW_REQUIRED               |
 | COD 退款确认         | `store.after-sales.cod-refunds.confirm`                 | 仅 B7 设计；公开号、异人复核、近期 MFA；真实证明适配入口前不开放成功按钮                           |
-| 政策/历史查看        | `store.after-sales.policy.read`                         | B2 契约；API 未实现，当前商城、只读不可变版本                                                      |
+| 政策/历史查看        | `store.after-sales.policy.read`                         | B2a 已实现；当前商城、签名微秒游标、不可变版本复验、ADMIN READ 限流/no-store                       |
 | 设置/readiness 查看  | `store.after-sales.policy.read`                         | M6.3-A 已实现；令牌/Header/查询一致；平台跨商城需 AccessReason                                     |
-| 政策草稿             | `store.after-sales.policy.manage`                       | B2 契约；三语校验、商城目标约束、乐观锁                                                            |
-| 政策发布             | `store.after-sales.policy.publish`                      | B2 契约；近期 MFA、确认词、payload hash、发布后不可变                                              |
-| 政策停用             | `store.after-sales.policy.disable`                      | B2 契约；近期 MFA、确认词、历史版本/快照保持可读                                                   |
+| 政策草稿             | `store.after-sales.policy.manage`                       | B2a 已实现；严格三语/规范 hash、商城目标、expected version、24h 幂等、ADMIN WRITE 限流与审计       |
+| 政策发布             | `store.after-sales.policy.publish`                      | B2a 已实现；近期 MFA、确认词/reason、不可变版本、目标冲突与 enforcement readiness 同事务           |
+| 政策停用             | `store.after-sales.policy.disable`                      | B2a 已实现；近期 MFA、确认词/reason、只移除当前投影，历史版本/快照保持可读且 readiness 失败回滚    |
 | 快照强制开关         | `store.after-sales.policy.enforce`                      | M6.3-A；MFA/确认/reason/expected version；跨店 AccessReason；24h 商城幂等；精确 before/after 审计  |
 
 任何退款、库存恢复或换货命令都不能仅凭前端隐藏按钮保护。权限不足、令牌/Header 商城不一致或
@@ -139,6 +141,10 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
 - B1 不把 RLS 当作唯一授权。会员 service 的列表/详情条件始终显式包含 `store_id/member_id`；管理员先
   通过中央授权校验当前商城 `store.after-sales.read`，查询再显式包含 `store_id`。所有读取使用严格
   Prisma `select` allowlist，不以宽关系 `include` 把 RLS 无法提供的列级敏感字段保护交给响应过滤。
+- B2a 政策管理同样不把 tenant RLS 当作 RBAC；service 在每次读/写前要求精确的
+  `policy.read/manage/publish/disable`，并显式绑定 token、`X-Store-Code`、`store_id` 和平台跨商城 `X-Access-Reason`。
+  新迁移只添加两个分页索引，不改写 RLS。ACTIVE-only 政策 RLS 方案被否决：它会使 B1 会员无法读取停用/替换后的
+  已绑定历史版本，却仍不能隐藏 ACTIVE head 行内草稿列。保留既有 tenant SELECT 并由应用独立 RBAC/严格投影保护管理面。
 - `app_security.lock_m63_after_sale_setting()` 是唯一有意允许 runtime 直接 EXECUTE 的 definer 例外。
   它固定安全 `search_path`，只读取 `app_security.current_store_id()`，只返回并锁定当前商城 enforcement
   布尔值；设置行缺失时失败关闭，不能更新设置、枚举商城或扩大任何 policy 权限。
@@ -181,6 +187,12 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
   输入、locale 回退、敏感 marker 不出响应、`Cache-Control: private, no-store` 和 correlation；分页还
   必须覆盖两阶段 `limit + 1`、六位微秒 `(timestamp,id)` tuple seek、游标篡改/过期/跨主体/跨筛选，
   以及 Redis 商城+主体 60/120 读限流和 `Retry-After`。
+- B2a 必测四类 policy 权限互不隐含、近期 MFA、严格 header/query/path/body、跨商城目标、create/update/version 冲突、
+  同键复放/异参、ACTIVE 草稿不污染 checkout、同目标并发冲突、不可变历史、enforcement 下安全发布和危险发布/停用回滚。
+  游标还要拒绝篡改、跨资源/跨 policy 重放；管理写 30/60 限流先于目标查询，审计必须含完整 before/after/reason/correlation，
+  稳定 `409` 只公开 `details.reason_code`。
+- B2a 还必须在注册路由前对目标库执行只读兼容性预检，覆盖旧 code、草稿/hash/product/head、版本/三语/assignment/
+  标量与发布时间。本地测试库已 `PASS (policies=0, versions=0)`，但不能作为 staging/production 目标库证据。
 
 M6.3-A 已补充 settings GET/PUT 的跨商城、Header/查询不一致、read/enforce 权限互不隐含、近期 MFA、
 确认词、expected version、同键复放/异参冲突、24 小时商城 scope、精确 before/after 审计、
@@ -217,4 +229,20 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
 - B0 领域/契约、数据库、完整 integration、迁移演练、`verify`、生产依赖审计、Gitleaks、
   `git diff --check` 和最终高风险复审等适用门禁已验证，实际结果统一记录在
   `docs/reports/m6.3-b0-completion-report.md`。B0 未新增运行时或 UI，未执行或声称专属 E2E；随后
-  单独实施 B1 不改变 B0 历史证据。B2-B7、UI、生产政策/启用、供应商调用、部署与发布仍未授权。
+  单独实施 B1 不改变 B0 历史证据。B2a 的仓库完成边界以下节为准；B2b/B3-B7、UI、生产政策/启用、供应商调用、部署与发布仍未授权。
+
+## 9. B2a 政策授权与当前边界
+
+- 七个政策接口都先执行中央管理员商城授权。列表/详情/版本读取仅接受 `policy.read`；草稿仅接受 `policy.manage`；
+  发布/停用分别仅接受 `policy.publish/disable`。任何一项都不能代替另一项，也不由前端按钮可见性代替服务端授权。
+- 发布和停用必须经近期 MFA，并携带对应确认词、至少 10 字符业务 reason、expected version 与 Idempotency-Key。草稿同样
+  要求 expected version 和幂等键，但不用发布/停用权限或 MFA 代替 manage 权限。平台跨商城继续要求中央 `X-Access-Reason` 授权/审计。
+- 政策及 settings 读/写现分别消费 ADMIN READ 120/WRITE 30 次每 60 秒档位，scope 为商城+主体。Redis 故障不放行，
+  在读取/写入目标事实前统一返回 `503 UPSTREAM_UNAVAILABLE`；超限返回 `429` 和 `Retry-After`。成功响应统一使用
+  `private, no-store` 与安全 correlation ID。
+- `Idempotency-Key` 与 `X-Access-Reason` 都按敏感字段处理；HTTP 和结构化日志必须脱敏，不能因审计需要记录其原文。
+- B2a 不改变会员权限。B1 会员仍仅能通过本人售后投影读取已绑定历史政策；不得访问管理草稿路由。新迁移没有改写 RLS，
+  不会因政策停用或新版本发布而让历史售后不可读。
+- 定向权限/限流/契约单测、完整 integration 29 个文件/234 项、M2→current 42 段迁移、`verify`、OpenAPI 结构检查、生产依赖/Gitleaks 与
+  独立高风险复审均通过，因此 B2a 仓库实施为 `COMPLETE`。目标库仍须逐库 preflight；B2/B2b、B3-B7、M6.3、UI、生产政策/enforcement/部署
+  继续未完成或未授权且失败关闭。

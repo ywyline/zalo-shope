@@ -28,6 +28,12 @@ id = "generic-api-key"
     regexes = ['''^(M37_API_KEY_SECRET|M37_CORRELATION_SECRET)$''']
 
     [[rules.allowlists]]
+    description = "Inert M6.3 idempotency logger redaction sentinel for pathless stdin scans"
+    condition = "AND"
+    regexTarget = "secret"
+    regexes = ['''^M63_IDEMPOTENCY_KEY_SECRET$''']
+
+    [[rules.allowlists]]
     description = "Published local/test after-sale cursor HMAC placeholders rejected in production"
     regexTarget = "secret"
     regexes = ['''^(bG9jYWxfYWZ0ZXJfc2FsZV9jdXJzb3JfaG1hY19rZXk|dGVzdF9hZnRlcl9zYWxlX2N1cnNvcl9obWFjX2tleV8x)$''']

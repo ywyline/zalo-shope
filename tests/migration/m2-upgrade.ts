@@ -71,6 +71,7 @@ const M6_MIGRATIONS = [
   '20260728103000_m63_policy_settings_provisioning',
   '20260728104000_m63_b0_after_sale_contract_guards',
   '20260728110000_m63_b1_after_sale_admin_read_index',
+  '20260729100000_m63_b2a_policy_control_plane',
 ] as const;
 
 type MigrationRecord = {
@@ -467,6 +468,21 @@ async function assertM63B1ReadIndexes(client: PrismaClientType): Promise<void> {
   });
 }
 
+async function assertM63B2ReadIndexes(client: PrismaClientType): Promise<void> {
+  await assertIndexShape(client, {
+    expectedKeys: ['store_id', 'updated_at DESC', 'id DESC'],
+    expectedUnique: false,
+    indexName: 'after_sale_policies_store_id_updated_at_id_idx',
+    tableName: 'after_sale_policies',
+  });
+  await assertIndexShape(client, {
+    expectedKeys: ['store_id', 'policy_id', 'published_at DESC', 'id DESC'],
+    expectedUnique: false,
+    indexName: 'after_sale_policy_versions_store_policy_published_id_idx',
+    tableName: 'after_sale_policy_versions',
+  });
+}
+
 async function preflightOwner(client: PrismaClientType): Promise<void> {
   const records = await client.$queryRawUnsafe<OwnerPreflightRecord[]>(`
     SELECT
@@ -735,6 +751,7 @@ async function run(): Promise<void> {
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B1ReadIndexes(scratchClient);
+    await assertM63B2ReadIndexes(scratchClient);
     const upgradedM5Facts = await scratchClient.$queryRaw<
       Array<{
         after_sale_id: string | null;
@@ -819,6 +836,7 @@ async function run(): Promise<void> {
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B1ReadIndexes(scratchClient);
+    await assertM63B2ReadIndexes(scratchClient);
     const afterRepeatFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterRepeatFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during repeated deployment');
@@ -848,6 +866,20 @@ async function run(): Promise<void> {
       indexName: 'after_sales_store_id_updated_at_id_idx',
       shouldExist: false,
       tableName: 'after_sales',
+    });
+    await assertIndexShape(scratchClient, {
+      expectedKeys: ['store_id', 'updated_at DESC', 'id DESC'],
+      expectedUnique: false,
+      indexName: 'after_sale_policies_store_id_updated_at_id_idx',
+      shouldExist: false,
+      tableName: 'after_sale_policies',
+    });
+    await assertIndexShape(scratchClient, {
+      expectedKeys: ['store_id', 'policy_id', 'published_at DESC', 'id DESC'],
+      expectedUnique: false,
+      indexName: 'after_sale_policy_versions_store_policy_published_id_idx',
+      shouldExist: false,
+      tableName: 'after_sale_policy_versions',
     });
     const m6DownState = await scratchClient.$queryRaw<
       Array<{
@@ -950,6 +982,7 @@ async function run(): Promise<void> {
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B1ReadIndexes(scratchClient);
+    await assertM63B2ReadIndexes(scratchClient);
     const afterForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterForwardRepairFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during the M5/M6 forward repair exercise');
@@ -1415,6 +1448,7 @@ async function run(): Promise<void> {
     await assertScratchConnection(scratchClient, scratchDatabaseName);
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B1ReadIndexes(scratchClient);
+    await assertM63B2ReadIndexes(scratchClient);
 
     console.log(
       `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair and rollback guards`,

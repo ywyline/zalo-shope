@@ -16,12 +16,15 @@ import {
   afterSaleMemberReadQuerySchema,
   afterSalePolicyDraftSchema,
   afterSalePolicyDisableSchema,
+  afterSalePolicyDetailResponseSchema,
+  afterSalePolicyPageResponseSchema,
   afterSalePageResponseSchema,
   afterSalePublicConflictCodeSchema,
   afterSalePublicNumberSchema,
   afterSaleReasonDetailResponseSchema,
   afterSalePolicyVersionParamsSchema,
   afterSalePolicyVersionListQuerySchema,
+  afterSalePolicyVersionPageResponseSchema,
   afterSaleReviewRequestSchema,
   afterSaleReviewResolveRequestSchema,
   afterSaleSettingsEnforcementSchema,
@@ -426,35 +429,40 @@ describe('M6 strict after-sale DTOs', () => {
   });
 
   it('freezes complete policy conditions without duplicating the path policy code', () => {
-    expect(
+    const validDraft = {
+      allowed_types: ['RETURN_REFUND', 'EXCHANGE'],
+      category_id: null,
+      condition_rules: {
+        evidence_required: true,
+        evidence_required_reason_codes: ['damaged-item'],
+        opened_package_exception_reason_codes: ['defective-item'],
+      },
+      damaged_exception: true,
+      defect_exception: true,
+      exchange_attribute_code: 'size',
+      exchange_same_product_only: true,
+      expected_version: 0,
+      hygiene_restricted: false,
+      localizations: ['vi', 'zh', 'en'].map((locale) => ({
+        buyer_instructions: `Instructions in ${locale}`,
+        locale,
+        name: `Policy ${locale}`,
+        summary: `Summary ${locale}`,
+      })),
+      product_ids: [],
+      request_window_days: 7,
+      return_shipping_payer: 'CONDITIONAL',
+      return_window_days: 14,
+      unopened_required: false,
+      wrong_item_exception: true,
+    } as const;
+    expect(afterSalePolicyDraftSchema.parse(validDraft)).toMatchObject({ expected_version: 0 });
+    expect(() =>
       afterSalePolicyDraftSchema.parse({
-        allowed_types: ['RETURN_REFUND', 'EXCHANGE'],
-        category_id: null,
-        condition_rules: {
-          evidence_required: true,
-          evidence_required_reason_codes: ['damaged-item'],
-          opened_package_exception_reason_codes: ['defective-item'],
-        },
-        damaged_exception: true,
-        defect_exception: true,
-        exchange_attribute_code: 'size',
-        exchange_same_product_only: true,
-        expected_version: 0,
-        hygiene_restricted: false,
-        localizations: ['vi', 'zh', 'en'].map((locale) => ({
-          buyer_instructions: `Instructions in ${locale}`,
-          locale,
-          name: `Policy ${locale}`,
-          summary: `Summary ${locale}`,
-        })),
-        product_ids: [],
-        request_window_days: 7,
-        return_shipping_payer: 'CONDITIONAL',
-        return_window_days: 14,
-        unopened_required: false,
-        wrong_item_exception: true,
+        ...validDraft,
+        product_ids: [orderId, orderId.toUpperCase()],
       }),
-    ).toMatchObject({ expected_version: 0 });
+    ).toThrow();
     expect(() =>
       afterSalePolicyDraftSchema.parse({
         allowed_types: ['EXCHANGE'],
@@ -500,6 +508,93 @@ describe('M6 strict after-sale DTOs', () => {
         enabled: true,
         expected_version: 1,
         reason: 'All current-store policy readiness checks passed',
+      }),
+    ).toThrow();
+  });
+
+  it('keeps B2a policy heads, drafts and immutable versions internally consistent', () => {
+    const content = {
+      allowed_types: ['RETURN_REFUND'] as const,
+      category_id: null,
+      condition_rules: {
+        evidence_required: true,
+        evidence_required_reason_codes: ['damaged-item'],
+        opened_package_exception_reason_codes: ['defective-item'],
+      },
+      damaged_exception: true,
+      defect_exception: true,
+      exchange_attribute_code: null,
+      exchange_same_product_only: true as const,
+      hygiene_restricted: false,
+      localizations: ['vi', 'zh', 'en'].map((locale) => ({
+        buyer_instructions: `Instructions in ${locale}`,
+        locale,
+        name: `Policy ${locale}`,
+        summary: `Summary ${locale}`,
+      })),
+      product_ids: [],
+      request_window_days: 7,
+      return_shipping_payer: 'MERCHANT' as const,
+      return_window_days: 14,
+      unopened_required: false,
+      wrong_item_exception: true,
+    };
+    const version = {
+      code: 'standard-return',
+      content,
+      effective_at: '2026-07-29T08:00:00.000Z',
+      payload_hash: 'a'.repeat(64),
+      published_at: '2026-07-29T08:00:00.000Z',
+      version_number: 2,
+    };
+
+    expect(
+      afterSalePolicyDetailResponseSchema.parse({
+        code: 'standard-return',
+        current_version: version,
+        current_version_number: 2,
+        draft: content,
+        status: 'ACTIVE',
+        version: 4,
+      }),
+    ).toMatchObject({ current_version_number: 2, status: 'ACTIVE' });
+    expect(
+      afterSalePolicyPageResponseSchema.parse({
+        items: [
+          {
+            code: 'new-policy',
+            current_version_number: null,
+            status: 'DRAFT',
+            version: 1,
+          },
+        ],
+        next_cursor: null,
+      }),
+    ).toMatchObject({ items: [{ status: 'DRAFT' }] });
+    expect(
+      afterSalePolicyVersionPageResponseSchema.parse({ items: [version], next_cursor: null }),
+    ).toMatchObject({ items: [{ version_number: 2 }] });
+    expect(() =>
+      afterSalePolicyDetailResponseSchema.parse({
+        code: 'standard-return',
+        current_version: null,
+        current_version_number: 2,
+        draft: content,
+        status: 'ACTIVE',
+        version: 4,
+      }),
+    ).toThrow();
+    expect(() =>
+      afterSalePolicyPageResponseSchema.parse({
+        items: [
+          {
+            code: 'invalid-draft',
+            current_version_number: 1,
+            status: 'DRAFT',
+            version: 1,
+          },
+        ],
+        next_cursor: null,
       }),
     ).toThrow();
   });

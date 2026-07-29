@@ -11,16 +11,24 @@ import {
   type StoreTransaction,
   withStoreTransaction,
 } from '@zalo-shop/database';
+import type { StoreContext } from '@zalo-shop/domain';
 
 import { AdminService, type AdminHeaders } from '../admin/admin.service';
 import { DATABASE_CLIENT } from '../auth/auth.tokens';
+import { AfterSalesRateLimiter } from '../after-sales/after-sales-rate-limiter';
 
 type EnforcementInput = z.infer<typeof afterSaleSettingsEnforcementSchema>;
 type SettingsView = ReturnType<typeof settingsView>;
 type SettingsAuditView = SettingsView & {
+  created_at: string;
   current_version_id: string | null;
   default_policy_id: string | null;
+  readiness_checked_by: string | null;
   readiness_hash: string | null;
+  readiness_ready_at: string | null;
+  store_id: string;
+  updated_at: string;
+  updated_by: string | null;
 };
 
 function canonicalJson(value: unknown): string {
@@ -96,10 +104,12 @@ export class AfterSalesPolicyService {
   public constructor(
     @Inject(DATABASE_CLIENT) private readonly database: PrismaClient,
     @Inject(AdminService) private readonly admin: AdminService,
+    @Inject(AfterSalesRateLimiter) private readonly rateLimiter: AfterSalesRateLimiter,
   ) {}
 
   public async getSettings(headers: AdminHeaders, storeId: string): Promise<SettingsView> {
     const context = await this.admin.authorize(headers, storeId, 'store.after-sales.policy.read');
+    await this.consume(context, 'READ');
     return withStoreTransaction(
       this.database,
       context,
@@ -120,6 +130,7 @@ export class AfterSalesPolicyService {
       storeId,
       'store.after-sales.policy.enforce',
     );
+    await this.consume(context, 'WRITE');
     const execute = () =>
       withStoreTransaction(
         this.database,
@@ -131,6 +142,20 @@ export class AfterSalesPolicyService {
           const keyHash = hash(idempotencyKey);
           const inputHash = hash(input);
           const operation = 'after-sale.policy.enforce';
+          const clock = (
+            await transaction.$queryRaw<Array<{ current_time: Date }>>`
+              SELECT CURRENT_TIMESTAMP AS current_time
+            `
+          )[0];
+          if (!clock) throw new ConflictException('AFTER_SALE_POLICY_NOT_READY');
+          await transaction.idempotencyRecord.deleteMany({
+            where: {
+              expiresAt: { lte: clock.current_time },
+              idempotencyKey: keyHash,
+              operation,
+              storeId,
+            },
+          });
           const existing = await transaction.idempotencyRecord.findUnique({
             where: {
               storeId_operation_idempotencyKey: {
@@ -165,7 +190,7 @@ export class AfterSalesPolicyService {
           if (input.enabled && !readiness.ready) {
             throw new ConflictException('AFTER_SALE_POLICY_NOT_READY');
           }
-          const checkedAt = new Date();
+          const checkedAt = clock.current_time;
           const setting = before
             ? await transaction.storeAfterSaleSetting.update({
                 data: {
@@ -216,19 +241,31 @@ export class AfterSalesPolicyService {
           await this.writeAudit(transaction, context, {
             after: {
               ...body,
+              created_at: setting.createdAt.toISOString(),
               current_version_id: setting.currentVersionId,
               default_policy_id: setting.defaultPolicyId,
+              readiness_checked_by: setting.readinessCheckedBy,
               readiness_hash: setting.readinessHash,
+              readiness_ready_at: setting.readinessReadyAt?.toISOString() ?? null,
+              store_id: setting.storeId,
+              updated_at: setting.updatedAt.toISOString(),
+              updated_by: setting.updatedBy,
             },
             before:
               before === null
                 ? null
                 : {
+                    created_at: before.createdAt.toISOString(),
                     current_version_id: before.currentVersionId,
                     default_policy_id: before.defaultPolicyId,
                     enforce_policy_snapshots: before.enforcePolicySnapshots,
                     readiness_checked_at: before.readinessCheckedAt?.toISOString() ?? null,
+                    readiness_checked_by: before.readinessCheckedBy,
                     readiness_hash: before.readinessHash,
+                    readiness_ready_at: before.readinessReadyAt?.toISOString() ?? null,
+                    store_id: before.storeId,
+                    updated_at: before.updatedAt.toISOString(),
+                    updated_by: before.updatedBy,
                     version: before.version,
                   },
             reason: input.reason,
@@ -253,17 +290,32 @@ export class AfterSalesPolicyService {
     throw new ConflictException('AFTER_SALE_SETTINGS_CONCURRENT_CONFLICT');
   }
 
+  private consume(context: StoreContext, access: 'READ' | 'WRITE'): Promise<void> {
+    return this.rateLimiter.consume({
+      access,
+      actorId: context.actor.id,
+      actorType: 'ADMIN',
+      storeId: context.storeId,
+    });
+  }
+
   private async writeAudit(
     transaction: StoreTransaction,
     context: { actor: { id: string }; correlationId: string },
     input: {
       after: SettingsAuditView;
       before: null | {
+        created_at: string;
         current_version_id: string | null;
         default_policy_id: string | null;
         enforce_policy_snapshots: boolean;
         readiness_checked_at: string | null;
+        readiness_checked_by: string | null;
         readiness_hash: string | null;
+        readiness_ready_at: string | null;
+        store_id: string;
+        updated_at: string;
+        updated_by: string | null;
         version: number;
       };
       reason: string;

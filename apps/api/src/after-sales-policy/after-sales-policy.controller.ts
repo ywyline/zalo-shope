@@ -7,14 +7,18 @@ import {
   Inject,
   Put,
   Query,
+  Req,
   Res,
   UnauthorizedException,
 } from '@nestjs/common';
 import {
+  accessReasonSchema,
   afterSaleAdminStoreQuerySchema,
   afterSaleIdempotencyKeySchema,
   afterSaleSettingsEnforcementSchema,
+  afterSaleStoreCodeHeaderSchema,
 } from '@zalo-shop/contracts';
+import { resolveCorrelationId } from '@zalo-shop/logger';
 import type { z } from 'zod';
 
 import type { AdminHeaders } from '../admin/admin.service';
@@ -26,19 +30,35 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   return result.data;
 }
 
-function adminHeaders(
-  authorization: string | undefined,
-  storeCode: string | undefined,
-  accessReason: string | undefined,
-): AdminHeaders {
-  if (!authorization?.startsWith('Bearer ') || !storeCode) {
+type HttpRequest = { id?: unknown };
+type HttpResponse = { setHeader(name: string, value: string): void };
+
+function adminHeaders(input: {
+  accessReason?: string;
+  authorization?: string;
+  correlationId: string;
+  storeCode?: string;
+}): AdminHeaders {
+  if (
+    !input.authorization?.startsWith('Bearer ') ||
+    input.authorization.length <= 7 ||
+    input.storeCode === undefined
+  ) {
     throw new UnauthorizedException('Admin authentication and store context are required');
   }
   return {
-    ...(accessReason === undefined ? {} : { accessReason }),
-    accessToken: authorization.slice(7),
-    storeCode,
+    ...(input.accessReason === undefined
+      ? {}
+      : { accessReason: parse(accessReasonSchema, input.accessReason) }),
+    accessToken: input.authorization.slice(7),
+    correlationId: input.correlationId,
+    storeCode: parse(afterSaleStoreCodeHeaderSchema, input.storeCode),
   };
+}
+
+function setHeaders(response: HttpResponse, correlationId: string): void {
+  response.setHeader('Cache-Control', 'private, no-store');
+  response.setHeader('X-Correlation-Id', correlationId);
 }
 
 @Controller('v1/admin/after-sale-settings')
@@ -49,30 +69,39 @@ export class AfterSalesPolicyController {
 
   @Get()
   public getSettings(
-    @Query('store_id') storeId: string | undefined,
+    @Query() query: unknown,
     @Headers('authorization') authorization: string | undefined,
     @Headers('x-store-code') storeCode: string | undefined,
     @Headers('x-access-reason') accessReason: string | undefined,
+    @Headers('x-correlation-id') suppliedCorrelationId: string | undefined,
+    @Req() request: HttpRequest,
+    @Res({ passthrough: true }) response: HttpResponse,
   ) {
+    const correlationId = resolveCorrelationId(request.id, suppliedCorrelationId);
+    setHeaders(response, correlationId);
     return this.policies.getSettings(
-      adminHeaders(authorization, storeCode, accessReason),
-      parse(afterSaleAdminStoreQuerySchema, { store_id: storeId }).store_id,
+      adminHeaders({ accessReason, authorization, correlationId, storeCode }),
+      parse(afterSaleAdminStoreQuerySchema, query).store_id,
     );
   }
 
   @Put()
   public async setEnforcement(
-    @Query('store_id') storeId: string | undefined,
+    @Query() query: unknown,
     @Headers('authorization') authorization: string | undefined,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Headers('x-store-code') storeCode: string | undefined,
     @Headers('x-access-reason') accessReason: string | undefined,
+    @Headers('x-correlation-id') suppliedCorrelationId: string | undefined,
     @Body() body: unknown,
-    @Res({ passthrough: true }) response: { setHeader(name: string, value: string): void },
+    @Req() request: HttpRequest,
+    @Res({ passthrough: true }) response: HttpResponse,
   ) {
+    const correlationId = resolveCorrelationId(request.id, suppliedCorrelationId);
+    setHeaders(response, correlationId);
     const execution = await this.policies.setEnforcement(
-      adminHeaders(authorization, storeCode, accessReason),
-      parse(afterSaleAdminStoreQuerySchema, { store_id: storeId }).store_id,
+      adminHeaders({ accessReason, authorization, correlationId, storeCode }),
+      parse(afterSaleAdminStoreQuerySchema, query).store_id,
       parse(afterSaleIdempotencyKeySchema, idempotencyKey),
       parse(afterSaleSettingsEnforcementSchema, body),
     );

@@ -1,8 +1,9 @@
 # M6 售后、会员、内容与主动分享专项实施计划
 
-> 状态：已批准；M6.1、M6.2、M6.3-A、M6.3-B0 与 B1 已完成；B2-B7、UI 与生产启用未授权；M6 整体未完成
+> 状态：已批准；M6.1、M6.2、M6.3-A、M6.3-B0、B1 与 B2a 仓库实施已完成；
+> B2/B2b、B3-B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭；M6 整体未完成
 >
-> 版本：0.7
+> 版本：0.8
 >
 > 日期：2026-07-29
 >
@@ -75,8 +76,21 @@ M6.3-B1 授权与实现记录（授权 2026-07-28，实施收口 2026-07-29）�
 `store.after-sales.read` 并绑定目标商城，两者叠加 FORCE RLS；响应采用严格 Prisma `select` 和 schema
 allowlist。列表在 `REPEATABLE READ` 中先取 `limit + 1` 个 page key，再按白名单 ID 投影，使用数据库
 六位微秒 `(timestamp,id)` tuple seek；`c1_` 游标由 1–3 把 HMAC key ring 签发/轮换。Redis 读限流、
-`Retry-After`、correlation ID 与 `Cache-Control: private, no-store` 同步落地。B1 只提供读取，不授权
-B2-B7、UI、生产政策/启用、供应商调用、部署或发布。
+`Retry-After`、correlation ID 与 `Cache-Control: private, no-store` 同步落地。B1 只提供读取；B1 收口时不授权
+B2-B7、UI、生产政策/启用、供应商调用、部署或发布，该历史边界随后仅由下述 B2a 授权扩展。
+
+M6.3-B2a 授权与仓库实施完成记录（2026-07-29）：用户再次要求按仓库严谨工作流程继续下一阶段，本轮授权并实施
+`docs/plans/m6.3-b2-implementation-plan.md` 中的 B2a 政策控制面。政策 head 列表/详情、草稿 `PUT`、不可变 version 列表/
+详情、发布和停用七个管理员接口已落地。它们实施独立 policy RBAC、发布/停用近期 MFA、严格三语和规范 hash、
+商城范围 24 小时幂等、商城锁+head 行锁、不可变发布、活动投影、enforcement readiness 同事务回滚、微秒签名游标、严格响应
+复验和完整审计。B2a 收口还修复已有 settings GET/PUT 的严格 Store-Code/Access-Reason/query、成功 correlation/no-store、
+管理员 READ/WRITE 分级限流及 Redis `503`。只读兼容性预检已实现，并在本地测试库通过（`policies=0, versions=0`）。
+
+B2a 迁移只增加 policy heads 和 versions 的两个分页索引，没有 RLS 改写。这保留 B1 会员对已绑定历史政策版本的读取；
+ACTIVE-only RLS 方案会破坏该历史读又不能提供列级草稿隔离，因此被否决。目标库 rollout 前仍必须重新执行兼容性预检并留证；
+仓库内 `verify`（60 个文件/427 项单元测试、格式/lint/typecheck、生产构建、Prisma validate）、完整 integration 29 个文件/234 项、
+M2→current 42 段迁移演练、生产依赖 high、OpenAPI 结构检查、tracked+13 个 untracked 候选 Gitleaks、`git diff --check` 与独立高风险复审均通过，
+所以 B2a 仓库实施标记 `COMPLETE`。这不代表任何 staging/production 目标库已 preflight 或可 rollout，也不完成 B2/B2b、M6.3、M6 或 P0。
 
 ## 2. 目标与非目标
 
@@ -211,8 +225,8 @@ B2-B7、UI、生产政策/启用、供应商调用、部署或发布。
 
 ### M6.3：售后申请、审核、退货与结算协调
 
-实施顺序细分为 M6.3-A 前置安全收口和 M6.3-B 售后运行时；当前 M6.3-A 与 M6.3-B0 已完成，B1
-四个只读接口已实现，B2-B7 后续运行时仍未开始、未授权。A/B0/B1 的局部交付也不代表 M6.3 完成，详见
+实施顺序细分为 M6.3-A 前置安全收口和 M6.3-B 售后运行时；当前 M6.3-A 与 M6.3-B0/B1/B2a 仓库实施已完成。
+B2/B2b、B3-B7 仍未完成或未授权并失败关闭。A/B0/B1/B2a 的局部交付也不代表 M6.3 完成，详见
 `docs/plans/m6.3-implementation-plan.md`。
 
 - B1 只读列表/详情使用严格响应投影和三语历史政策回退；不得因 RLS 没有列级保护而使用宽
@@ -220,6 +234,10 @@ B2-B7、UI、生产政策/启用、供应商调用、部署或发布。
   `updated_at DESC, id DESC`，两阶段 `limit + 1` 分页保留 PostgreSQL `timestamptz(6)` 微秒精度。
 - B1 游标绑定商城、主体、资源、规范筛选、微秒排序键、ID 与过期时间；独立 HMAC key ring 的第一把
   签发、全部验证。会员/管理员读限流分别 60/120 次每 60 秒且绑定商城+主体，成功响应 no-store。
+- B2a 七个管理员政策接口使用互不隐含的 read/manage/publish/disable，发布/停用要求近期 MFA、确认词和 reason。
+  草稿与当前投影隔离；发布/停用在商城锁下原子同步不可变版本、活动投影与 enforcement readiness，破坏 ready 则整事务回滚。
+- B2a 政策/settings 读写使用管理员 120/30 次每 60 秒限流、correlation/no-store 和严格输入；稳定冲突只公开
+  `details.reason_code`。两个索引迁移不改写 RLS，保留会员历史政策读取。
 - 买家提交/取消、管理员审核、返件登记与可信物流事实、待验收读取和售后时间线；完整返件验收写路径
   及 exactly-once 库存恢复属于 M6.4。
 - ONLINE 通过内部原语关联 M5 Refund，并消费成功/失败/取消/不确定权威结果；COD 使用可从退款响应
@@ -286,6 +304,10 @@ B2-B7、UI、生产政策/启用、供应商调用、部署或发布。
   `(store_id, updated_at DESC, id DESC)` 索引；应用回滚后可保留，删除时只执行其精确 `down.sql`。
   Prisma 同时补记数据库从 M6.2 起已有的 `after_sale_refunds(store_id, settlement_id)` 唯一约束，
   只修复 schema drift，不重复建迁移或改写业务事实。
+- B2a 的 `20260729100000_m63_b2a_policy_control_plane` 只新增 policy heads 和 versions 的两个 keyset 索引；
+  `down.sql` 只删除这两个索引，不修改 RLS 或事实。ACTIVE-only RLS 会破坏 B1 会员历史政策读且不能隐藏 head 草稿列，因此不采用。
+- B2a 只读兼容性预检以 `REPEATABLE READ` 分批复验既有 code、草稿/hash/products/head、不可变版本/三语/assignment/标量与时间。
+  本地测试库已通过（`policies=0, versions=0`）；路由 rollout 前必须针对每个精确目标库重新执行并留证，失败时只允许受审前向修复。
 - 应用回滚可关闭新建售后/分享入口，但必须保留兼容 worker 处理已有退款、结算、库存预留和运单至终态。
 
 ## 7. 风险、外部依赖和停止条件
@@ -296,9 +318,9 @@ B2-B7、UI、生产政策/启用、供应商调用、部署或发布。
   `REVIEW_REQUIRED`，不能使用永远成功的手工按钮。
 - M5 外部支付、退款、GHN、结算和 Zalo 宿主仍未验收。若真实契约改变 M6 假设，先更新本计划、
   数据字典、OpenAPI、迁移和安全测试。
-- M6.2 只交付数据事实边界；其历史范围保持不变。当前后续运行时只新增 B1 会员/管理员售后列表与
-  详情，收藏、历史、隐私、分享以及售后申请/取消/审核/凭证/返件/退款/结算仍未交付；表、权限目录
-  或只读响应存在不等于写路径或完整产品能力可用。
+- M6.2 只交付数据事实边界；其历史范围保持不变。当前后续运行时已新增 B1 会员/管理员售后列表与详情，并完成 B2a 七个
+  政策管理接口的仓库实施。收藏、历史、隐私、分享以及售后申请/取消/审核/凭证/返件/退款/结算仍未交付；表、权限目录、
+  只读响应或政策控制面存在不等于售后写路径、凭证能力或完整产品可用。
 - 证据对象视为敏感且不可信；必须限制类型、magic bytes、大小、数量、扫描状态、保留期和下载授权。
   到期立即停止普通访问；无 legal hold 时幂等删除原件、衍生物与扫描临时对象，失败有界重试并告警；
   legal hold 只延迟删除，不延长普通访问，删除后仅保留受 RLS 保护的最小审计元数据。会员和普通
@@ -318,7 +340,17 @@ B2-B7、UI、生产政策/启用、供应商调用、部署或发布。
 - B1 读取：四个 GET 的严格 select、双层 store/owner/RBAC + FORCE RLS、两阶段 `limit + 1`、六位
   微秒 tuple seek、HMAC key ring 轮换/scope、三语回退、敏感字段不可达、60/120 限流、no-store 与
   correlation。B1 无 UI，不能用既有浏览器 E2E 冒充售后 UI 或 Zalo 真机证据。
+- B2a 政策：规范 payload/hash、权限互不隐含、近期 MFA、strict DTO、双商城目标、幂等复放/异参、ACTIVE 草稿不污染 checkout、
+  并发目标冲突、不可变历史、enforcement 下发布/停用安全回滚、游标跨资源/跨 policy 重放、30/60 写限流与完整审计。
+  仓库只读兼容性预检已在本地测试库通过；目标库 rollout 前仍必须再执行并留证。B2a 无 UI，专项浏览器 E2E 为 `NOT_APPLICABLE`。
 - E2E：双商城三语仅退款、退货退款、换货、收藏、历史、隐私入口、六类分享目标和异常恢复。
 - 真机：Android/iPhone 中由用户主动分享并打开正确商城、语言和对象；Web 预览不替代宿主证据。
 - 阶段门禁：定向测试、`corepack pnpm verify`、相关集成/E2E、迁移演练、生产依赖审计、Gitleaks、
   `git diff --check` 和最终高风险差异审查。未运行项必须说明原因。
+
+B2a 仓库最终证据：`verify` 完整通过（60 个文件/427 项单元测试、格式/lint/typecheck、生产构建、Prisma validate），完整 integration
+29 个文件/234 项，M2→current 42 段 fresh/redeploy/down-forward/fingerprint/guard 演练通过；生产依赖 high 门禁退出码为 0，保留 3 项 moderate 公告；
+OpenAPI YAML 重复键为 0，本地引用 556 个、唯一目标 112 个、外部引用 0，但仓库无专用 OpenAPI 3.1 语义 linter；Gitleaks v8.24.3 的 tracked diff 与
+13 个 untracked 候选通过，pathless stdin 只对固定非密钥 `M63_IDEMPOTENCY_KEY_SECRET` 使用精确 allowlist，未放宽规则；`git diff --check` 和独立高风险复审通过。
+首轮全仓 ESLint 在本机约 2 GiB 默认堆下 OOM，临时以 `NODE_OPTIONS=--max-old-space-size=4096` 重跑后通过，未修改运行配置。B2a 无 UI，专项 E2E 为
+`NOT_APPLICABLE`。上述证据完成 B2a 仓库实施，不替代目标库逐库 preflight，也不完成 B2/B2b 或 M6.3。

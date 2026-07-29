@@ -1398,6 +1398,7 @@ model AfterSalePolicy {
   @@unique([storeId, id])
   @@unique([storeId, code])
   @@index([storeId, status, code])
+  @@index([storeId, updatedAt(sort: Desc), id(sort: Desc)], map: "after_sale_policies_store_id_updated_at_id_idx")
   @@map("after_sale_policies")
 }
 
@@ -1439,6 +1440,7 @@ model AfterSalePolicyVersion {
   @@unique([storeId, id, policyId])
   @@unique([storeId, policyId, versionNumber])
   @@index([storeId, policyId, publishedAt(sort: Desc)])
+  @@index([storeId, policyId, publishedAt(sort: Desc), id(sort: Desc)], map: "after_sale_policy_versions_store_policy_published_id_idx")
   @@map("after_sale_policy_versions")
 }
 

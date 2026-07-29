@@ -1,6 +1,7 @@
 # M6 售后、会员与分享数据字典
 
-> 状态：M6.1 契约已冻结；M6.2 schema/RLS、M6.3-A、M6.3-B0 与 B1 已完成并验证；B2-B7、UI 与生产 rollout 未开始、未授权
+> 状态：M6.1 契约已冻结；M6.2 schema/RLS、M6.3-A、M6.3-B0、B1 与 B2a 仓库实施已完成并验证；
+> B2/B2b、B3-B7、M6.3、UI 与生产 rollout 未完成或未授权并保持失败关闭
 >
 > 日期：2026-07-29
 
@@ -42,6 +43,13 @@ M6.3-B1 随后只实现会员/管理员售后列表与详情四个 GET。它复�
 RBAC/owner scope + FORCE RLS、Redis 商城+主体读限流及 `private, no-store` 响应收口读取边界。B1
 新增管理员无 status 查询索引，并把数据库已有的售后退款链接唯一约束同步回 Prisma；不开放任何
 写路径、UI、worker、生产政策/启用、供应商调用、部署或发布。
+
+M6.3-B2a 在现有政策表上实现 policy heads 列表/详情、草稿 `PUT`、不可变 versions 列表/详情、发布和停用
+七个管理员接口。新迁移 `20260729100000_m63_b2a_policy_control_plane` 只增加 heads/versions 的两个 keyset 分页索引，
+不增加业务列、不改写 RLS、不变更任何政策、settings、活动投影、快照或售后事实。保留既有 tenant RLS 是为了让 B1 会员
+继续读取售后已绑定的停用/被替换历史版本；不采用会破坏历史读且仍不能提供列级草稿隔离的 ACTIVE-only RLS 改写。仓库已增加
+只读 B2a 兼容性预检，在本地测试库通过且证明 `policies=0, versions=0`；适用仓库门禁均已完成，B2a 仓库实施标记 `COMPLETE`。
+任何目标库 rollout 前仍要逐库重新执行并留证；B2/B2b、B3-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权。
 
 ## 1. 统一约定
 
@@ -124,6 +132,11 @@ M6.3-A 只开放 `GET/PUT /v1/admin/after-sale-settings`。GET 使用独立
 按商城与 `after-sale.policy.enforce` operation 隔离、只保存 hash 并保留 24 小时，同键异参返回冲突。
 成功命令在同一事务记录精确设置 before/after、reason、actor 与 correlation ID 审计。
 
+B2a 收口修正了 settings 既有实现与公共 HTTP 契约的偏差：GET/PUT 现在严格校验 Store-Code、Access-Reason 和 query，
+成功响应统一 `Cache-Control: private, no-store` 与 `X-Correlation-Id`，并分别接入管理员 READ 120/WRITE 30 次每
+60 秒档位。Redis 不可用时在读取设置或变更 enforcement 之前失败关闭为 `503`；这是 B2a 收口的既有契约修复，
+不改变 M6.3-A 的 readiness/enforcement 事务语义。
+
 所有商城仍默认 OFF。M6.3-A 不创建、发布或启用任何生产政策；真实政策审批和最终门禁通过前，不得
 直接修改设置表或把 local/test fixture 表述为生产 ready。
 
@@ -170,6 +183,13 @@ CHECK 保证目标列恰好匹配类型。另用 `after_sale_active_policy_assig
 表。并发发布相同商品/类目必须恰有一个成功，另一个稳定冲突。
 政策详情返回独立草稿与当前不可变版本；历史版本通过只读分页/详情接口查询。停用使用独立受审命令
 和 `store.after-sales.policy.disable`，不得通过草稿 PUT 篡改状态或删除历史版本。
+
+B2a 现已按上述模型实现读/草稿/发布/停用。规范化顺序固定为冻结售后类型顺序、小写 UUID、字典序 reason code、
+`vi/zh/en` 和稳定目标序；三语均必填。发布/停用在商城级 `m62-policy:{store_id}` advisory lock 下再锁 head，发布和生效时间来自
+同一事务 `CURRENT_TIMESTAMP`。已启用 enforcement 的商城必须在同事务重新同步 settings readiness，否则整个发布/停用回滚。
+读取端会对草稿 payload/hash/product replace-set 和每个版本的 payload/hash/标量/三语/assignment 做一致性复验，不用损坏事实构造响应。
+发布/停用审计同时保存 policy 和 settings 的完整 before/after、reason、actor 与 correlation ID。稳定冲突在 HTTP 层只以
+`details.reason_code` 公开白名单原因。
 
 ### 3.4 `order_item_after_sale_policy_snapshots`
 
@@ -494,6 +514,16 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   `after_sales(store_id, updated_at DESC, id DESC)` 普通读取索引，不改写售后事实。应用回滚后索引可
   安全保留；如需回滚，只在确认没有 B1 查询依赖后受审执行 `down.sql` 删除该精确索引。生产迁移仍
   遵循向前部署，不因 Prisma schema drift 修复重复创建既有唯一索引。
+- B2a 的 `20260729100000_m63_b2a_policy_control_plane` 只增加
+  `after_sale_policies(store_id, updated_at DESC, id DESC)` 和
+  `after_sale_policy_versions(store_id, policy_id, published_at DESC, id DESC)` 两个普通索引。`down.sql` 只删除这两个精确索引，
+  不修改 RLS 或数据事实；应用回滚后索引可保留。试图以 ACTIVE assignment 限制政策/version SELECT 的 RLS 改写被明确否决，
+  因为它会破坏 B1 已绑定历史政策的会员读取，且无法隐藏 ACTIVE head 行内的 draft payload。
+- B2a 的只读兼容性预检通过受控 migration/maintenance `DATABASE_URL` 在 `REPEATABLE READ` 中分批校验 code、严格且规范的 draft/hash/products/head，
+  以及所有不可变版本/三语/assignment/标量和 `effective_at=published_at`。事务设置 `row_security=off`；它不绕过 RLS，
+  而会让可能被策略过滤的 runtime 连接以 `42501` 失败，防止零行假通过。本地 owner 连接已通过且 runtime RLS 连接已验证失败关闭；
+  本地测试库结果为 `policies=0, versions=0`；
+  staging/production 在注册路由前必须对精确目标库再执行并留证，预检失败时禁止 rollout 并只允许受审前向修复。
 
 ## 9. M6.3-B1 读取与公共 HTTP 运行时
 
@@ -524,6 +554,22 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   目标前返回不泄露资源存在性的 `429` 与 `Retry-After`。所有响应携带同一个安全
   `X-Correlation-Id`，错误体 correlation 与事务、授权、审计（如发生）和日志保持一致。
 - B1 读取的稳定语义为严格输入/游标 `400`、认证失败 `401`、目标商城/权限 `403`、当前主体范围内
-  不存在 `404` 和限流 `429`。B1 不注册写路由；B0 冻结的会员写 10、管理员写 30 次每 60 秒只在
-  B2-B7 获批实现相应命令时生效，当前不能据此声称申请、取消、审核、证据访问、返件、退款或 COD
-  结算可用。
+  不存在 `404` 和限流 `429`。B1 本身不注册写路由；B2a 只为政策草稿/发布/停用和 settings PUT 启用管理员写
+  30 次每 60 秒档位。会员写 10 次档位与其他管理员写只在 B2b/B3-B7 另行授权后生效，当前不能据此声称申请、取消、审核、
+  证据访问、返件、退款或 COD 结算可用。
+
+## 10. M6.3-B2a 政策控制面运行时
+
+- 实现的路由仅为 `GET /v1/admin/after-sale-policies`、
+  `GET/PUT /v1/admin/after-sale-policies/{policyCode}`、
+  `GET /v1/admin/after-sale-policies/{policyCode}/versions`、
+  `GET /v1/admin/after-sale-policies/{policyCode}/versions/{versionNumber}`、`POST .../publish` 和 `POST .../disable`。
+  B2b 凭证和 B3-B7 路由仍为 contract-only 或失败关闭。
+- head 列表固定 `(updated_at DESC,id DESC)`，version 列表固定 `(published_at DESC,id DESC)`。两者先读 `limit + 1` 个微秒 page key，
+  再对白名单 ID 投影；游标绑定管理员、商城、资源、筛选及 policy code，不能跨资源/跨 policy 重放。
+- 草稿创建仅允许 `expected_version=0`；更新、发布和停用要求精确正版本。写命令的幂等 key 只保存 SHA-256，范围为
+  商城+操作且保留 24 小时；请求 hash 绑定 policy code 与规范 payload，同键异参稳定冲突。
+- 政策读/写分别复用管理员 120/30 次每 60 秒限流，scope 为商城+主体；Redis 故障在读取政策之前失败关闭为 `503`。
+  成功响应使用 `private, no-store` 和安全 correlation ID，幂等写额外返回 `Idempotency-Replayed`。
+- B2a 仓库实施已完成：`verify`、完整 integration 29 个文件/234 项、M2→current 42 段迁移演练、生产依赖 high、OpenAPI 结构检查、
+  Gitleaks、差异检查与独立高风险复审均通过。目标库逐库 preflight 仍是 rollout 前置条件；详见 `docs/reports/m6.3-b2a-completion-report.md`。

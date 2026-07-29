@@ -2,19 +2,20 @@
 
 > 状态：已批准
 >
-> 版本：0.7
+> 版本：0.8
 >
 > 日期：2026-07-29
 >
-> 依据：`REQUIREMENTS.md` V2.0、`AGENTS.md`
+> 依据：`REQUIREMENTS.md` V2.1、`AGENTS.md`
 
 批准记录：用户于 2026-07-17 批准本架构，授权先实施 P0 计划的 M0；用户于
 2026-07-23 批准 M4 专项计划，地址、服务端结算、订单、COD 与配送策略按本文边界实施；用户于
 2026-07-27 先批准 M6 双轨契约冻结，随后授权 M6.2 数据/RLS/迁移实施；2026-07-28 授权 M6.3，
 先完成 M6.3-A checkout 政策快照与物流 purpose 前置安全收口，随后完成 M6.3-B0 契约与前向
 数据库修复。B0 完成时不授权任何 B1-B7 运行时；用户随后按推荐边界单独授权 B1，现已完成四个
-会员/管理员只读接口及适用门禁。B2-B7、UI、生产政策/启用、供应商调用、部署与发布仍未授权，原有外部上线
-门禁保持不变。
+会员/管理员只读接口及适用门禁。2026-07-29 又授权 B2a 政策控制面；七个管理员接口、两个分页索引、只读兼容性
+预检、settings 契约偏差收口与适用仓库门禁均已完成，B2a 仓库实施标记 `COMPLETE`。每个目标库 rollout 前仍须逐库 preflight；
+B2/B2b、B3-B7、M6.3、UI、生产政策/启用、供应商调用、部署与发布仍未完成或未授权并保持失败关闭，原有外部上线门禁保持不变。
 
 ## 1. 决策范围
 
@@ -378,9 +379,35 @@ docs/
   超限返回 `429` 与 `Retry-After`。所有响应延续同一个安全 correlation ID。管理员无 status 列表新增
   `(store_id, updated_at DESC, id DESC)` 前向索引；Prisma 仅补记数据库原有
   `after_sale_refunds(store_id, settlement_id)` 唯一约束以修复 schema drift，不重复创建索引。
-- B1 不开放申请、取消、审核、凭证访问、返件、退款、COD 结算或任何其他写路径，也不交付 UI、
-  worker、生产政策/启用或外部调用。B2-B7、完整返件验收与库存恢复 M6.4、生产 rollout、部署和发布
-  继续需要单独授权；B1 可读不代表整个 M6.3、M6、M5 或 P0 完成。
+- B1 本身不开放申请、取消、审核、凭证访问、返件、退款、COD 结算或任何写路径，也不交付 UI、worker、生产政策/启用或外部调用。
+  随后增加并完成下节 B2a 政策控制面的仓库实施；B2b/B3-B7、完整返件验收与库存恢复 M6.4、生产 rollout、部署和发布继续需要单独授权。
+  B1 可读不代表整个 M6.3、M6、M5 或 P0 完成。
+
+### M6.3-B2a 政策控制面仓库完成边界
+
+- B2a 在不改变 M6.2 领域模型的前提下注册 policy head 列表/详情、草稿 `PUT`、不可变 version 列表/详情、
+  publish 和 disable 七个管理员接口。读、草稿、发布、停用分别要求独立 RBAC；发布/停用要求近期 MFA、
+  确认词、reason、expected version 和商城范围幂等。七个路由的成功响应使用 `private, no-store` 和 correlation ID，
+  读/写分别使用管理员 120/30 次每 60 秒档位。
+- B2a 收口同时修正了已有 settings GET/PUT 的契约偏差：现在严格校验 Store-Code/Access-Reason/query，成功响应返回
+  correlation/no-store，并进入同一 ADMIN READ/WRITE 限流；Redis 不可用时在读取/变更政策或 settings 之前失败关闭。
+- 草稿 payload 按冻结类型、小写 UUID、reason code、`vi/zh/en` 和目标集规范化并哈希。ACTIVE head 可保存下一版草稿，
+  但只在发布事务创建新版本/三语/冻结 assignment 并切换活动投影；草稿不会提前改变 checkout。停用只移除该
+  policy 的当前解析投影，不删除版本、assignment、订单快照或售后引用。
+- 发布/停用在 `m62-policy:{store_id}` advisory lock 下再锁 policy head，用同一数据库 `CURRENT_TIMESTAMP` 生成生效/发布/
+  readiness 时间。目标冲突稳定拒绝；enforcement ON 时发布或停用若使权威 readiness 不成立，settings 与命令事务一起回滚。
+  审计保留 policy/settings 完整 before/after、reason、actor 和 correlation ID；公开 `409` 只投影白名单
+  `details.reason_code`。
+- heads 与 versions 列表继续使用 B1 `c1_` HMAC key ring，但以不同 resource 并额外绑定 policy code/筛选；分页保留
+  PostgreSQL `timestamptz(6)` 的六位微秒。读取还会重新验证草稿 hash/product replace-set、版本 payload/hash/标量/
+  三语与冻结 assignment，损坏事实失败关闭。
+- B2a 迁移只增加 heads 的 `(store_id, updated_at DESC, id DESC)` 和 versions 的
+  `(store_id, policy_id, published_at DESC, id DESC)` 两个索引，不改写 RLS。保留既有 tenant policy 是有意的历史兼容决策：
+  B1 会员售后仍能读取已绑定但现已停用/被替换的不可变政策版本。不采用“只允许 ACTIVE assignment”的 RLS，因为它会破坏
+  这一历史读，又无法隐藏 ACTIVE head 行内草稿列；管理操作由应用层独立 RBAC 和显式 store scope 叠加 FORCE RLS 保护。
+- 旧数据库允许下划线 code 与非严格 object payload，新 API 不接受这些事实。仓库的只读分批预检已在本地测试库通过
+  （`policies=0, versions=0`）；适用仓库门禁均已通过，B2a 仓库实施为 `COMPLETE`。每个目标库在 rollout 前仍必须重新执行并留证；
+  B2/B2b、B3-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭。
 
 ## 7. 身份、安全与隐私
 

@@ -91,6 +91,8 @@ import { PaymentsAdminController } from './payments-admin/payments-admin.control
 import { PaymentsAdminService } from './payments-admin/payments-admin.service';
 import { AfterSalesPolicyController } from './after-sales-policy/after-sales-policy.controller';
 import { AfterSalesPolicyService } from './after-sales-policy/after-sales-policy.service';
+import { AfterSalesPolicyManagementController } from './after-sales-policy/after-sales-policy-management.controller';
+import { AfterSalesPolicyManagementService } from './after-sales-policy/after-sales-policy-management.service';
 import {
   AfterSalesAdminController,
   AfterSalesController,
@@ -187,6 +189,7 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     ShippingController,
     PaymentsAdminController,
     AfterSalesPolicyController,
+    AfterSalesPolicyManagementController,
     AfterSalesController,
     AfterSalesAdminController,
   ],
@@ -216,6 +219,7 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     ShippingService,
     PaymentsAdminService,
     AfterSalesPolicyService,
+    AfterSalesPolicyManagementService,
     AfterSalesCursor,
     AfterSalesProjector,
     AfterSalesRateLimiter,
