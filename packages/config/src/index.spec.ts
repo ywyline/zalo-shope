@@ -54,10 +54,22 @@ const validEvidenceStorageEnvironment = {
 const validEvidenceScannerEnvironment = {
   ...validEvidenceStorageEnvironment,
   AFTER_SALE_EVIDENCE_CLAIM_TTL_SECONDS: '86400',
+  AFTER_SALE_EVIDENCE_DELETE_MAX_ATTEMPTS: '8',
+  AFTER_SALE_EVIDENCE_DELETE_RETRY_BASE_DELAY_MS: '60000',
+  AFTER_SALE_EVIDENCE_DELETE_RETRY_MAX_DELAY_MS: '21600000',
+  AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: 'true',
   AFTER_SALE_EVIDENCE_FAILED_RETENTION_SECONDS: '86400',
   EVIDENCE_SCANNER_HOST: '127.0.0.1',
   EVIDENCE_SCANNER_PROVIDER: 'clamav',
   EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS: '604800',
+};
+
+const validMemberEvidenceUploadsEnvironment = {
+  ...validEvidenceScannerEnvironment,
+  AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_BYTES: String(200 * 1_024 * 1_024),
+  AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES: '12',
+  AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: 'true',
+  AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS: '900',
 };
 
 const productionPlaceholderFields = [
@@ -116,9 +128,17 @@ describe('parseRuntimeConfig', () => {
     expect(config.EVIDENCE_SCANNER_DEAD_LETTER_INTERVAL_MS).toBe(5_000);
     expect(config.EVIDENCE_SCANNER_PORT).toBe(3310);
     expect(config.EVIDENCE_SCANNER_PROVIDER).toBe('disabled');
+    expect(config.AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED).toBe(false);
+    expect(config.AFTER_SALE_EVIDENCE_DELETE_MAX_ATTEMPTS).toBeUndefined();
+    expect(config.AFTER_SALE_EVIDENCE_LIFECYCLE_DEAD_LETTER_BATCH_SIZE).toBe(25);
+    expect(config.AFTER_SALE_EVIDENCE_LIFECYCLE_DEAD_LETTER_INTERVAL_MS).toBe(5_000);
     expect(config.EVIDENCE_SCANNER_REQUEST_TIMEOUT_MS).toBe(10_000);
     expect(config.EVIDENCE_SCANNER_RESPONSE_LIMIT_BYTES).toBe(4_096);
     expect(config.EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS).toBeUndefined();
+    expect(config.AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED).toBe(false);
+    expect(config.AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS).toBeUndefined();
+    expect(config.AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES).toBeUndefined();
+    expect(config.AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_BYTES).toBeUndefined();
     expect(config.PAYMENT_RECONCILIATION_ENABLED).toBe(false);
     expect(config.ZALO_CHECKOUT_REQUEST_TIMEOUT_MS).toBe(5_000);
     expect(config.ZALO_CHECKOUT_RESPONSE_LIMIT_BYTES).toBe(131_072);
@@ -228,6 +248,77 @@ describe('parseRuntimeConfig', () => {
         EVIDENCE_SCANNER_RESPONSE_LIMIT_BYTES: '255',
       }),
     ).toThrow(InvalidEnvironmentError);
+  });
+
+  it('keeps deletion independent from ClamAV and freezes the bounded retry contract', () => {
+    const deletionOnly = {
+      ...validEvidenceStorageEnvironment,
+      AFTER_SALE_EVIDENCE_DELETE_MAX_ATTEMPTS: '8',
+      AFTER_SALE_EVIDENCE_DELETE_RETRY_BASE_DELAY_MS: '60000',
+      AFTER_SALE_EVIDENCE_DELETE_RETRY_MAX_DELAY_MS: '21600000',
+      AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: 'true',
+    };
+    expect(parseRuntimeConfig(deletionOnly)).toMatchObject({
+      AFTER_SALE_EVIDENCE_DELETE_MAX_ATTEMPTS: 8,
+      AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: true,
+      EVIDENCE_SCANNER_PROVIDER: 'disabled',
+    });
+    for (const field of [
+      'AFTER_SALE_EVIDENCE_DELETE_MAX_ATTEMPTS',
+      'AFTER_SALE_EVIDENCE_DELETE_RETRY_BASE_DELAY_MS',
+      'AFTER_SALE_EVIDENCE_DELETE_RETRY_MAX_DELAY_MS',
+    ] as const) {
+      expect(() => parseRuntimeConfig({ ...deletionOnly, [field]: '' })).toThrow(
+        InvalidEnvironmentError,
+      );
+    }
+    expect(() =>
+      parseRuntimeConfig({ ...deletionOnly, AFTER_SALE_EVIDENCE_DELETE_MAX_ATTEMPTS: '7' }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() => parseRuntimeConfig({ ...deletionOnly, OUTBOX_WORKER_LEASE_MS: '18999' })).toThrow(
+      InvalidEnvironmentError,
+    );
+    expect(
+      parseRuntimeConfig({ ...deletionOnly, OUTBOX_WORKER_LEASE_MS: '19000' })
+        .OUTBOX_WORKER_LEASE_MS,
+    ).toBe(19_000);
+  });
+
+  it('enables member evidence HTTP only with explicit limits, storage and scanning', () => {
+    expect(parseRuntimeConfig(validMemberEvidenceUploadsEnvironment)).toMatchObject({
+      AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_BYTES: 200 * 1_024 * 1_024,
+      AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES: 12,
+      AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: true,
+      AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS: 900,
+    });
+
+    for (const field of [
+      'AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_BYTES',
+      'AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES',
+      'AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS',
+    ] as const) {
+      expect(() =>
+        parseRuntimeConfig({ ...validMemberEvidenceUploadsEnvironment, [field]: '' }),
+      ).toThrow(InvalidEnvironmentError);
+    }
+    expect(() =>
+      parseRuntimeConfig({
+        ...validMemberEvidenceUploadsEnvironment,
+        EVIDENCE_SCANNER_PROVIDER: 'disabled',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validMemberEvidenceUploadsEnvironment,
+        AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS: '299',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(
+      parseRuntimeConfig({
+        ...validEvidenceScannerEnvironment,
+        AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: 'false',
+      }).AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED,
+    ).toBe(false);
   });
 
   it('allows only an explicit loopback ClamAV sidecar in production', () => {

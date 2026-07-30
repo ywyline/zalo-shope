@@ -10,6 +10,8 @@ import {
   afterSaleCursorScopeSchema,
   afterSaleCursorSchema,
   afterSaleEvidenceIdParamsSchema,
+  afterSaleEvidenceResponseSchema,
+  afterSaleEvidenceUploadResponseSchema,
   afterSaleEvidenceUploadRequestSchema,
   afterSaleExchangeToRefundRequestSchema,
   afterSaleListQuerySchema,
@@ -149,6 +151,60 @@ describe('M6 strict after-sale DTOs', () => {
         checksum_sha256: 'a'.repeat(64),
         filename: '../evidence.svg',
         mime_type: 'image/svg+xml',
+      }),
+    ).toThrow();
+  });
+
+  it('allows only the signed evidence upload header and public status projections', () => {
+    const evidenceId = '44444444-4444-4444-8444-444444444444';
+    const upload = {
+      evidence_id: evidenceId,
+      expires_at: '2026-07-30T12:00:00.000Z',
+      upload_headers: {
+        'content-type': 'image/jpeg',
+        'if-none-match': '*',
+        'x-amz-checksum-sha256': `${'A'.repeat(43)}=`,
+      },
+      upload_url: 'http://localhost:9000/evidence/signed',
+      version: 1,
+    };
+    expect(afterSaleEvidenceUploadResponseSchema.parse(upload)).toEqual(upload);
+    expect(() =>
+      afterSaleEvidenceUploadResponseSchema.parse({
+        ...upload,
+        object_key: 'test/store/staged/evidence/original',
+      }),
+    ).toThrow();
+    expect(() =>
+      afterSaleEvidenceUploadResponseSchema.parse({
+        ...upload,
+        upload_headers: { ...upload.upload_headers, authorization: 'must-not-leak' },
+      }),
+    ).toThrow();
+    expect(() =>
+      afterSaleEvidenceUploadResponseSchema.parse({
+        ...upload,
+        upload_headers: {
+          ...upload.upload_headers,
+          'x-amz-server-side-encryption-aws-kms-key-id': 'kms-key',
+        },
+      }),
+    ).toThrow();
+
+    expect(
+      afterSaleEvidenceResponseSchema.parse({
+        access_expires_at: null,
+        evidence_id: evidenceId,
+        status: 'PENDING',
+        version: 1,
+      }),
+    ).toMatchObject({ status: 'PENDING' });
+    expect(() =>
+      afterSaleEvidenceResponseSchema.parse({
+        access_expires_at: null,
+        evidence_id: evidenceId,
+        status: 'READY',
+        version: 2,
       }),
     ).toThrow();
   });

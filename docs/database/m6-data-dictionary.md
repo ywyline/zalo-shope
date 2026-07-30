@@ -1,11 +1,13 @@
 # M6 售后、会员与分享数据字典
 
 > 状态：M6.1 契约已冻结；M6.2 schema/RLS、M6.3-A、M6.3-B0、B1、B2a、B2b-D0 与
-> B2b-D1 repository + local/test storage validation 与 B2b-D2 repository implementation +
-> local/test scanner worker validation 已完成且适用仓库门禁通过；B2/B2b、B3-B7、M6.3、UI 与
+> B2b-D1 repository + local/test storage validation、B2b-D2 repository implementation +
+> local/test scanner worker validation、B2b-D3 repository implementation + local/test member
+> evidence HTTP validation 与 B2b-D4 repository implementation + local/test deletion worker validation
+> 已完成且适用仓库门禁通过；B2/B2b、B3-B7、M6.3、UI 与
 > 生产 rollout 未完成或未授权并保持失败关闭
 >
-> 日期：2026-07-29
+> 日期：2026-07-30
 
 M6.2 实施使用 `20260727110000_m62_after_sales_member_share_foundation`、
 `20260727111000_m62_permission_catalog`、`20260727112000_m62_integrity_and_snapshot_guards`、
@@ -72,6 +74,18 @@ M6.3-B2b-D2 已接入 D1 同流读取、真实 ClamAV adapter、scan outbox hand
 RLS、grant、trigger、enum 或 OpenAPI runtime status，迁移总数继续是 43。该局部只标记为 repository
 implementation + local/test scanner worker validation `COMPLETE`；完整 B2b/B2、B3 claim、HTTP、
 保护读取/审计、expire/delete worker 与生产 rollout 不在该结论内。
+
+M6.3-B2b-D3 随后开放默认关闭的会员初始化、确认和 owner 状态 HTTP，把 D0 生命周期/配额/scan
+outbox、D1 create-only 上传与确认前真实 bytes 校验、D2 scanner 接成 local/test 链路。D3 不增加
+schema、迁移、RLS、grant、trigger、enum 或 STORE 权限，迁移仍为 43 段。该局部只标记 repository
+implementation + local/test member evidence HTTP validation `COMPLETE`；B3 claim、凭证正文保护读取/
+管理员审计、expire/delete worker、生产参数批准与 rollout 不在该结论内。
+
+M6.3-B2b-D4 不修改数据库形状，而是把 D0 已冻结的 expire/delete、ledger、删除失败退避与 dead-letter
+原语接入 worker。新增 lease-bound 原语在 provider 网络调用前后复核当前商城、outbox owner/version/
+未过期 lease、evidence version/status/legal hold 与完整活动 ledger；成功和失败投影都不能绕过这些
+条件。M2→current 仍为 43 段。该局部只标记 repository implementation + local/test deletion worker
+validation `COMPLETE`；生产 versioned storage、legal hold 管理、保护读取/审计与外部告警不在结论内。
 
 ## 1. 统一约定
 
@@ -745,3 +759,44 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   scanner worker validation `COMPLETE`。
   该局部结论不包含 HTTP upload/confirm/status、B3 claim、保护读取/管理员读取审计、expire/delete
   worker、外部告警、生产参数审批、production storage/scanner 或 rollout；B2b/B2/M6.3/M6/P0 继续未完成。
+
+## 14. M6.3-B2b-D3 会员凭证 HTTP 与数据库读取边界
+
+- D3 不新增数据库列、索引、约束、枚举、RLS、grant、trigger、函数或迁移；D0 evidence、ORIGINAL
+  ledger、配额锁、幂等事实与 outbox 继续是权威数据，M2→current 保持 43 段。
+- `prepareAfterSaleEvidenceUploadConfirmation` 只接受 member StoreContext、严格 UUID/正版本/幂等键，
+  在 owner RLS 下读取未确认、未过上传排他截止且 expected version 匹配的声明。会员 HTTP 不获得
+  SYSTEM-only ledger SELECT；对象 key 只作为内部 D1 输入，D2 扫描仍从权威 ledger 独立重读。
+- 预确认读取不持有数据库锁跨越对象网络调用。D1 验证结束后，既有
+  `confirmAfterSaleEvidenceUpload` 重新取得商城+会员配额锁和 evidence 行锁，复核 owner、version、
+  `PENDING`、未确认与数据库时钟截止，再原子递增 generation/version、写确认事实和 scan outbox。
+  TOCTOU 期间的版本或截止变化稳定冲突，不接受客户端 key、provider metadata 或 HTTP URL 作为事实。
+- `readMemberAfterSaleEvidenceUpload` 在 member FORCE RLS 事务中同时绑定 `store_id/member_id/id`，并用
+  数据库 `clock_timestamp()` 返回 observed time。应用只从白名单父行字段投影
+  `PENDING/READY/UNAVAILABLE`；不返回 object key、checksum、扫描身份/错误、hold、删除状态或供应商
+  正文。
+- 初始化复用 D0 SERIALIZABLE 配额与 24 小时幂等；确认 replay 复用已提交事实，不重复读取对象或排队
+  scan。Redis 读写限流在任何 evidence 读取或写入前完成，故限流失败不创建或修改凭证事实。
+- D3 真实基础设施集成 4/4 和完整 integration 33 文件/274 项通过；43 段迁移演练通过。该局部结论不
+  包含 B3 claim、保护读取/管理员审计、expire/delete worker、legal hold 管理、生产 retention/配额批准
+  或 rollout；完整 B2b/B2/M6.3/M6/P0 继续未完成。
+
+## 15. M6.3-B2b-D4 删除协调与数据库提交边界
+
+- D4 不新增列、表、索引、约束、枚举、RLS、grant、trigger、函数或迁移；D0 evidence、ledger、
+  transition、outbox 和删除 attempt/exhaustion 字段继续是唯一权威事实，迁移总数保持 43。
+- `applyAfterSaleEvidenceExpirationForLease` 先锁当前 outbox，再锁 evidence，并在锁等待后重读数据库
+  时钟。只有 payload expected version 与父行一致、状态具有权威截止、无 hold 且到期时，才复用 D0
+  transaction-local 原语进入 `DELETION_PENDING` 并同事务追加当前 version 的 delete outbox。
+- `loadAfterSaleEvidenceDeletionWorkForLease` 返回父 version 与所有 `object_key IS NOT NULL` 的 ledger
+  `(id,version,role,key)`。`applyAfterSaleEvidenceDeletionResultForLease` 再锁同一消息、父行和完整 ledger；
+  对象新增、移除、version 变化、父 version/status/hold 变化或 lease 换 owner/到期均拒绝 success/failure。
+- success 原子把全部活动 ledger key 置空、保留行/hash 审计元数据，并清理父行兼容 key 与敏感 scanner
+  字段后进入 `DELETED`。failure 复用 D0 指数退避，第 5 次形成 warning condition，第 8 次写
+  `delete_exhausted_at` 且不再自动排队。
+- `DELETE_FAILED` 到期重试会先推进父 version；同一消息仅允许在已有失败计数、仍为
+  `DELETION_PENDING` 且父 version 精确为 payload expected version + 1 时恢复，以覆盖该推进后崩溃。
+  其他旧消息返回 `SUPERSEDED`；ledger 漂移抛状态冲突交给通用 outbox 重试。
+- D4 真实 PostgreSQL + MinIO 6/6、完整 integration 34 文件/280 项与 43 段迁移演练通过。该数据边界
+  不证明 production versioned bucket 历史版本删除、B3 claim、保护读取/管理员审计、legal hold 管理、
+  外部告警或 rollout；完整 B2b/B2/M6.3/M6/P0 继续未完成。

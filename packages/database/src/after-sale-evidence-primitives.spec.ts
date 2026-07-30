@@ -16,6 +16,8 @@ import {
   initializeAfterSaleEvidenceUpload,
   listAfterSaleEvidenceScanDeadLetterCandidates,
   loadAfterSaleEvidenceScanWorkForLease,
+  prepareAfterSaleEvidenceUploadConfirmation,
+  readMemberAfterSaleEvidenceUpload,
   reconcileAfterSaleEvidenceDeadLetter,
   reconcileAfterSaleEvidenceScanDeadLetter,
   recordAfterSaleEvidenceDeletionFailure,
@@ -118,6 +120,27 @@ describe('after-sale evidence lifecycle input boundaries', () => {
         expectedVersion: 0,
       }),
     );
+  });
+
+  it('rejects invalid member confirmation and status identities before opening a transaction', async () => {
+    await inputError(
+      prepareAfterSaleEvidenceUploadConfirmation(unusedClient, memberContext, {
+        evidenceId: 'not-a-uuid',
+        expectedVersion: 1,
+        idempotencyKey: 'm63-b2b-confirm-identity',
+      }),
+    );
+    await inputError(
+      prepareAfterSaleEvidenceUploadConfirmation(unusedClient, memberContext, {
+        evidenceId: EVIDENCE_ID,
+        expectedVersion: 0,
+        idempotencyKey: 'm63-b2b-confirm-version',
+      }),
+    );
+    await inputError(readMemberAfterSaleEvidenceUpload(unusedClient, memberContext, 'not-a-uuid'));
+    await expect(
+      readMemberAfterSaleEvidenceUpload(unusedClient, adminContext, EVIDENCE_ID),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_EVIDENCE_SCOPE_DENIED' });
   });
 
   it('rejects non-positive scan generations and incomplete trusted scanner identity', async () => {

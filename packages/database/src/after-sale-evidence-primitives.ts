@@ -133,6 +133,12 @@ type ScanWorkRow = {
   scan_generation: number;
 };
 
+type EvidenceConfirmationRow = EvidenceRow & {
+  checksum_sha256: string;
+  deployment_environment: string;
+  mime_type: string;
+};
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const CHECKSUM_PATTERN = /^[0-9a-f]{64}$/u;
 const ENVIRONMENT_PATTERN = /^[a-z][a-z0-9-]{1,31}$/u;
@@ -414,6 +420,12 @@ export type AfterSaleEvidenceScanLeaseInput = Readonly<{
   workerId: string;
 }>;
 
+export type AfterSaleEvidenceLifecycleLeaseInput = Readonly<{
+  outboxExpectedVersion: number;
+  outboxMessageId: string;
+  workerId: string;
+}>;
+
 function assertEvidenceOutboxLeaseInput(input: AfterSaleEvidenceScanLeaseInput): void {
   if (
     !UUID_PATTERN.test(input.outboxMessageId) ||
@@ -424,6 +436,41 @@ function assertEvidenceOutboxLeaseInput(input: AfterSaleEvidenceScanLeaseInput):
   ) {
     throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
   }
+}
+
+function assertEvidenceLifecycleLeaseInput(input: AfterSaleEvidenceLifecycleLeaseInput): void {
+  if (
+    !UUID_PATTERN.test(input.outboxMessageId) ||
+    !Number.isSafeInteger(input.outboxExpectedVersion) ||
+    input.outboxExpectedVersion < 1 ||
+    !input.workerId.trim() ||
+    input.workerId.length > 128
+  ) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
+  }
+}
+
+async function lockedValidEvidenceLifecycleOutboxLease(
+  transaction: StoreTransaction,
+  context: AfterSaleEvidenceSystemContext,
+  input: AfterSaleEvidenceLifecycleLeaseInput,
+  eventType: typeof AFTER_SALE_EVIDENCE_EXPIRE_EVENT | typeof AFTER_SALE_EVIDENCE_DELETE_EVENT,
+): Promise<Readonly<{ message: EvidenceOutboxRow; parsed: ParsedEvidenceOutbox; now: Date }>> {
+  const message = await lockedEvidenceOutbox(transaction, context, input.outboxMessageId);
+  const now = await wallClock(transaction);
+  if (
+    !message ||
+    message.status !== 'PROCESSING' ||
+    message.lease_owner !== input.workerId ||
+    !(message.lease_expires_at instanceof Date) ||
+    message.lease_expires_at <= now ||
+    message.version !== input.outboxExpectedVersion
+  ) {
+    throw new ReliableMessagingError('OUTBOX_LEASE_LOST');
+  }
+  const parsed = parseEvidenceOutbox(message, context.storeId);
+  if (parsed.eventType !== eventType) return stateConflict();
+  return { message, parsed, now };
 }
 
 async function lockedValidScanOutboxLease(
@@ -786,6 +833,142 @@ export async function initializeAfterSaleEvidenceUpload(
       return { evidence: evidenceRecord(created), objectKey, replayed: false };
     },
     { isolationLevel: 'Serializable', timeout: 15_000 },
+  );
+}
+
+export type AfterSaleEvidenceUploadConfirmationPreparation =
+  | Readonly<{
+      declaration: Readonly<{
+        byteSize: number;
+        checksumSha256: string;
+        deploymentEnvironment: string;
+        evidenceId: string;
+        mimeType: AfterSaleEvidenceMimeType;
+        objectKey: string;
+        storeId: string;
+      }>;
+      replayed: false;
+    }>
+  | Readonly<{ evidence: AfterSaleEvidenceRecord; replayed: true }>;
+
+export async function prepareAfterSaleEvidenceUploadConfirmation(
+  client: PrismaClient,
+  context: StoreContext,
+  input: Readonly<{
+    evidenceId: string;
+    expectedVersion: number;
+    idempotencyKey: string;
+  }>,
+): Promise<AfterSaleEvidenceUploadConfirmationPreparation> {
+  assertMemberContext(context);
+  assertIdempotencyKey(input.idempotencyKey);
+  assertPositiveInteger(input.expectedVersion, Number.MAX_SAFE_INTEGER);
+  if (!UUID_PATTERN.test(input.evidenceId)) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
+  }
+  const keyHash = digest(input.idempotencyKey);
+  const requestHash = digest({
+    evidence_id: input.evidenceId,
+    expected_version: input.expectedVersion,
+  });
+  const operation = `after-sale-evidence-confirm:${context.actor.id}`;
+  return withStoreTransaction(
+    client,
+    context,
+    async (transaction) => {
+      const now = await clock(transaction);
+      const replay = await transaction.idempotencyRecord.findUnique({
+        where: {
+          storeId_operation_idempotencyKey: {
+            idempotencyKey: keyHash,
+            operation,
+            storeId: context.storeId,
+          },
+        },
+      });
+      if (replay && replay.expiresAt > now) {
+        if (replay.memberId !== context.actor.id || replay.requestHash !== requestHash) {
+          throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_IDEMPOTENCY_CONFLICT');
+        }
+        const row = await evidenceSnapshot(transaction, input.evidenceId);
+        if (!row || row.member_id !== context.actor.id || row.confirmed_at === null) {
+          throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
+        }
+        return { evidence: evidenceRecord(row), replayed: true };
+      }
+
+      const rows = await transaction.$queryRaw<EvidenceConfirmationRow[]>`
+        SELECT evidence.id, evidence.store_id, evidence.member_id, evidence.after_sale_id,
+          evidence.object_key, evidence.byte_size, evidence.status,
+          evidence.upload_deadline_at, evidence.confirmed_at, evidence.scan_generation,
+          evidence.claim_deadline_at, evidence.ordinary_access_deadline_at,
+          evidence.retention_deadline_at, evidence.legal_hold_active,
+          evidence.delete_attempt_count, evidence.next_delete_attempt_at,
+          evidence.delete_exhausted_at, evidence.version, evidence.checksum_sha256,
+          evidence.mime_type,
+          split_part(evidence.object_key, '/', 1) AS deployment_environment
+        FROM after_sale_evidence_files AS evidence
+        WHERE evidence.store_id = ${context.storeId}::uuid
+          AND evidence.member_id = ${context.actor.id}::uuid
+          AND evidence.id = ${input.evidenceId}::uuid
+      `;
+      const row = rows[0];
+      if (!row) {
+        throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_NOT_FOUND');
+      }
+      if (
+        row.version !== input.expectedVersion ||
+        row.status !== 'PENDING' ||
+        row.confirmed_at !== null ||
+        row.upload_deadline_at === null ||
+        now >= row.upload_deadline_at ||
+        row.object_key === null ||
+        !CHECKSUM_PATTERN.test(row.checksum_sha256) ||
+        !ENVIRONMENT_PATTERN.test(row.deployment_environment) ||
+        !AFTER_SALE_EVIDENCE_MIME_TYPES.includes(row.mime_type as AfterSaleEvidenceMimeType) ||
+        row.byte_size < 1n ||
+        row.byte_size > BigInt(Number.MAX_SAFE_INTEGER)
+      ) {
+        throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
+      }
+      return {
+        declaration: {
+          byteSize: Number(row.byte_size),
+          checksumSha256: row.checksum_sha256,
+          deploymentEnvironment: row.deployment_environment,
+          evidenceId: row.id,
+          mimeType: row.mime_type as AfterSaleEvidenceMimeType,
+          objectKey: row.object_key,
+          storeId: row.store_id,
+        },
+        replayed: false,
+      };
+    },
+    { isolationLevel: 'RepeatableRead', timeout: 15_000 },
+  );
+}
+
+export async function readMemberAfterSaleEvidenceUpload(
+  client: PrismaClient,
+  context: StoreContext,
+  evidenceId: string,
+): Promise<Readonly<{ evidence: AfterSaleEvidenceRecord; observedAt: Date }>> {
+  assertMemberContext(context);
+  if (!UUID_PATTERN.test(evidenceId)) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
+  }
+  return withStoreTransaction(
+    client,
+    context,
+    async (transaction) => {
+      const observedAt = await clock(transaction);
+      const row = await evidenceSnapshot(transaction, evidenceId);
+      if (!row || row.member_id !== context.actor.id || row.store_id !== context.storeId) {
+        throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_NOT_FOUND');
+      }
+      return { evidence: evidenceRecord(row), observedAt };
+    },
+    { isolationLevel: 'RepeatableRead', timeout: 15_000 },
   );
 }
 
@@ -1490,6 +1673,86 @@ export async function beginAfterSaleEvidenceDeletion(
   );
 }
 
+export type ApplyAfterSaleEvidenceExpirationForLeaseResult = Readonly<{
+  evidence: AfterSaleEvidenceRecord;
+  nextAttemptAt: Date | null;
+  outcome: 'DELETE_SCHEDULED' | 'HELD' | 'NOT_DUE' | 'SUPERSEDED';
+}>;
+
+export async function applyAfterSaleEvidenceExpirationForLease(
+  client: PrismaClient,
+  context: AfterSaleEvidenceSystemContext,
+  input: AfterSaleEvidenceLifecycleLeaseInput,
+): Promise<ApplyAfterSaleEvidenceExpirationForLeaseResult> {
+  assertEvidenceLifecycleLeaseInput(input);
+  return withAfterSaleEvidenceSystemTransaction(
+    client,
+    context,
+    async (transaction) => {
+      const lease = await lockedValidEvidenceLifecycleOutboxLease(
+        transaction,
+        context,
+        input,
+        AFTER_SALE_EVIDENCE_EXPIRE_EVENT,
+      );
+      const current = await lockedEvidence(transaction, lease.parsed.evidenceId);
+      if (!current) return stateConflict();
+      const now = await assertLockedEvidenceLifecycleLeaseCurrent(
+        transaction,
+        lease.message,
+        input,
+      );
+      if (
+        current.version !== lease.parsed.expectedVersion ||
+        !['PENDING', 'READY_UNCLAIMED', 'READY', 'FAILED', 'QUARANTINED'].includes(current.status)
+      ) {
+        return {
+          evidence: evidenceRecord(current),
+          nextAttemptAt: null,
+          outcome: 'SUPERSEDED',
+        };
+      }
+      const begun = await beginDeletionInTransaction(transaction, context, {
+        evidenceId: current.id,
+        expectedVersion: current.version,
+        now,
+      });
+      await assertLockedEvidenceLifecycleLeaseCurrent(transaction, lease.message, input);
+      if (begun.outcome === 'READY') {
+        return {
+          evidence: begun.evidence,
+          nextAttemptAt: null,
+          outcome: 'DELETE_SCHEDULED',
+        };
+      }
+      return {
+        evidence: begun.evidence,
+        nextAttemptAt: deletionDeadline(current),
+        outcome: begun.outcome === 'HELD' ? 'HELD' : 'NOT_DUE',
+      };
+    },
+    { isolationLevel: 'Serializable', timeout: SCAN_LEASE_TRANSACTION_TIMEOUT_MS },
+  );
+}
+
+async function assertLockedEvidenceLifecycleLeaseCurrent(
+  transaction: StoreTransaction,
+  message: EvidenceOutboxRow,
+  input: AfterSaleEvidenceLifecycleLeaseInput,
+): Promise<Date> {
+  const now = await wallClock(transaction);
+  if (
+    message.status !== 'PROCESSING' ||
+    message.lease_owner !== input.workerId ||
+    !(message.lease_expires_at instanceof Date) ||
+    message.lease_expires_at <= now ||
+    message.version !== input.outboxExpectedVersion
+  ) {
+    throw new ReliableMessagingError('OUTBOX_LEASE_LOST');
+  }
+  return now;
+}
+
 export type AfterSaleEvidenceObjectRecord = Readonly<{
   id: string;
   objectKey: string;
@@ -1538,6 +1801,103 @@ export async function listAfterSaleEvidenceDeletionObjects(
       version: row.version,
     }));
   });
+}
+
+export type AfterSaleEvidenceDeletionWork = Readonly<{
+  evidenceId: string;
+  evidenceVersion: number;
+  objects: readonly AfterSaleEvidenceObjectRecord[];
+}>;
+
+export type LoadAfterSaleEvidenceDeletionWorkForLeaseResult =
+  | Readonly<{ outcome: 'READY'; work: AfterSaleEvidenceDeletionWork }>
+  | Readonly<{ nextAttemptAt: Date; outcome: 'NOT_DUE' }>
+  | Readonly<{ outcome: 'SUPERSEDED' }>;
+
+export async function loadAfterSaleEvidenceDeletionWorkForLease(
+  client: PrismaClient,
+  context: AfterSaleEvidenceSystemContext,
+  input: AfterSaleEvidenceLifecycleLeaseInput,
+): Promise<LoadAfterSaleEvidenceDeletionWorkForLeaseResult> {
+  assertEvidenceLifecycleLeaseInput(input);
+  return withAfterSaleEvidenceSystemTransaction(
+    client,
+    context,
+    async (transaction) => {
+      const lease = await lockedValidEvidenceLifecycleOutboxLease(
+        transaction,
+        context,
+        input,
+        AFTER_SALE_EVIDENCE_DELETE_EVENT,
+      );
+      const current = await lockedEvidence(transaction, lease.parsed.evidenceId);
+      if (!current) return stateConflict();
+      const now = await assertLockedEvidenceLifecycleLeaseCurrent(
+        transaction,
+        lease.message,
+        input,
+      );
+      if (current.legal_hold_active || current.delete_exhausted_at !== null) {
+        return { outcome: 'SUPERSEDED' };
+      }
+      let deletionVersion: number;
+      if (current.version === lease.parsed.expectedVersion && current.status === 'DELETE_FAILED') {
+        const nextAttemptAt = current.next_delete_attempt_at;
+        if (!(nextAttemptAt instanceof Date) || !Number.isFinite(nextAttemptAt.getTime())) {
+          return stateConflict();
+        }
+        if (now < nextAttemptAt) return { nextAttemptAt, outcome: 'NOT_DUE' };
+        const begun = await beginDeletionInTransaction(transaction, context, {
+          evidenceId: current.id,
+          expectedVersion: current.version,
+          now,
+        });
+        if (begun.outcome !== 'READY') return stateConflict();
+        deletionVersion = begun.evidence.version;
+      } else if (
+        current.status === 'DELETION_PENDING' &&
+        (current.version === lease.parsed.expectedVersion ||
+          (current.delete_attempt_count > 0 &&
+            current.version === lease.parsed.expectedVersion + 1))
+      ) {
+        deletionVersion = current.version;
+      } else {
+        return { outcome: 'SUPERSEDED' };
+      }
+      const rows = await transaction.$queryRaw<
+        Array<{
+          id: string;
+          object_key: string;
+          object_role: AfterSaleEvidenceObjectRecord['role'];
+          version: number;
+        }>
+      >`
+        SELECT id, object_key, object_role, version
+        FROM after_sale_evidence_objects
+        WHERE store_id = ${context.storeId}::uuid
+          AND evidence_file_id = ${current.id}::uuid
+          AND object_key IS NOT NULL
+        ORDER BY object_role, id
+      `;
+      if (rows.length < 1) return stateConflict();
+      const objects = rows.map((row) => ({
+        id: row.id,
+        objectKey: row.object_key,
+        role: row.object_role,
+        version: row.version,
+      }));
+      await assertLockedEvidenceLifecycleLeaseCurrent(transaction, lease.message, input);
+      return {
+        outcome: 'READY',
+        work: {
+          evidenceId: current.id,
+          evidenceVersion: deletionVersion,
+          objects,
+        },
+      };
+    },
+    { isolationLevel: 'Serializable', timeout: SCAN_LEASE_TRANSACTION_TIMEOUT_MS },
+  );
 }
 
 type RecordDeletionFailureInTransactionInput = Readonly<{
@@ -1746,6 +2106,107 @@ export async function listAfterSaleEvidenceScanDeadLetterCandidates(
                   AND (newer.payload->>'expected_version')::numeric <= evidence.version
                 ELSE false
               END
+        )
+      ORDER BY message.completed_at, message.id
+      LIMIT ${input.batchSize}
+    `;
+    return rows.map((row) => ({ messageId: row.message_id }));
+  });
+}
+
+export type AfterSaleEvidenceLifecycleDeadLetterCandidate = Readonly<{
+  messageId: string;
+}>;
+
+export async function listAfterSaleEvidenceLifecycleDeadLetterCandidates(
+  client: PrismaClient,
+  context: AfterSaleEvidenceSystemContext,
+  input: Readonly<{ batchSize: number }>,
+): Promise<readonly AfterSaleEvidenceLifecycleDeadLetterCandidate[]> {
+  assertPositiveInteger(input.batchSize, 100);
+  return withAfterSaleEvidenceSystemTransaction(client, context, async (transaction) => {
+    const rows = await transaction.$queryRaw<Array<{ message_id: string }>>`
+      SELECT message.id AS message_id
+      FROM outbox_messages message
+      JOIN after_sale_evidence_files evidence
+        ON evidence.store_id = message.store_id
+        AND evidence.id = message.aggregate_id
+      WHERE message.store_id = ${context.storeId}::uuid
+        AND message.status = 'DEAD_LETTER'::outbox_status
+        AND message.aggregate_type = ${AFTER_SALE_EVIDENCE_AGGREGATE_TYPE}
+        AND message.event_type IN (
+          ${AFTER_SALE_EVIDENCE_EXPIRE_EVENT}, ${AFTER_SALE_EVIDENCE_DELETE_EVENT}
+        )
+        AND message.event_version = 1
+        AND message.lease_owner IS NULL
+        AND message.lease_expires_at IS NULL
+        AND message.completed_at IS NOT NULL
+        AND pg_catalog.jsonb_typeof(message.payload) = 'object'
+        AND message.payload ?& ARRAY['evidence_id', 'expected_version', 'store_id']::text[]
+        AND message.payload - ARRAY['evidence_id', 'expected_version', 'store_id']::text[] = '{}'::jsonb
+        AND message.payload->>'store_id' = message.store_id::text
+        AND message.payload->>'evidence_id' = message.aggregate_id::text
+        AND CASE
+          WHEN pg_catalog.jsonb_typeof(message.payload->'expected_version') = 'number'
+            AND message.payload->>'expected_version' ~ '^[1-9][0-9]*$'
+          THEN (message.payload->>'expected_version')::numeric <= 9007199254740991
+            AND evidence.version >= (message.payload->>'expected_version')::numeric
+          ELSE false
+        END
+        AND (
+          (
+            message.event_type = ${AFTER_SALE_EVIDENCE_EXPIRE_EVENT}
+            AND NOT evidence.legal_hold_active
+            AND evidence.status IN (
+              'PENDING'::after_sale_evidence_status,
+              'READY_UNCLAIMED'::after_sale_evidence_status,
+              'READY'::after_sale_evidence_status,
+              'FAILED'::after_sale_evidence_status,
+              'QUARANTINED'::after_sale_evidence_status
+            )
+            AND (
+              evidence.status <> 'PENDING'::after_sale_evidence_status
+              OR evidence.confirmed_at IS NULL
+            )
+          ) OR (
+            message.event_type = ${AFTER_SALE_EVIDENCE_DELETE_EVENT}
+            AND NOT evidence.legal_hold_active
+            AND evidence.status IN (
+              'DELETION_PENDING'::after_sale_evidence_status,
+              'DELETE_FAILED'::after_sale_evidence_status
+            )
+            AND evidence.delete_exhausted_at IS NULL
+          )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM outbox_messages newer
+          WHERE newer.store_id = evidence.store_id
+            AND newer.aggregate_type = ${AFTER_SALE_EVIDENCE_AGGREGATE_TYPE}
+            AND newer.aggregate_id = evidence.id
+            AND newer.event_type = message.event_type
+            AND newer.event_version = 1
+            AND newer.status IN (
+              'PENDING'::outbox_status,
+              'PROCESSING'::outbox_status,
+              'DEAD_LETTER'::outbox_status
+            )
+            AND pg_catalog.jsonb_typeof(newer.payload) = 'object'
+            AND newer.payload ?& ARRAY['evidence_id', 'expected_version', 'store_id']::text[]
+            AND newer.payload - ARRAY['evidence_id', 'expected_version', 'store_id']::text[] = '{}'::jsonb
+            AND newer.payload->>'store_id' = evidence.store_id::text
+            AND newer.payload->>'evidence_id' = evidence.id::text
+            AND CASE
+              WHEN pg_catalog.jsonb_typeof(newer.payload->'expected_version') = 'number'
+                AND newer.payload->>'expected_version' ~ '^[1-9][0-9]*$'
+                AND pg_catalog.jsonb_typeof(message.payload->'expected_version') = 'number'
+                AND message.payload->>'expected_version' ~ '^[1-9][0-9]*$'
+              THEN (newer.payload->>'expected_version')::numeric <= 9007199254740991
+                AND (newer.payload->>'expected_version')::numeric
+                  > (message.payload->>'expected_version')::numeric
+                AND (newer.payload->>'expected_version')::numeric <= evidence.version
+              ELSE false
+            END
         )
       ORDER BY message.completed_at, message.id
       LIMIT ${input.batchSize}
@@ -2116,6 +2577,280 @@ export async function reconcileAfterSaleEvidenceDeadLetter(
   );
 }
 
+export async function reconcileAfterSaleEvidenceLifecycleDeadLetter(
+  client: PrismaClient,
+  context: AfterSaleEvidenceSystemContext,
+  input: Readonly<{
+    deletionBaseDelayMs: number;
+    deletionMaxAttempts: number;
+    deletionMaxDelayMs: number;
+    messageId: string;
+    now?: Date;
+  }>,
+): Promise<AfterSaleEvidenceDeadLetterReconciliationResult> {
+  assertDeletionRetryPolicy({
+    baseDelayMs: input.deletionBaseDelayMs,
+    maxAttempts: input.deletionMaxAttempts,
+    maxDelayMs: input.deletionMaxDelayMs,
+  });
+  if (!UUID_PATTERN.test(input.messageId)) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
+  }
+  if (input.now !== undefined) assertDate(input.now);
+  return withAfterSaleEvidenceSystemTransaction(
+    client,
+    context,
+    async (transaction) => {
+      const message = await lockedEvidenceOutbox(transaction, context, input.messageId);
+      if (!message) return stateConflict();
+      const parsed = parseEvidenceOutbox(message, context.storeId);
+      if (
+        parsed.eventType !== AFTER_SALE_EVIDENCE_EXPIRE_EVENT &&
+        parsed.eventType !== AFTER_SALE_EVIDENCE_DELETE_EVENT
+      ) {
+        return stateConflict();
+      }
+      const current = await lockedEvidence(transaction, parsed.evidenceId);
+      if (!current) return stateConflict();
+      if (message.status !== 'DEAD_LETTER') {
+        return {
+          evidence: evidenceRecord(current),
+          eventType: parsed.eventType,
+          outcome: 'NOT_DEAD_LETTER',
+        };
+      }
+      assertDeadLetterShape(message);
+      const now = input.now ?? (await clock(transaction));
+      if (parsed.eventType === AFTER_SALE_EVIDENCE_EXPIRE_EVENT) {
+        return reconcileExpireDeadLetterInTransaction(transaction, context, {
+          current,
+          message,
+          now,
+          parsed,
+        });
+      }
+      return reconcileDeleteDeadLetterInTransaction(transaction, context, {
+        current,
+        deletionBaseDelayMs: input.deletionBaseDelayMs,
+        deletionMaxAttempts: input.deletionMaxAttempts,
+        deletionMaxDelayMs: input.deletionMaxDelayMs,
+        message,
+        now,
+        parsed,
+      });
+    },
+    { isolationLevel: 'Serializable', timeout: 15_000 },
+  );
+}
+
+type CompleteAfterSaleEvidenceDeletionInTransactionInput = Readonly<{
+  evidenceId: string;
+  expectedVersion: number;
+  objects: readonly Readonly<{ id: string; expectedVersion: number }>[];
+  now: Date;
+}>;
+
+async function completeAfterSaleEvidenceDeletionInTransaction(
+  transaction: StoreTransaction,
+  context: AfterSaleEvidenceSystemContext,
+  input: CompleteAfterSaleEvidenceDeletionInTransactionInput,
+): Promise<AfterSaleEvidenceRecord> {
+  const memberId = await evidenceOwner(transaction, input.evidenceId);
+  if (!memberId) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_NOT_FOUND');
+  }
+  await lockMemberEvidenceQuota(transaction, context.storeId, memberId);
+  const current = await lockedEvidence(transaction, input.evidenceId);
+  if (
+    !current ||
+    current.version !== input.expectedVersion ||
+    current.status !== 'DELETION_PENDING' ||
+    current.legal_hold_active
+  ) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
+  }
+  const objects = await transaction.$queryRaw<Array<{ id: string; version: number }>>`
+    SELECT id, version FROM after_sale_evidence_objects
+    WHERE store_id = ${context.storeId}::uuid
+      AND evidence_file_id = ${input.evidenceId}::uuid AND object_key IS NOT NULL
+    ORDER BY id FOR UPDATE
+  `;
+  const expectedObjects = [...input.objects].sort((left, right) =>
+    left.id.localeCompare(right.id, 'en'),
+  );
+  if (
+    objects.length !== expectedObjects.length ||
+    objects.some(
+      (object, index) =>
+        object.id !== expectedObjects[index]?.id ||
+        object.version !== expectedObjects[index]?.expectedVersion,
+    )
+  ) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
+  }
+  for (const object of objects) {
+    const affected = await transaction.$executeRaw`
+      UPDATE after_sale_evidence_objects
+      SET object_key = NULL, deleted_at = ${input.now}, version = version + 1, updated_at = ${input.now}
+      WHERE store_id = ${context.storeId}::uuid AND id = ${object.id}::uuid
+        AND version = ${object.version} AND object_key IS NOT NULL
+    `;
+    if (affected !== 1) {
+      throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
+    }
+  }
+  const rows = await transaction.$queryRaw<EvidenceRow[]>`
+    UPDATE after_sale_evidence_files
+    SET status = 'DELETED', object_key = NULL, derivative_object_keys = NULL,
+      scan_temporary_object_key = NULL, original_filename = NULL,
+      scan_result_code = NULL, scanner_engine = NULL, scanner_engine_version = NULL,
+      scanner_signature_version = NULL, next_delete_attempt_at = NULL,
+      delete_error_code = NULL, delete_exhausted_at = NULL, deleted_at = ${input.now},
+      version = version + 1, updated_at = ${input.now}
+    WHERE store_id = ${context.storeId}::uuid AND id = ${input.evidenceId}::uuid
+      AND version = ${current.version}
+    RETURNING id, store_id, member_id, after_sale_id, object_key, byte_size, status,
+      upload_deadline_at, confirmed_at, scan_generation, claim_deadline_at,
+      ordinary_access_deadline_at, retention_deadline_at, legal_hold_active,
+      delete_attempt_count, next_delete_attempt_at, delete_exhausted_at, version
+  `;
+  const deleted = rows[0];
+  if (!deleted) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
+  }
+  return evidenceRecord(deleted);
+}
+
+export type ApplyAfterSaleEvidenceDeletionResult =
+  Readonly<{ outcome: 'SUCCESS' }> | Readonly<{ errorCode: string; outcome: 'FAILURE' }>;
+
+export type ApplyAfterSaleEvidenceDeletionForLeaseInput = AfterSaleEvidenceLifecycleLeaseInput &
+  Readonly<{
+    deletionBaseDelayMs: number;
+    deletionMaxAttempts: number;
+    deletionMaxDelayMs: number;
+    evidenceExpectedVersion: number;
+    objects: readonly Readonly<{ id: string; expectedVersion: number }>[];
+    result: ApplyAfterSaleEvidenceDeletionResult;
+  }>;
+
+export type ApplyAfterSaleEvidenceDeletionForLeaseResult = Readonly<{
+  evidence: AfterSaleEvidenceRecord;
+  outcome: 'DELETED' | 'EXHAUSTED' | 'RETRY_SCHEDULED' | 'SUPERSEDED';
+}>;
+
+export async function applyAfterSaleEvidenceDeletionResultForLease(
+  client: PrismaClient,
+  context: AfterSaleEvidenceSystemContext,
+  input: ApplyAfterSaleEvidenceDeletionForLeaseInput,
+): Promise<ApplyAfterSaleEvidenceDeletionForLeaseResult> {
+  assertEvidenceLifecycleLeaseInput(input);
+  assertPositiveInteger(input.evidenceExpectedVersion, Number.MAX_SAFE_INTEGER);
+  assertDeletionRetryPolicy({
+    baseDelayMs: input.deletionBaseDelayMs,
+    maxAttempts: input.deletionMaxAttempts,
+    maxDelayMs: input.deletionMaxDelayMs,
+  });
+  if (
+    input.objects.length < 1 ||
+    new Set(input.objects.map(({ id }) => id)).size !== input.objects.length ||
+    input.objects.some(
+      ({ expectedVersion, id }) =>
+        !UUID_PATTERN.test(id) || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1,
+    )
+  ) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
+  }
+  if (input.result.outcome === 'FAILURE' && !STABLE_CODE_PATTERN.test(input.result.errorCode)) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
+  }
+  return withAfterSaleEvidenceSystemTransaction(
+    client,
+    context,
+    async (transaction) => {
+      const lease = await lockedValidEvidenceLifecycleOutboxLease(
+        transaction,
+        context,
+        input,
+        AFTER_SALE_EVIDENCE_DELETE_EVENT,
+      );
+      const memberId = await evidenceOwner(transaction, lease.parsed.evidenceId);
+      if (!memberId) return stateConflict();
+      await lockMemberEvidenceQuota(transaction, context.storeId, memberId);
+      const current = await lockedEvidence(transaction, lease.parsed.evidenceId);
+      if (!current) return stateConflict();
+      const now = await assertLockedEvidenceLifecycleLeaseCurrent(
+        transaction,
+        lease.message,
+        input,
+      );
+      if (
+        current.version !== input.evidenceExpectedVersion ||
+        !(
+          current.version === lease.parsed.expectedVersion ||
+          (current.delete_attempt_count > 0 && current.version === lease.parsed.expectedVersion + 1)
+        ) ||
+        current.status !== 'DELETION_PENDING' ||
+        current.legal_hold_active
+      ) {
+        return { evidence: evidenceRecord(current), outcome: 'SUPERSEDED' };
+      }
+      const currentObjects = await transaction.$queryRaw<Array<{ id: string; version: number }>>`
+        SELECT id, version
+        FROM after_sale_evidence_objects
+        WHERE store_id = ${context.storeId}::uuid
+          AND evidence_file_id = ${current.id}::uuid
+          AND object_key IS NOT NULL
+        ORDER BY id
+        FOR UPDATE
+      `;
+      const expectedObjects = [...input.objects].sort((left, right) =>
+        left.id.localeCompare(right.id, 'en'),
+      );
+      if (
+        currentObjects.length !== expectedObjects.length ||
+        currentObjects.some(
+          (object, index) =>
+            object.id !== expectedObjects[index]?.id ||
+            object.version !== expectedObjects[index]?.expectedVersion,
+        )
+      ) {
+        return stateConflict();
+      }
+      await assertLockedEvidenceLifecycleLeaseCurrent(transaction, lease.message, input);
+      if (input.result.outcome === 'SUCCESS') {
+        const evidence = await completeAfterSaleEvidenceDeletionInTransaction(
+          transaction,
+          context,
+          {
+            evidenceId: current.id,
+            expectedVersion: current.version,
+            objects: input.objects,
+            now,
+          },
+        );
+        await assertLockedEvidenceLifecycleLeaseCurrent(transaction, lease.message, input);
+        return { evidence, outcome: 'DELETED' };
+      }
+      const evidence = await recordDeletionFailureInTransaction(transaction, context, {
+        baseDelayMs: input.deletionBaseDelayMs,
+        errorCode: input.result.errorCode,
+        evidenceId: current.id,
+        expectedVersion: current.version,
+        maxAttempts: input.deletionMaxAttempts,
+        maxDelayMs: input.deletionMaxDelayMs,
+        now,
+      });
+      await assertLockedEvidenceLifecycleLeaseCurrent(transaction, lease.message, input);
+      return {
+        evidence,
+        outcome: evidence.deleteExhaustedAt === null ? 'RETRY_SCHEDULED' : 'EXHAUSTED',
+      };
+    },
+    { isolationLevel: 'Serializable', timeout: SCAN_LEASE_TRANSACTION_TIMEOUT_MS },
+  );
+}
+
 export async function completeAfterSaleEvidenceDeletion(
   client: PrismaClient,
   context: AfterSaleEvidenceSystemContext,
@@ -2142,73 +2877,13 @@ export async function completeAfterSaleEvidenceDeletion(
   return withAfterSaleEvidenceSystemTransaction(
     client,
     context,
-    async (transaction) => {
-      const now = input.now ?? (await clock(transaction));
-      const memberId = await evidenceOwner(transaction, input.evidenceId);
-      if (!memberId) {
-        throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_NOT_FOUND');
-      }
-      await lockMemberEvidenceQuota(transaction, context.storeId, memberId);
-      const current = await lockedEvidence(transaction, input.evidenceId);
-      if (
-        !current ||
-        current.version !== input.expectedVersion ||
-        current.status !== 'DELETION_PENDING' ||
-        current.legal_hold_active
-      ) {
-        throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
-      }
-      const objects = await transaction.$queryRaw<Array<{ id: string; version: number }>>`
-        SELECT id, version FROM after_sale_evidence_objects
-        WHERE store_id = ${context.storeId}::uuid
-          AND evidence_file_id = ${input.evidenceId}::uuid AND object_key IS NOT NULL
-        ORDER BY id FOR UPDATE
-      `;
-      const expectedObjects = [...input.objects].sort((left, right) =>
-        left.id.localeCompare(right.id, 'en'),
-      );
-      if (
-        objects.length !== expectedObjects.length ||
-        objects.some(
-          (object, index) =>
-            object.id !== expectedObjects[index]?.id ||
-            object.version !== expectedObjects[index]?.expectedVersion,
-        )
-      ) {
-        throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
-      }
-      for (const object of objects) {
-        const affected = await transaction.$executeRaw`
-          UPDATE after_sale_evidence_objects
-          SET object_key = NULL, deleted_at = ${now}, version = version + 1, updated_at = ${now}
-          WHERE store_id = ${context.storeId}::uuid AND id = ${object.id}::uuid
-            AND version = ${object.version} AND object_key IS NOT NULL
-        `;
-        if (affected !== 1) {
-          throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
-        }
-      }
-      const rows = await transaction.$queryRaw<EvidenceRow[]>`
-        UPDATE after_sale_evidence_files
-        SET status = 'DELETED', object_key = NULL, derivative_object_keys = NULL,
-          scan_temporary_object_key = NULL, original_filename = NULL,
-          scan_result_code = NULL, scanner_engine = NULL, scanner_engine_version = NULL,
-          scanner_signature_version = NULL, next_delete_attempt_at = NULL,
-          delete_error_code = NULL, delete_exhausted_at = NULL, deleted_at = ${now},
-          version = version + 1, updated_at = ${now}
-        WHERE store_id = ${context.storeId}::uuid AND id = ${input.evidenceId}::uuid
-          AND version = ${current.version}
-        RETURNING id, store_id, member_id, after_sale_id, object_key, byte_size, status,
-          upload_deadline_at, confirmed_at, scan_generation, claim_deadline_at,
-          ordinary_access_deadline_at, retention_deadline_at, legal_hold_active,
-          delete_attempt_count, next_delete_attempt_at, delete_exhausted_at, version
-      `;
-      const deleted = rows[0];
-      if (!deleted) {
-        throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
-      }
-      return evidenceRecord(deleted);
-    },
+    async (transaction) =>
+      completeAfterSaleEvidenceDeletionInTransaction(transaction, context, {
+        evidenceId: input.evidenceId,
+        expectedVersion: input.expectedVersion,
+        objects: input.objects,
+        now: input.now ?? (await clock(transaction)),
+      }),
     { isolationLevel: 'Serializable', timeout: 15_000 },
   );
 }

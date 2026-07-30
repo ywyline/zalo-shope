@@ -32,6 +32,18 @@ M6.3、M6 和 P0 继续未完成。
 `COMPLETE`。这仍不完成 B2b/B2、B3-B7、M6.3、M6、P0、HTTP、保护读取/审计、expire/delete
 worker、外部告警或生产 rollout。
 
+用户随后授权 B2b-D3。仓库已开放默认关闭的会员凭证初始化、确认和 owner 状态三条 HTTP 路由，
+把 D0 生命周期与配额、D1 create-only 上传及真实 bytes 校验、D2 scan outbox 接成 local/test 完整
+链路，并通过真实 PostgreSQL、Redis、MinIO 与 ClamAV 验证。D3 没有 B3 claim、会员/管理员保护读取、
+管理员逐次读取审计、expire/delete worker、生产参数批准或 rollout；完整 B2b/B2、B3-B7、M6.3、
+M6 与 P0 继续未完成。
+
+用户随后授权 B2b-D4。仓库已消费 D0 expire/delete outbox，以租约绑定数据库复核、role-bound
+delete-only provider 身份、完整 ledger 提交、领域重试和 lifecycle dead-letter reconciliation 接成
+local/test 删除补偿链路。该局部结论只标记 repository implementation + local/test deletion worker
+validation `COMPLETE`；B3 claim、保护读取/管理员审计、legal hold 管理、外部告警和 production
+versioned storage/rollout 继续未完成。
+
 ## 1. 决策范围
 
 本文确定首次脚手架前需要批准的技术方向，覆盖应用边界、多商城隔离、数据与集成原则、部署形态和质量门禁。本文不定义完整表字段、最终 API 契约或供应商私有参数；这些内容在后续专项设计中完成。
@@ -531,6 +543,51 @@ docs/
   （Clamd TCP 本身无认证/TLS）、签名更新与 freshness、HA/吞吐/容量/监控/SLA，以及 storage
   IAM/KMS/versioning/Object Lock/lifecycle/错误语义和删除补偿方案；任一缺失时 production capability
   与 rollout 保持关闭。
+
+### M6.3-B2b-D3 会员凭证 HTTP 生命周期边界
+
+- D3 注册 `POST /v1/after-sales/evidence-uploads`、
+  `POST /v1/after-sales/evidence-uploads/{evidenceId}/confirm` 与
+  `GET /v1/after-sales/evidence-uploads/{evidenceId}`。三条路由要求会员 Bearer、匹配
+  `X-Store-Code`、owner scope、Redis 读写限流和安全 correlation/no-store/no-referrer header；已知
+  异商城或异会员 UUID 统一不可探测。
+- 独立 `AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED` 默认关闭。启用必须同时具备 D1 S3 storage、
+  D2 ClamAV、显式上传 TTL 和未 claim 文件/字节配额；签名 URL TTL 不得超过数据库上传 TTL。示例
+  local/test 值不是 production 保留政策或合规批准。
+- 初始化先由 D0 在配额锁下原子创建 evidence、ORIGINAL binding、expire outbox 与 24 小时幂等事实，
+  再由 D1 upload 身份签发 create-only 目标。公共响应只返回完成上传必需的 header allowlist，不返回
+  bucket、object key、凭据或内部生命周期截止点；签名失败可用同一幂等键重签同一身份。
+- 确认前从 owner 事实加载声明并由 D1 对规范 key 执行 HEAD + `If-Match` GET，按真实 bytes 复算长度、
+  SHA-256 与 magic。只有验证成功才由 D0 原子确认并排队 scan；HTTP 验证本身不产生 `CLEAN`，D2
+  仍以 SYSTEM scope 从权威 ledger 独立重读、复验和扫描。
+- owner 状态只投影 `PENDING/READY/UNAVAILABLE`。未确认上传在排他截止点到达后立即不可用；
+  `READY_UNCLAIMED` 只在 claim 截止前投影 READY，已 claim READY 只在 ordinary-access 截止前投影
+  READY；恶意、失败、隔离、删除与内部错误统一折叠为 UNAVAILABLE。
+- D3 不新增 schema、迁移、RLS、grant、trigger、enum 或 STORE 权限，迁移仍为 43 段。它不实现 B3
+  claim、会员/管理员保护读取、`store.after-sales.evidence.read`、管理员逐次审计、expire/delete worker、
+  legal hold 管理、外部告警或生产 rollout，因此只标记 repository implementation + local/test member
+  evidence HTTP validation `COMPLETE`。
+
+### M6.3-B2b-D4 到期、删除与补偿 worker 边界
+
+- expire/delete handler 只接受 `AFTER_SALE_EVIDENCE` 的 v1 严格 payload，并使用固定 evidence SYSTEM
+  scope。loader 与 result 分离；provider 网络调用不持有数据库事务，提交前后均重锁 outbox、evidence
+  与 ledger，并使用 `clock_timestamp()` 复核 owner/version/严格未过期 lease。
+- expire 只对当前权威 version、具有删除截止的状态、无 legal hold 且截止已到的 evidence 原子推进
+  `DELETION_PENDING` 并排队 delete。提前领取使用数据库返回的 `nextAttemptAt` 有界重试；旧 version、
+  已 hold 或已收敛消息不会推进状态。
+- delete loader 只返回 ORIGINAL、DERIVATIVE、SCAN_TEMPORARY 的完整活动 ledger。provider 删除全部并行
+  等待；明确成功/已不存在才可收口。success/failure 投影都精确匹配加载时的父 version 与全部
+  `(object id, version)`，租约、hold、父 version/status 或 ledger 漂移均拒绝提交。
+- `DELETE_FAILED` 重试在数据库内推进到 `DELETION_PENDING`。若此后进程崩溃，同一消息只在已有失败
+  计数且当前 version 精确为 payload `expected_version + 1` 时恢复；provider 成功但数据库提交前崩溃
+  则依靠幂等 not-found 重试完成。第 5 次只记录本地 warning，第 8 次耗尽并停止自动排队。
+- 生命周期 dead-letter 服务按活动商城有界轮询并重读权威事实；只允许重排当前截止、形成领域删除
+  失败或返回 `SUPERSEDED/HELD/EXHAUSTED`。关闭时通用 outbox 和 dead-letter 先停止领取并等待在途，
+  storage 在后续 application shutdown 才销毁。
+- D4 默认关闭、与 ClamAV 解耦，不新增 schema/RLS/grant/trigger/enum/STORE 权限或迁移，M2→current
+  保持 43 段。local/test MinIO 证明当前对象无残留，不证明 production versioning/Object Lock 下历史
+  版本已物理删除；B3 claim、保护读取/审计、legal hold 管理、外部告警与 rollout 仍需后续授权。
 
 ## 7. 身份、安全与隐私
 

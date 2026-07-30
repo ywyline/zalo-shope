@@ -1,11 +1,13 @@
 # M6 售后、会员与分享权限矩阵
 
 > 状态：M6.1 契约已冻结；M6.2 权限目录/数据库 scope 已迁移；M6.3-A settings、
-> M6.3-B0、B1、B2a、B2b-D0、B2b-D1 repository + local/test storage validation 与 B2b-D2
-> repository implementation + local/test scanner worker validation 已完成且适用仓库门禁通过；
+> M6.3-B0、B1、B2a、B2b-D0、B2b-D1 repository + local/test storage validation、B2b-D2
+> repository implementation + local/test scanner worker validation、B2b-D3 repository
+> implementation + local/test member evidence HTTP validation 与 B2b-D4 repository implementation +
+> local/test deletion worker validation 已完成且适用仓库门禁通过；
 > B2/B2b、B3-B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭
 >
-> 日期：2026-07-29
+> 日期：2026-07-30
 
 M6.2 已登记下列 12 项 STORE 权限且不自动给生产角色扩权；local/test seed 仅为明确的测试
 `store-admin` 授权。第五段前向迁移把 member actor 限制到本人售后/凭证和隐私请求的有界命令；
@@ -19,9 +21,11 @@ M6.2 已登记下列 12 项 STORE 权限且不自动给生产角色扩权；loca
 没有启用任何凭证 HTTP、worker、对象存储、scanner 或生产角色。D1 后续只新增内部 storage adapter、
 失败关闭配置和 local/test MinIO bucket/IAM/真实 bytes 校验，不增加 STORE 权限，也没有 HTTP/worker
 调用方。D2 只接入内部 scan worker、ClamAV、租约绑定投影与 scan dead-letter 收敛，同样不增加
-STORE 权限或角色授权，也不开放凭证 HTTP/读取。其他售后写入、凭证文件访问、会员、分享
+STORE 权限或角色授权。D3 随后只开放会员初始化、确认和 owner 安全状态三条 HTTP 路由，复用
+member owner RLS，不新增 STORE 权限或生产角色授权；它不开放凭证正文或管理员读取。其他售后写入、
+凭证文件访问、会员、分享
 controller/service/worker/UI 仍未交付。本矩阵中除明确标为 M6.3-A、B1、B2a、D0 数据层、D1 local/test storage
-或 D2 local/test 内部扫描切片的动作外，其余动作行是 B0 已冻结、等待完整 B2b/B3-B7
+、D2 local/test 内部扫描、D3 local/test 会员 HTTP 或 D4 local/test 内部删除 worker 切片的动作外，其余动作行是 B0 已冻结、等待完整 B2b/B3-B7
 或后续里程碑另行授权实施的契约，不代表按钮、API、worker 或生产角色授权已经交付。
 B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transaction actor，不是可授予管理员
 角色的权限，也不能复用固定管理员 UUID。
@@ -51,7 +55,7 @@ B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transac
 | 动作                 | 必要权限                                                | 额外控制                                                                                           |
 | -------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | 管理售后列表/详情    | `store.after-sales.read`                                | B1 已实现；中央商城授权 + 显式 store scope + FORCE RLS、签名游标/locale/限流、严格 select/no-store |
-| 查看凭证             | `store.after-sales.evidence.read`                       | 完整 B2b 契约；D0 未注册读取路由/URL，此权限尚不能调用；未来每次读取审计                           |
+| 查看凭证             | `store.after-sales.evidence.read`                       | 完整 B2b 契约；D3 只开放 owner 状态，不开放正文/URL；此权限尚不能调用，未来每次读取审计            |
 | 审批/拒绝            | `store.after-sales.review`                              | B4 契约；近期 MFA、确认词、reason、expected version、幂等键、逐行 approved_quantity                |
 | 旧订单一次性例外决定 | `store.after-sales.review`                              | 当前管理员、未污染初态、policy basis、无副作用且只能一次                                           |
 | 创建商家主动退款售后 | `store.after-sales.review`                              | B3 契约；同政策/version/hash、权威交付事实、服务端金额、近期 MFA、幂等和审计                       |
@@ -88,18 +92,19 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
 
 ## 3. 买家能力
 
-| 能力              | 身份与范围               | 控制                                                                                      |
-| ----------------- | ------------------------ | ----------------------------------------------------------------------------------------- |
-| 查看售后列表/详情 | 当前商城认证会员本人     | B1 已实现；显式 store/member scope + FORCE RLS、签名游标、严格 select、no-store           |
-| 创建/取消售后     | 当前商城认证会员本人     | B3 契约；同 policy/version/hash、权威交付、服务端金额；当前未授权、未注册写路由           |
-| 上传/读取凭证     | 当前会员、当前售后单     | 完整 B2b；D2 只接内部 scanner worker；无 HTTP/claim/保护读取，任一能力不可用时失败关闭    |
-| 提交返件信息      | 当前会员、已批准返件     | B5 契约；只写 SUBMITTED 并追加 START_RETURN 到 RETURN_PENDING；当前未授权、不能标记运输中 |
-| 收藏              | 当前会员、当前商城商品   | PUT/DELETE 幂等；下架商品只返回受限摘要                                                   |
-| 浏览历史          | 当前会员、当前商城商品   | 最多 100；可单删/清空；匿名不写入                                                         |
-| 会员中心          | 当前会员                 | 复用本人资料、地址、券和订单事实，不返回管理字段                                          |
-| 隐私请求受理/查询 | 当前会员、当前商城       | 真实 SUBMITTED 事实；不声称导出/删除/注销已完成                                           |
-| 创建/解析分享     | 当前商城；创建可选会员   | 只接受公共 code/locale/受限来源；服务端解析已发布目标                                     |
-| 记录分享结果      | interaction token 持有人 | token 绑定 shortCode/交互/有效期；仅完成/取消统计                                         |
+| 能力               | 身份与范围               | 控制                                                                                      |
+| ------------------ | ------------------------ | ----------------------------------------------------------------------------------------- |
+| 查看售后列表/详情  | 当前商城认证会员本人     | B1 已实现；显式 store/member scope + FORCE RLS、签名游标、严格 select、no-store           |
+| 创建/取消售后      | 当前商城认证会员本人     | B3 契约；同 policy/version/hash、权威交付、服务端金额；当前未授权、未注册写路由           |
+| 预上传/确认/查状态 | 当前商城认证会员本人     | D3 已实现且默认关闭；store+owner RLS、真实 bytes 校验、scan 排队、读写限流、安全状态投影  |
+| 读取凭证正文       | 当前会员、当前售后单     | 完整 B2b；D3 无 B3 claim/保护 URL，任一能力不可用时失败关闭                               |
+| 提交返件信息       | 当前会员、已批准返件     | B5 契约；只写 SUBMITTED 并追加 START_RETURN 到 RETURN_PENDING；当前未授权、不能标记运输中 |
+| 收藏               | 当前会员、当前商城商品   | PUT/DELETE 幂等；下架商品只返回受限摘要                                                   |
+| 浏览历史           | 当前会员、当前商城商品   | 最多 100；可单删/清空；匿名不写入                                                         |
+| 会员中心           | 当前会员                 | 复用本人资料、地址、券和订单事实，不返回管理字段                                          |
+| 隐私请求受理/查询  | 当前会员、当前商城       | 真实 SUBMITTED 事实；不声称导出/删除/注销已完成                                           |
+| 创建/解析分享      | 当前商城；创建可选会员   | 只接受公共 code/locale/受限来源；服务端解析已发布目标                                     |
+| 记录分享结果       | interaction token 持有人 | token 绑定 shortCode/交互/有效期；仅完成/取消统计                                         |
 
 会员不能通过订单 UUID、订单行 UUID、售后号、商品 code、分享短码、游标或 Header 访问其他会员
 或商城数据。RLS 只作纵深防御，服务查询仍显式包含 `store_id/member_id`。
@@ -192,10 +197,11 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
   共用同一有界流。消息中的 store/evidence/version 只能定位数据库事实，不能直接授权对象读取。
 - 管理员下载 URL 仍只是完整 B2b 契约。D1 内部 adapter 能创建短期 `private, no-store` 目标，但没有
   HTTP 授权、无差别错误或每次访问审计；持有 `store.after-sales.evidence.read` 仍不能读取对象。
-- 未来凭证清理 worker 必须使用 D1 独立最小对象删除权限，只按数据库 ledger 中已持久化的精确商城对象 key 删除原件和
-  衍生物；进入删除事务前重新锁行并检查截止点与 legal hold。legal hold 不赋予普通读取权限，删除失败
-  只记录稳定错误类别并有界重试，日志不得包含签名 URL、对象正文或供应商原始错误。D0 提供数据库
-  原语，D1 提供未接线的 provider adapter；仍没有 worker 注册、网络后重锁或删除补偿运行时。
+- D4 凭证清理 worker 使用 D1 独立最小对象删除权限，只按数据库 ledger 中已持久化的精确商城对象 key
+  删除原件、衍生物和扫描临时对象；provider 调用前后重锁并复核 lease、父 version/status、截止点、
+  legal hold 与完整 ledger。legal hold 不赋予普通读取权限，删除失败只记录稳定错误类别并有界重试，
+  日志不得包含签名 URL、对象正文或供应商原始错误。该运行时仅在 repository/local-test 边界完成；
+  production versioned-object 物理删除、hold 管理和外部告警仍未验收。
 - 会员与普通管理员只看到 `PENDING/READY/UNAVAILABLE` 安全投影；隔离、删除中、删除失败和已删除
   只保留在受限内部事实中，不能通过售后详情、上传响应、错误码或时序差异泄露。
 - COD 收款信息与转账证据按敏感数据加密；常规 API、审计快照和日志仅返回掩码或存在性。
@@ -367,3 +373,38 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
   单独批准 TTL、Clamd loopback sidecar/网络隔离（TCP 本身无认证/TLS）、签名更新/freshness、HA/容量/
   监控/SLA、storage IAM/KMS/versioning/Object Lock/lifecycle/错误语义、删除补偿及 HTTP 授权/审计与 rollout；
   B2b/B2/M6.3/M6/P0 继续未完成。
+
+## 13. B2b-D3 会员 HTTP 与当前授权边界
+
+- D3 不新增 STORE permission code、不修改角色 seed，也不把 provider 凭据或 evidence SYSTEM scope
+  转化为会员权限。三条路由只接受当前商城有效 member token，并同时绑定 `X-Store-Code`、token
+  `store_id`、数据库 owner RLS 与显式 `store_id/member_id/evidence_id` 条件。
+- 初始化与确认使用 MEMBER WRITE 10 次每 60 秒档位，owner 状态使用 MEMBER READ 60 次档位；scope
+  为商城+会员。认证和限流先于 evidence 事实读取/写入，Redis 故障失败关闭，超限不会创建凭证事实。
+- 会员只能获得 create-only 上传 URL、必需 header allowlist 和 `PENDING/READY/UNAVAILABLE` 状态。
+  响应不包含 object key、bucket、checksum、scanner identity/result、hold、删除原因、供应商错误或签名
+  凭据；跨会员或商城的已知 UUID 返回不可探测结果。
+- D3 confirmation 只从 owner 声明取得内部规范 key，由 D1 read 身份验证真实 bytes；会员不获得
+  SYSTEM-only ledger SELECT。D2 仍用固定 evidence SYSTEM scope 独立重读 ledger 后扫描，HTTP 校验
+  不能自行投影 `CLEAN`。
+- `store.after-sales.evidence.read` 仍不可用。D3 的 owner 状态 GET 不是凭证正文访问，也不提供会员/
+  管理员保护 URL、管理员逐次读取审计或 legal hold 管理。
+- D3 的独立 capability 默认 false，production 启用还需批准 TTL/配额、storage/scanner、隐私/合规和
+  rollout。B3 claim、protected read、expire/delete worker、外部告警与生产证据仍缺失，因此完整
+  B2b/B2/M6.3/M6/P0 继续未完成。
+
+## 14. B2b-D4 删除 worker 与当前授权边界
+
+- D4 不新增 STORE permission code、不修改角色 seed，也不把 delete-only 凭据变成管理员或会员权限。
+  expire/delete handler 只使用固定 `after-sale-evidence-lifecycle` SYSTEM scope，并由数据库 FORCE RLS、
+  payload store/evidence identity 与显式 `context.storeId` 共同约束商城。
+- delete-only storage identity 可删除 ORIGINAL、DERIVATIVE、SCAN_TEMPORARY 规范路径，但 create-upload、
+  HEAD/GET 验证和 protected-read 仍严格 ORIGINAL-only。role 扩展不产生任何公共 URL 或文件读取权限。
+- provider 调用前后都校验当前 outbox lease、父 evidence version/status/legal hold 和完整 ledger。对象 key、
+  provider 正文、checksum、凭据或签名 URL 不进入日志、outbox 或稳定错误；日志只记录稳定 code、商城和
+  attempt 条件。
+- lifecycle dead-letter reconciler 是内部 SYSTEM 补偿，不构成管理员 dead-letter 管理 API、人工删除
+  按钮、legal hold 管理入口或外部告警。第 5/8 次仅形成本地稳定可观测事实。
+- `store.after-sales.evidence.read` 仍不可用，D4 也没有 B3 transaction-scoped claim。production IAM/KMS/
+  versioning/Object Lock/lifecycle、历史版本物理删除和 rollout 未验收，因此完整 B2b/B2/M6.3/M6/P0
+  继续未完成。

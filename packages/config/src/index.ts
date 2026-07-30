@@ -66,6 +66,11 @@ const optionalScannerHost = z.preprocess(
 const OBJECT_STORAGE_BUCKET_PATTERN = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/u;
 const EVIDENCE_SCAN_LEASE_TRANSACTION_TIMEOUT_MS = 2_000;
 const EVIDENCE_SCAN_COMMIT_MARGIN_MS = 5_000;
+const EVIDENCE_DELETE_LEASE_TRANSACTION_TIMEOUT_MS = 2_000;
+const EVIDENCE_DELETE_COMMIT_MARGIN_MS = 5_000;
+const EVIDENCE_DELETE_MAX_ATTEMPTS = 8;
+const EVIDENCE_DELETE_MIN_DELAY_MS = 60_000;
+const EVIDENCE_DELETE_MAX_DELAY_MS = 6 * 60 * 60 * 1_000;
 
 function isValidObjectStorageBucket(value: string): boolean {
   return OBJECT_STORAGE_BUCKET_PATTERN.test(value) && !value.includes('..') && isIP(value) === 0;
@@ -280,8 +285,40 @@ const runtimeConfigSchema = z
       .max(16_384)
       .default(4_096),
     EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS: optionalInteger(3_600, 30 * 24 * 60 * 60),
+    AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: disabledBooleanFromString,
+    AFTER_SALE_EVIDENCE_DELETE_RETRY_BASE_DELAY_MS: optionalInteger(
+      EVIDENCE_DELETE_MIN_DELAY_MS,
+      EVIDENCE_DELETE_MAX_DELAY_MS,
+    ),
+    AFTER_SALE_EVIDENCE_DELETE_RETRY_MAX_DELAY_MS: optionalInteger(
+      EVIDENCE_DELETE_MIN_DELAY_MS,
+      EVIDENCE_DELETE_MAX_DELAY_MS,
+    ),
+    AFTER_SALE_EVIDENCE_DELETE_MAX_ATTEMPTS: optionalInteger(
+      EVIDENCE_DELETE_MAX_ATTEMPTS,
+      EVIDENCE_DELETE_MAX_ATTEMPTS,
+    ),
+    AFTER_SALE_EVIDENCE_LIFECYCLE_DEAD_LETTER_BATCH_SIZE: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .default(25),
+    AFTER_SALE_EVIDENCE_LIFECYCLE_DEAD_LETTER_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(300_000)
+      .default(5_000),
     AFTER_SALE_EVIDENCE_CLAIM_TTL_SECONDS: optionalInteger(60, 7 * 24 * 60 * 60),
     AFTER_SALE_EVIDENCE_FAILED_RETENTION_SECONDS: optionalInteger(60, 7 * 24 * 60 * 60),
+    AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_BYTES: optionalInteger(
+      50 * 1_024 * 1_024,
+      5 * 1_024 * 1_024 * 1_024,
+    ),
+    AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES: optionalInteger(1, 100),
+    AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: disabledBooleanFromString,
+    AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS: optionalInteger(60, 60 * 60),
     INVENTORY_EXPIRATION_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
     INVENTORY_EXPIRATION_INTERVAL_MS: z.coerce
       .number()
@@ -473,6 +510,13 @@ const runtimeConfigSchema = z
           path: ['EVIDENCE_SCANNER_PROVIDER'],
         });
       }
+      if (!config.AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED) {
+        context.addIssue({
+          code: 'custom',
+          message: 'requires the evidence deletion worker to consume expire/delete events',
+          path: ['AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED'],
+        });
+      }
       const scanLeaseBudgetMs =
         config.EVIDENCE_STORAGE_REQUEST_TIMEOUT_MS +
         Math.max(
@@ -487,6 +531,93 @@ const runtimeConfigSchema = z
           message:
             'must cover evidence storage and scanner timeouts, two 2000ms evidence transactions and a 5000ms commit margin',
           path: ['OUTBOX_WORKER_LEASE_MS'],
+        });
+      }
+    }
+    if (config.AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED) {
+      for (const [field, value] of [
+        [
+          'AFTER_SALE_EVIDENCE_DELETE_RETRY_BASE_DELAY_MS',
+          config.AFTER_SALE_EVIDENCE_DELETE_RETRY_BASE_DELAY_MS,
+        ],
+        [
+          'AFTER_SALE_EVIDENCE_DELETE_RETRY_MAX_DELAY_MS',
+          config.AFTER_SALE_EVIDENCE_DELETE_RETRY_MAX_DELAY_MS,
+        ],
+        ['AFTER_SALE_EVIDENCE_DELETE_MAX_ATTEMPTS', config.AFTER_SALE_EVIDENCE_DELETE_MAX_ATTEMPTS],
+      ] as const) {
+        if (value !== undefined) continue;
+        context.addIssue({
+          code: 'custom',
+          message: 'is required when the evidence deletion worker is enabled',
+          path: [field],
+        });
+      }
+      if (config.EVIDENCE_STORAGE_PROVIDER !== 's3') {
+        context.addIssue({
+          code: 'custom',
+          message: 'requires EVIDENCE_STORAGE_PROVIDER=s3',
+          path: ['AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED'],
+        });
+      }
+      if (
+        config.AFTER_SALE_EVIDENCE_DELETE_RETRY_BASE_DELAY_MS !== undefined &&
+        config.AFTER_SALE_EVIDENCE_DELETE_RETRY_MAX_DELAY_MS !== undefined &&
+        config.AFTER_SALE_EVIDENCE_DELETE_RETRY_MAX_DELAY_MS <
+          config.AFTER_SALE_EVIDENCE_DELETE_RETRY_BASE_DELAY_MS
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'must be greater than or equal to the deletion retry base delay',
+          path: ['AFTER_SALE_EVIDENCE_DELETE_RETRY_MAX_DELAY_MS'],
+        });
+      }
+      const deletionLeaseBudgetMs =
+        config.EVIDENCE_STORAGE_REQUEST_TIMEOUT_MS +
+        2 * EVIDENCE_DELETE_LEASE_TRANSACTION_TIMEOUT_MS +
+        EVIDENCE_DELETE_COMMIT_MARGIN_MS;
+      if (config.OUTBOX_WORKER_LEASE_MS < deletionLeaseBudgetMs) {
+        context.addIssue({
+          code: 'custom',
+          message:
+            'must cover evidence deletion timeout, two 2000ms evidence transactions and a 5000ms commit margin',
+          path: ['OUTBOX_WORKER_LEASE_MS'],
+        });
+      }
+    }
+    if (config.AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED) {
+      for (const [field, value] of [
+        ['AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_BYTES', config.AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_BYTES],
+        ['AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES', config.AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES],
+        ['AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS', config.AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS],
+      ] as const) {
+        if (value !== undefined) continue;
+        context.addIssue({
+          code: 'custom',
+          message: 'is required when member evidence uploads are enabled',
+          path: [field],
+        });
+      }
+      if (
+        config.EVIDENCE_STORAGE_PROVIDER !== 's3' ||
+        config.EVIDENCE_SCANNER_PROVIDER !== 'clamav' ||
+        !config.AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'requires configured S3 evidence storage, ClamAV scanning and deletion worker',
+          path: ['AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED'],
+        });
+      }
+      if (
+        config.AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS !== undefined &&
+        config.EVIDENCE_STORAGE_UPLOAD_URL_TTL_SECONDS >
+          config.AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'must not be shorter than the signed upload URL TTL',
+          path: ['AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS'],
         });
       }
     }

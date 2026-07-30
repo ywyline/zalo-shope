@@ -1,13 +1,14 @@
 # M6 售后、会员、内容与主动分享专项实施计划
 
 > 状态：已批准；M6.1、M6.2、M6.3-A、M6.3-B0、B1、B2a、B2b-D0、B2b-D1 repository +
-> local/test storage validation 与 B2b-D2 repository implementation + local/test scanner worker
-> validation 已完成且适用仓库门禁通过；B2/B2b、B3-B7、
+> local/test storage validation、B2b-D2 repository implementation + local/test scanner worker
+> validation、B2b-D3 repository implementation + local/test member evidence HTTP validation 与
+> B2b-D4 repository implementation + local/test deletion worker validation 已完成且适用仓库门禁通过；B2/B2b、B3-B7、
 > M6.3、UI 与生产启用未完成或未授权并保持失败关闭；M6 整体未完成
 >
 > 版本：1.0
 >
-> 日期：2026-07-29
+> 日期：2026-07-30
 >
 > 依赖：`REQUIREMENTS.md`、`AGENTS.md`、`docs/plans/p0-development-plan.md`、
 > `docs/architecture/system-architecture.md`、`docs/plans/m5-implementation-plan.md`、
@@ -145,6 +146,32 @@ implementation + local/test scanner worker validation 标记 `COMPLETE`；HTTP�
 审计、expire/delete worker、外部告警和生产 rollout 未完成，B2b/B2、B3-B7、M6.3、M6 与 P0 均
 不因此完成。完整证据见 `docs/reports/m6.3-b2b-d2-scanner-worker-completion-report.md`。
 
+M6.3-B2b-D3 授权与仓库/local-test 完成记录（2026-07-30）：用户在 D2 后再次要求按严谨工作流
+继续，本轮只实施会员凭证初始化、确认和 owner 状态 HTTP。独立 capability 默认关闭，启用要求 D1
+S3、D2 ClamAV、显式上传 TTL 与未 claim 数量/字节配额。初始化复用 D0 配额/幂等并由 D1 签发
+create-only 目标；确认前以 D1 HEAD + `If-Match` GET 验证真实 bytes，随后 D0 原子排队 scan；状态只
+投影 `PENDING/READY/UNAVAILABLE`。
+
+D3 真实 PostgreSQL + Redis + MinIO + ClamAV 4/4、完整 integration 33 文件/274 项和 43 段迁移演练
+通过。三条路由绑定会员 token、商城、owner RLS、Redis 读写限流、correlation/no-store/no-referrer
+header 与严格响应 allowlist。只将 repository implementation + local/test member evidence HTTP
+validation 标记 `COMPLETE`；B3 claim、保护读取/管理员审计、expire/delete worker、外部告警、生产
+参数批准和 rollout 未完成，完整 B2b/B2、B3-B7、M6.3、M6 与 P0 均不因此完成。完整证据见
+`docs/reports/m6.3-b2b-d3-member-evidence-http-completion-report.md`。
+
+M6.3-B2b-D4 授权与仓库/local-test 完成记录（2026-07-30）：用户在 D3 后再次要求按严谨工作流
+继续，本轮只实施 expire/delete outbox worker 与 provider 删除补偿。独立 capability 默认关闭且与
+ClamAV 解耦；loader/result 绑定当前 lease、商城、父 version/status/hold 与完整 ledger，三类对象只用
+role-bound delete-only 身份删除。提前截止按数据库 `nextAttemptAt` 有界重试，领域失败固定第 5 次
+warning、第 8 次耗尽，lifecycle dead letter 只按权威事实重排或安全失败。
+
+D4 定向单元 6 文件/114 项、真实 PostgreSQL + MinIO 6/6、完整 integration 34 文件/280 项、完整
+`verify` 69 文件/545 项与 43 段迁移演练通过；生产依赖 high 退出码 0 并保留 3 moderate，OpenAPI
+570/114/0/0、Gitleaks 与差异检查通过。只将 repository implementation + local/test deletion worker
+validation 标记 `COMPLETE`；B3 claim、保护读取/管理员审计、legal hold 管理、外部告警、production
+versioning/Object Lock/lifecycle 与 rollout 未完成。完整证据见
+`docs/reports/m6.3-b2b-d4-evidence-deletion-worker-completion-report.md`。
+
 ## 2. 目标与非目标
 
 ### 2.1 目标
@@ -279,9 +306,11 @@ implementation + local/test scanner worker validation 标记 `COMPLETE`；HTTP�
 ### M6.3：售后申请、审核、退货与结算协调
 
 实施顺序细分为 M6.3-A 前置安全收口和 M6.3-B 售后运行时；当前 M6.3-A 与
-M6.3-B0/B1/B2a/B2b-D0 仓库实施、B2b-D1 repository + local/test storage validation，以及 B2b-D2
-repository implementation + local/test scanner worker validation 已完成。B2/B2b、B3-B7 仍未完成
-或未授权并失败关闭。A/B0/B1/B2a/D0-D2 的局部交付也不代表 M6.3 完成，详见
+M6.3-B0/B1/B2a/B2b-D0 仓库实施、B2b-D1 repository + local/test storage validation、B2b-D2
+repository implementation + local/test scanner worker validation、B2b-D3 repository
+implementation + local/test member evidence HTTP validation，以及 B2b-D4 repository implementation +
+local/test deletion worker validation 已完成。B2/B2b、B3-B7 仍未完成或未授权并失败关闭。
+A/B0/B1/B2a/D0-D4 的局部交付也不代表 M6.3 完成，详见
 `docs/plans/m6.3-implementation-plan.md`。
 
 - B1 只读列表/详情使用严格响应投影和三语历史政策回退；不得因 RLS 没有列级保护而使用宽
@@ -302,6 +331,9 @@ repository implementation + local/test scanner worker validation 已完成。B2/
 - B2b-D2 仅提供内部真实 ClamAV scanner、D1 同流内容复验、scan worker、租约安全投影和持久 scan
   dead-letter 收敛。D2 不注册凭证 HTTP，不实现 B3 claim、保护读取/审计、expire/delete worker、
   外部告警或 production rollout。
+- B2b-D3 仅开放默认关闭的会员初始化/确认/owner 状态 HTTP，并连接 D0 配额/scan outbox、D1
+  create-only 上传与确认前真实 bytes 校验。它不实现 B3 claim、凭证正文 URL、管理员读取审计、
+  expire/delete worker、legal hold 管理、外部告警或 production rollout。
 - 买家提交/取消、管理员审核、返件登记与可信物流事实、待验收读取和售后时间线；完整返件验收写路径
   及 exactly-once 库存恢复属于 M6.4。
 - ONLINE 通过内部原语关联 M5 Refund，并消费成功/失败/取消/不确定权威结果；COD 使用可从退款响应
@@ -394,16 +426,16 @@ repository implementation + local/test scanner worker validation 已完成。B2/
 - M5 外部支付、退款、GHN、结算和 Zalo 宿主仍未验收。若真实契约改变 M6 假设，先更新本计划、
   数据字典、OpenAPI、迁移和安全测试。
 - M6.2 只交付数据事实边界；其历史范围保持不变。当前后续运行时已新增 B1 会员/管理员售后列表与详情，并完成 B2a 七个
-  政策管理接口；D0 仅新增凭证数据库生命周期与可靠排队底座，D1 仅新增未接线的 storage adapter 与
-  local/test MinIO 校验。收藏、历史、隐私、分享以及售后申请/取消/审核/凭证 HTTP/
+  政策管理接口；D0-D2 分别完成数据库生命周期、storage 和 scanner 底座，D3 开放默认关闭的会员
+  初始化/确认/owner 状态 HTTP，D4 接通 local/test 到期与物理删除补偿。收藏、历史、隐私、分享以及售后申请/取消/审核/凭证正文保护读取/
   返件/退款/结算仍未交付；表、原语、权限目录、只读响应或政策控制面存在不等于真实凭证能力、售后写路径或完整产品可用。
 - 证据对象视为敏感且不可信；必须限制类型、magic bytes、大小、数量、扫描状态、保留期和下载授权。
   到期立即停止普通访问；无 legal hold 时幂等删除原件、衍生物与扫描临时对象，失败有界重试并告警；
   legal hold 只延迟删除，不延长普通访问，删除后仅保留受 RLS 保护的最小审计元数据。会员和普通
   管理员响应只投影 `PENDING/READY/UNAVAILABLE`，不得区分隔离、删除中、删除失败或已删除。
-- D0 已实现上述规则的数据库形状、配额/版本/消息/删除 guard；D1 已在 adapter 层实现 local/test
-  provider 真实 bytes 校验与幂等删除，但没有 confirm/worker 调用方、真实扫描或网络后数据库协调。
-  不得把 adapter 测试列为 scanner、保护读取审计、删除补偿、生产 IAM/KMS/lifecycle 或 retention 的
+- D0 已实现上述规则的数据库形状、配额/版本/消息/删除 guard；D1-D4 已在 local/test 接通真实 bytes
+  校验、扫描、会员 confirmation 和删除补偿，但仍没有保护读取审计、legal hold 管理或外部告警。
+  不得把 D4 MinIO 测试列为保护读取、production versioned-object 物理删除、生产 IAM/KMS/lifecycle 或 retention 的
   验收证据。版本化 bucket 物理删除和 AWS 最小 read IAM 不存在对象 `403` 语义仍阻塞生产。
 - M6.3-A 已按重新授权关闭 checkout enforcement 与既有 shipment purpose 前置风险；最终静态、
   浏览器、交付候选敏感信息和生产依赖 high 门禁已通过，3 项 moderate 已明确结转。A 已完成，
@@ -451,6 +483,13 @@ D1 当前证据见 `docs/reports/m6.3-b2b-d1-evidence-storage-completion-report.
 OpenAPI 回归、最终 `verify`、Gitleaks 和差异复审均已有通过证据。该局部完成同样不完成
 B2b/B2、M6.3、M6 或 P0。
 D2 当前证据见 `docs/reports/m6.3-b2b-d2-scanner-worker-completion-report.md`。真实 scanner worker、
-租约竞争与死信收敛只在 repository/local-test 边界完成；生产 scanner/storage、HTTP、claim、保护
+租约竞争与死信收敛只在 repository/local-test 边界完成；生产 scanner/storage、claim、保护
 读取/审计、expire/delete worker、外部告警与 rollout 继续未完成。该局部同样不完成 B2b/B2、
 M6.3、M6 或 P0。
+D3 当前证据见 `docs/reports/m6.3-b2b-d3-member-evidence-http-completion-report.md`。会员预上传、确认
+与 owner 状态只在默认关闭的 repository/local-test 边界完成；B3 claim、保护读取/审计、删除补偿、
+生产参数与 rollout 继续未完成。该局部同样不完成 B2b/B2、M6.3、M6 或 P0。
+D4 当前证据见 `docs/reports/m6.3-b2b-d4-evidence-deletion-worker-completion-report.md`。到期、三类
+对象 provider 删除、租约/账本补偿与 dead-letter 只在 repository/local-test 边界完成；B3 claim、保护
+读取/审计、legal hold 管理、外部告警与 production versioned storage/rollout 继续未完成。该局部同样
+不完成 B2b/B2、M6.3、M6 或 P0。

@@ -448,6 +448,21 @@ describe('S3 after-sale evidence storage provider', () => {
     send.mockRejectedValueOnce(new Error('network unavailable'));
     await expectStorageError(provider.removeObject(expected), 'UPSTREAM_UNAVAILABLE', true);
   });
+
+  it('allows delete-only identities for every ledger role but keeps read ORIGINAL-only', async () => {
+    const derivative = {
+      deploymentEnvironment,
+      evidenceId,
+      objectKey: `${deploymentEnvironment}/${storeId}/derived/${evidenceId}/thumbnail.webp`,
+      objectRole: 'DERIVATIVE' as const,
+      storeId,
+    };
+    send.mockResolvedValueOnce({});
+    await expect(provider.removeObject(derivative)).resolves.toBe('DELETED_OR_NOT_FOUND');
+    expect(send).toHaveBeenCalledOnce();
+    await expectStorageError(provider.createProtectedReadTarget(derivative), 'INVALID_IDENTITY');
+    expect(send).toHaveBeenCalledOnce();
+  });
 });
 
 describe('S3 evidence configuration fail-closed checks', () => {

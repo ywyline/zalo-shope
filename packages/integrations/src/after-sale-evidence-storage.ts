@@ -44,6 +44,7 @@ export class AfterSaleEvidenceStorageError extends Error {
 export type AfterSaleEvidenceObjectIdentity = Readonly<{
   deploymentEnvironment: string;
   evidenceId: string;
+  objectRole?: 'DERIVATIVE' | 'ORIGINAL' | 'SCAN_TEMPORARY';
   objectKey: string;
   storeId: string;
 }>;
@@ -136,7 +137,9 @@ export function canonicalAfterSaleEvidenceObjectKey(
   if (
     !ENVIRONMENT_PATTERN.test(identity.deploymentEnvironment) ||
     !UUID_PATTERN.test(identity.storeId) ||
-    !UUID_PATTERN.test(identity.evidenceId)
+    !UUID_PATTERN.test(identity.evidenceId) ||
+    (identity.objectRole !== undefined &&
+      !(['DERIVATIVE', 'ORIGINAL', 'SCAN_TEMPORARY'] as const).includes(identity.objectRole))
   ) {
     return fail('INVALID_IDENTITY');
   }
@@ -144,7 +147,23 @@ export function canonicalAfterSaleEvidenceObjectKey(
 }
 
 function assertIdentity(identity: AfterSaleEvidenceObjectIdentity): void {
-  const canonical = canonicalAfterSaleEvidenceObjectKey(identity);
+  if (
+    !ENVIRONMENT_PATTERN.test(identity.deploymentEnvironment) ||
+    !UUID_PATTERN.test(identity.storeId) ||
+    !UUID_PATTERN.test(identity.evidenceId) ||
+    (identity.objectRole !== undefined &&
+      !(['DERIVATIVE', 'ORIGINAL', 'SCAN_TEMPORARY'] as const).includes(identity.objectRole))
+  ) {
+    fail('INVALID_IDENTITY');
+  }
+  const segments = identity.objectKey.split('/');
+  const leaf = segments.at(-1) ?? '';
+  const canonical =
+    identity.objectRole === 'DERIVATIVE'
+      ? `${identity.deploymentEnvironment}/${identity.storeId}/derived/${identity.evidenceId}/${leaf}`
+      : identity.objectRole === 'SCAN_TEMPORARY'
+        ? `${identity.deploymentEnvironment}/${identity.storeId}/scan/${identity.evidenceId}/${leaf}`
+        : canonicalAfterSaleEvidenceObjectKey(identity);
   if (
     identity.objectKey !== canonical ||
     identity.objectKey.includes('\\') ||
@@ -155,10 +174,24 @@ function assertIdentity(identity: AfterSaleEvidenceObjectIdentity): void {
   ) {
     fail('INVALID_IDENTITY');
   }
+  if (
+    identity.objectRole !== undefined &&
+    identity.objectRole !== 'ORIGINAL' &&
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(leaf)
+  ) {
+    fail('INVALID_IDENTITY');
+  }
+}
+
+function assertOriginalIdentity(identity: AfterSaleEvidenceObjectIdentity): void {
+  if (identity.objectRole !== undefined && identity.objectRole !== 'ORIGINAL') {
+    fail('INVALID_IDENTITY');
+  }
+  assertIdentity({ ...identity, objectRole: 'ORIGINAL' });
 }
 
 function assertDeclaration(declaration: AfterSaleEvidenceObjectDeclaration): void {
-  assertIdentity(declaration);
+  assertOriginalIdentity(declaration);
   if (
     !isSupportedMimeType(declaration.mimeType) ||
     !Number.isSafeInteger(declaration.byteSize) ||
@@ -617,7 +650,7 @@ export class S3AfterSaleEvidenceStorageProvider implements AfterSaleEvidenceObje
   }
 
   public async createProtectedReadTarget(identity: AfterSaleEvidenceObjectIdentity) {
-    assertIdentity(identity);
+    assertOriginalIdentity(identity);
     const expiresIn = this.config.readUrlTtlSeconds;
     try {
       return {

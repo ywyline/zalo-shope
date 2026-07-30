@@ -18,6 +18,22 @@ PostgreSQL + MinIO + ClamAV D2 集成 20/20、完整 integration 32 个文件/27
 local/test scanner worker validation `COMPLETE`；没有 HTTP、B3 claim、保护读取/审计、expire/delete
 worker、外部告警或 production storage/scanner/rollout，完整 B2b/B2、M6.3、M6 与 P0 继续未完成。
 
+M6.3-B2b-D3 已完成默认关闭的会员凭证初始化、确认和 owner 状态三条 HTTP 路由。初始化复用 D0
+配额/幂等并返回 D1 create-only URL 与必需 header；确认前验证真实对象 bytes 后原子排队 D2 scan；
+状态只公开 `PENDING/READY/UNAVAILABLE`。真实 PostgreSQL + Redis + MinIO + ClamAV D3 集成 4/4、
+完整 integration 33 个文件/274 项和 43 段迁移演练通过。该结论只标记 repository implementation +
+local/test member evidence HTTP validation `COMPLETE`；B3 claim、保护读取/管理员审计、expire/delete
+worker、生产参数批准与 rollout 仍未完成。
+
+M6.3-B2b-D4 已完成默认关闭、与 scanner 解耦的凭证 expire/delete worker。expire/delete 结果提交均
+绑定当前 outbox 租约、商城、evidence version/status/legal hold 与完整活动对象 ledger；ORIGINAL、
+DERIVATIVE、SCAN_TEMPORARY 由 delete-only 身份并行幂等删除，provider 已删除、部分失败、租约换 owner、
+重试状态推进后崩溃与 lifecycle dead letter 均可安全收敛。D4 定向单元 114/114、真实 PostgreSQL +
+MinIO 6/6、完整 integration 34 文件/280 项、完整 `verify` 69 文件/545 项和 43 段迁移演练通过。该结论
+只标记 repository implementation + local/test deletion worker validation `COMPLETE`；B3 claim、保护读取/
+管理员审计、legal hold 管理、外部告警、production IAM/KMS/versioning/Object Lock/lifecycle 与 rollout
+仍未完成。
+
 B2a 仓库内只读预检的本地测试库结果为 `policies=0, versions=0`。D0 owner preflight 的本地结果为
 `files=0, transitions=0, outbox=0, idempotency=0`；runtime RLS 连接按预期以 SQLSTATE `42501`
 失败关闭。两者都不能替代未获授权的 staging/production 精确目标库 rollout 前重跑与留证。
@@ -26,9 +42,11 @@ Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完�
 
 D1 当前证据与未完成门禁见
 `docs/reports/m6.3-b2b-d1-evidence-storage-completion-report.md`；D2 证据见
-`docs/reports/m6.3-b2b-d2-scanner-worker-completion-report.md`。两份报告只证明各自明确标注的
+`docs/reports/m6.3-b2b-d2-scanner-worker-completion-report.md`；D3 证据见
+`docs/reports/m6.3-b2b-d3-member-evidence-http-completion-report.md`；D4 证据见
+`docs/reports/m6.3-b2b-d4-evidence-deletion-worker-completion-report.md`。四份报告只证明各自明确标注的
 repository/local-test 边界，不证明 production S3/KMS/lifecycle/versioning/Object Lock、scanner、
-worker、HTTP 或完整 B2b 可用。
+保护读取、legal hold 管理、外部告警或完整 B2b 可用。
 
 ## 应用与包
 
@@ -172,6 +190,10 @@ D1 不修改 Prisma、RLS 或数据库迁移；M2→current 仍为 43 段，不�
 D2 同样不增加 schema、RLS 或迁移，迁移总数保持 43。应用回滚必须先停止 scanner consumer；已有
 evidence/outbox/transition 事实保留并由兼容 worker/reconciler 向安全终态收敛，不得清空数据库或
 删除 bucket 作为回滚。
+
+D3 与 D4 也不增加 schema、RLS 或迁移，迁移总数保持 43。D4 应用回滚必须先关闭新上传，再停止
+expire/delete consumer 并等待在途 provider 删除与数据库提交；已有 `DELETION_PENDING/DELETE_FAILED`、
+ledger、transition 和 outbox 事实必须保留，由兼容 worker/reconciler 前向收敛。
 
 ```powershell
 corepack pnpm db:generate
@@ -455,10 +477,43 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   10 秒 storage/scanner 超时组合要求 `OUTBOX_WORKER_LEASE_MS >= 29000`；D2 不实现 heartbeat。
 - outbox、scan dead-letter 与库存轮询关闭时先停止领取并等待在途工作，随后才断开共享 Prisma 和
   销毁 S3 client。通用 outbox 在 scanner disabled 时仍可能把已存在的 scan 消息按 unsupported handler
-  写入死信，因此关闭 scanner 不等于暂停既有 scan 队列；当前凭证 HTTP producer 尚未开放。
+  写入死信，因此关闭 scanner 不等于暂停既有 scan 队列；D3 producer 启用后，关闭顺序必须先停止
+  新初始化/确认并收敛既有 scan 消息。
 - local/test ClamAV 只证明协议和仓库协调，不证明生产网络隔离、签名更新、HA、吞吐、容量、监控或
   SLA。完整证据和剩余阻断见
   `docs/reports/m6.3-b2b-d2-scanner-worker-completion-report.md`。
+
+## M6.3-B2b-D3 会员凭证 HTTP 生命周期
+
+- `POST /v1/after-sales/evidence-uploads`、confirm 与 owner 状态 GET 已注册。三条路由要求当前商城
+  member token、匹配 `X-Store-Code`、owner RLS、Redis MEMBER READ/WRITE 限流，并统一返回
+  correlation/no-store/no-referrer header；跨会员/商城的已知 UUID 不可探测。
+- `AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED` 默认 `false`。启用必须同时配置 D1 S3、D2 ClamAV、
+  `AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS`、`AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES` 与
+  `AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_BYTES`；签名 URL TTL 不得超过数据库上传 TTL。
+- 初始化响应只包含 evidence ID/version、上传到期、create-only URL 和严格 header allowlist，不包含
+  object key、bucket 或凭据。确认前使用 D1 read 身份执行 HEAD + `If-Match` GET，按真实 bytes 复算
+  长度/checksum/magic；通过后 D0 才原子确认并排队 scan，D2 仍独立重读 ledger 并扫描。
+- owner GET 只投影 `PENDING/READY/UNAVAILABLE`，使用数据库时钟执行排他截止。恶意、失败、隔离、
+  删除和内部错误均折叠为 UNAVAILABLE，不返回 scanner/provider/cleanup 细节。
+- D3 无 schema/RLS/grant/迁移变化，迁移仍为 43 段。D3 不提供 B3 claim、凭证正文 URL、管理员读取
+  审计、expire/delete worker、legal hold 管理、外部告警或生产 rollout；完整边界见
+  `docs/reports/m6.3-b2b-d3-member-evidence-http-completion-report.md`。
+
+## M6.3-B2b-D4 到期与物理删除补偿 worker
+
+- `AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED` 默认 `false`，可在 ClamAV scanner 关闭时独立运行。
+  启用必须配置 D1 S3/delete-only 身份、固定 8 次领域重试、60 秒至 6 小时退避参数和足够 outbox
+  lease；会员上传与 scanner producer 只有在删除 consumer 同时可用时才允许启用。
+- expire handler 只在当前 PROCESSING lease、权威 evidence version/status、无 legal hold 且数据库截止
+  已到时进入 `DELETION_PENDING` 并同事务排队 delete。提前消息按数据库 `nextAttemptAt` 有界重试；
+  lifecycle dead-letter reconciler 可按当前权威事实重排，不把死信冒充成功。
+- delete loader/result 在 provider 调用前后分别重锁消息、evidence 与完整活动 ledger。三类对象使用
+  role-bound delete identity 并行删除；全部成功或 provider 明确已不存在后，才原子清空 ledger key 并
+  把父 evidence 置为 `DELETED`。失败提交同样绑定原始 `(object id, version)` 集合。
+- 第 5 次失败形成稳定本地 warning condition，第 8 次耗尽且停止自动排队；当前没有外部告警接收方。
+  D4 的 MinIO 证据不证明 production versioned bucket 的历史版本物理删除，完整边界见
+  `docs/reports/m6.3-b2b-d4-evidence-deletion-worker-completion-report.md`。
 
 ## 环境与密钥
 

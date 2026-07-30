@@ -237,7 +237,9 @@ describe.sequential('M6.3-B2b-D2 real evidence scanner worker', () => {
       message.eventType !== AFTER_SALE_EVIDENCE_SCAN_EVENT ||
       message.aggregateId !== evidenceId
     ) {
-      throw new Error('Expected one leased evidence scan message');
+      throw new Error(
+        `Expected scan ${evidenceId}; received ${message?.eventType ?? 'none'} ${message?.aggregateId ?? 'none'}`,
+      );
     }
     return message;
   }

@@ -1,18 +1,19 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M6 incremental API contract
-  version: 0.6.3-b2a
+  version: 0.6.3-b2b-d3
   description: >-
     M6 incremental contract combined with the M1-M5 contracts. M6.3-A implements the after-sale
     settings GET/PUT routes, M6.3-B1 implements the member/admin after-sale list and detail GET
-    routes, and M6.3-B2a implements the seven administrator policy-control operations. Evidence
-    lifecycle operations in M6.3-B2b and all operations assigned to B3 through B7 remain
+    routes, M6.3-B2a implements the seven administrator policy-control operations, and
+    M6.3-B2b-D3 implements member evidence initialization, confirmation and owner status reads.
+    Protected evidence reads, deletion workers and all operations assigned to B3 through B7 remain
     contract-only. Buyer store ownership comes from the authenticated member and X-Store-Code.
     Admin routes additionally require the matching store_id query parameter. Every after-sale HTTP
     response carries the same X-Correlation-Id propagated through its transaction, transitions,
     audit and logs; error bodies repeat it as correlation_id.
 x-after-sale-b0-contract:
-  runtime_status: m6_3_a_settings_m6_3_b1_reads_and_m6_3_b2a_policy_control_implemented
+  runtime_status: m6_3_a_b1_b2a_and_member_evidence_d3_implemented
   runtime_operations:
     implemented_m6_3_a: [getAfterSaleSettings, setAfterSalePolicyEnforcement]
     implemented_m6_3_b1:
@@ -26,6 +27,12 @@ x-after-sale-b0-contract:
         getAfterSalePolicyVersion,
         publishAfterSalePolicy,
         disableAfterSalePolicy,
+      ]
+    implemented_m6_3_b2b_d3:
+      [
+        initializeAfterSaleEvidenceUpload,
+        confirmAfterSaleEvidenceUpload,
+        getAfterSaleEvidenceUpload,
       ]
     contract_only_m6_3_b2_to_b7: all_after_sale_operations_not_listed_as_implemented_above
   list_sort:
@@ -48,9 +55,9 @@ x-after-sale-b0-contract:
     admin_read: { limit: 120, scope: 'store_id:admin_id' }
     admin_write: { limit: 30, scope: 'store_id:admin_id' }
     runtime:
-      member_read: implemented_m6_3_b1
+      member_read: implemented_m6_3_b1_and_m6_3_b2b_d3
       admin_read: implemented_m6_3_b1_and_m6_3_b2a
-      member_write: contract_only_m6_3_b2_to_b7
+      member_write: implemented_m6_3_b2b_d3
       admin_write: implemented_m6_3_b2a
     read_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
     write_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
@@ -67,7 +74,7 @@ paths:
   /v1/after-sales/evidence-uploads:
     post:
       operationId: initializeAfterSaleEvidenceUpload
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b2b_d3_default_disabled
       x-rate-limit-tier: member_write
       summary: Initialize a private evidence upload for the current member and store
       security: [{ MemberBearer: [] }]
@@ -86,6 +93,7 @@ paths:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
             Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
             Referrer-Policy: { $ref: '#/components/headers/NoReferrer' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EvidenceUpload' }
@@ -94,10 +102,40 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /v1/after-sales/evidence-uploads/{evidenceId}:
+    get:
+      operationId: getAfterSaleEvidenceUpload
+      x-runtime-status: implemented_m6_3_b2b_d3_default_disabled
+      x-rate-limit-tier: member_read
+      summary: Read the current member's safe evidence processing status
+      description: >-
+        PENDING, READY_UNCLAIMED and all security or cleanup states are projected only as
+        PENDING, READY or UNAVAILABLE. Object identity, provider metadata, scan details and cleanup
+        reasons are never returned. The exclusive READY deadline is the unclaimed claim deadline;
+        legal hold never extends it.
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/EvidenceId' }
+      responses:
+        '200':
+          description: Owner-scoped safe evidence status
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Referrer-Policy: { $ref: '#/components/headers/NoReferrer' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvidenceView' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /v1/after-sales/evidence-uploads/{evidenceId}/confirm:
     post:
       operationId: confirmAfterSaleEvidenceUpload
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b2b_d3_default_disabled
       x-rate-limit-tier: member_write
       summary: Confirm object metadata and request scanning
       security: [{ MemberBearer: [] }]
@@ -115,6 +153,9 @@ paths:
           description: Evidence is pending scanning
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Referrer-Policy: { $ref: '#/components/headers/NoReferrer' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EvidenceView' }
@@ -1396,6 +1437,11 @@ components:
       type: string
       format: uri
       pattern: '^https://'
+    EvidenceUploadUrl:
+      type: string
+      format: uri
+      pattern: '^https?://'
+      description: Production configuration requires HTTPS; HTTP is accepted only by local/test storage.
     MiniAppPath:
       type: string
       pattern: '^/(?:\?locale=(?:vi|zh|en)|(?:brands|categories|products|promotions|coupons)/[a-z0-9]+(?:-[a-z0-9]+)*\?locale=(?:vi|zh|en))$'
@@ -1442,13 +1488,46 @@ components:
           then:
             properties:
               byte_size: { maximum: 10485760 }
+    EvidenceUploadHeaders:
+      type: object
+      additionalProperties: false
+      required: [content-type, if-none-match, x-amz-checksum-sha256]
+      properties:
+        content-type:
+          type: string
+          enum: [image/jpeg, image/png, image/webp, video/mp4]
+        if-none-match: { const: '*' }
+        x-amz-checksum-sha256:
+          type: string
+          pattern: '^[A-Za-z0-9+/]{43}=$'
+        x-amz-server-side-encryption:
+          type: string
+          enum: [AES256, aws:kms]
+        x-amz-server-side-encryption-aws-kms-key-id:
+          type: string
+          minLength: 1
+          maxLength: 2048
+      allOf:
+        - if:
+            required: [x-amz-server-side-encryption-aws-kms-key-id]
+          then:
+            required: [x-amz-server-side-encryption]
+            properties:
+              x-amz-server-side-encryption: { const: aws:kms }
+        - if:
+            properties:
+              x-amz-server-side-encryption: { const: aws:kms }
+            required: [x-amz-server-side-encryption]
+          then:
+            required: [x-amz-server-side-encryption-aws-kms-key-id]
     EvidenceUpload:
       type: object
       additionalProperties: false
-      required: [evidence_id, upload_url, expires_at, version]
+      required: [evidence_id, upload_url, upload_headers, expires_at, version]
       properties:
         evidence_id: { type: string, format: uuid }
-        upload_url: { $ref: '#/components/schemas/HttpsUrl' }
+        upload_url: { $ref: '#/components/schemas/EvidenceUploadUrl' }
+        upload_headers: { $ref: '#/components/schemas/EvidenceUploadHeaders' }
         expires_at: { type: string, format: date-time }
         version: { type: integer, minimum: 1 }
     EvidenceConfirmRequest:

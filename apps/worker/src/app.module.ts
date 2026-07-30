@@ -17,6 +17,11 @@ import { checkInfrastructure } from '@zalo-shop/platform';
 
 import { HealthController, INFRASTRUCTURE_CHECKER, RUNTIME_CONFIG } from './health.controller';
 import { AfterSaleEvidenceDeadLetterService } from './after-sales-evidence/after-sale-evidence-dead-letter.service';
+import { AfterSaleEvidenceDeletionDeadLetterService } from './after-sales-evidence/after-sale-evidence-deletion-dead-letter.service';
+import {
+  AfterSaleEvidenceDeleteRequestedHandler,
+  AfterSaleEvidenceExpireRequestedHandler,
+} from './after-sales-evidence/after-sale-evidence-deletion.handler';
 import { AfterSaleEvidenceScanRequestedHandler } from './after-sales-evidence/after-sale-evidence-scan.handler';
 import { AfterSaleEvidenceStorageLifecycleService } from './after-sales-evidence/after-sale-evidence-storage-lifecycle.service';
 import { InventoryExpirationService } from './inventory/inventory-expiration.service';
@@ -70,7 +75,12 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
 function createEvidenceStorage(
   config: RuntimeConfig,
 ): AfterSaleEvidenceObjectStorageProvider | null {
-  if (config.EVIDENCE_SCANNER_PROVIDER !== 'clamav') return null;
+  if (
+    config.EVIDENCE_SCANNER_PROVIDER !== 'clamav' &&
+    !config.AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED
+  ) {
+    return null;
+  }
   return createAfterSaleEvidenceStorageProvider(config);
 }
 
@@ -147,6 +157,16 @@ function createEvidenceScanner(config: RuntimeConfig): AfterSaleEvidenceScanner 
               ),
             ]
           : []),
+        ...(config.AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED
+          ? [
+              new AfterSaleEvidenceExpireRequestedHandler(database, config),
+              new AfterSaleEvidenceDeleteRequestedHandler(
+                database,
+                evidenceStorage ?? missingEvidenceDependency(),
+                config,
+              ),
+            ]
+          : []),
         ...(config.PAYMENT_PROVIDER === 'disabled'
           ? []
           : [
@@ -183,6 +203,9 @@ function createEvidenceScanner(config: RuntimeConfig): AfterSaleEvidenceScanner 
     ReliableOutboxService,
     ...(runtimeConfig.EVIDENCE_SCANNER_PROVIDER === 'clamav'
       ? [AfterSaleEvidenceDeadLetterService]
+      : []),
+    ...(runtimeConfig.AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED
+      ? [AfterSaleEvidenceDeletionDeadLetterService]
       : []),
   ],
 })

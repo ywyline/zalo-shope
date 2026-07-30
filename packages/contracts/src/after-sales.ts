@@ -130,6 +130,41 @@ export const afterSaleEvidenceResponseSchema = z
     }
   });
 
+export const afterSaleEvidenceUploadHeadersSchema = z
+  .object({
+    'content-type': z.enum(['image/jpeg', 'image/png', 'image/webp', 'video/mp4']),
+    'if-none-match': z.literal('*'),
+    'x-amz-checksum-sha256': z.string().regex(/^[A-Za-z0-9+/]{43}=$/u),
+    'x-amz-server-side-encryption': z.enum(['AES256', 'aws:kms']).optional(),
+    'x-amz-server-side-encryption-aws-kms-key-id': z.string().min(1).max(2_048).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (
+      (input['x-amz-server-side-encryption'] === 'aws:kms') !==
+      (input['x-amz-server-side-encryption-aws-kms-key-id'] !== undefined)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'KMS encryption requires its key identifier',
+        path: ['x-amz-server-side-encryption-aws-kms-key-id'],
+      });
+    }
+  });
+
+export const afterSaleEvidenceUploadResponseSchema = z
+  .object({
+    evidence_id: uuidSchema,
+    expires_at: afterSaleWireDateTimeSchema,
+    upload_headers: afterSaleEvidenceUploadHeadersSchema,
+    upload_url: z
+      .string()
+      .url()
+      .refine((value) => ['http:', 'https:'].includes(new URL(value).protocol)),
+    version: z.number().int().positive(),
+  })
+  .strict();
+
 export const afterSaleTimelineResponseSchema = z
   .object({
     created_at: afterSaleWireDateTimeSchema,
@@ -264,6 +299,7 @@ export const afterSaleAdminReadQuerySchema = z
   .object({ locale: z.enum(['vi', 'zh', 'en']).optional(), store_id: uuidSchema })
   .strict();
 export const afterSaleMemberReadQuerySchema = z.object({}).strict();
+export const afterSaleEvidenceMemberQuerySchema = z.object({}).strict();
 export const afterSaleStoreCodeHeaderSchema = z
   .string()
   .min(2)
@@ -732,6 +768,9 @@ export type AfterSaleAdminReadQuery = z.infer<typeof afterSaleAdminReadQuerySche
 export type AfterSaleCursorScope = z.infer<typeof afterSaleCursorScopeSchema>;
 export type AfterSaleResponse = z.infer<typeof afterSaleResponseSchema>;
 export type AfterSalePageResponse = z.infer<typeof afterSalePageResponseSchema>;
+export type AfterSaleEvidenceResponse = z.infer<typeof afterSaleEvidenceResponseSchema>;
+export type AfterSaleEvidenceUploadRequest = z.infer<typeof afterSaleEvidenceUploadRequestSchema>;
+export type AfterSaleEvidenceUploadResponse = z.infer<typeof afterSaleEvidenceUploadResponseSchema>;
 export type AfterSalePolicyContent = z.infer<typeof afterSalePolicyContentSchema>;
 export type AfterSalePolicyDetailResponse = z.infer<typeof afterSalePolicyDetailResponseSchema>;
 export type AfterSalePolicyDraft = z.infer<typeof afterSalePolicyDraftSchema>;
