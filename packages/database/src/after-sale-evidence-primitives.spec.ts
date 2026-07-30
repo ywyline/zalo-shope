@@ -4,16 +4,20 @@ import {
   createStoreContext,
   type StoreContext,
 } from '@zalo-shop/domain';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { StoreTransaction } from './index';
 import {
   applyAfterSaleEvidenceScanResult,
+  applyAfterSaleEvidenceScanResultForLease,
   beginAfterSaleEvidenceDeletion,
   claimAfterSaleEvidenceInTransaction,
   completeAfterSaleEvidenceDeletion,
   initializeAfterSaleEvidenceUpload,
+  listAfterSaleEvidenceScanDeadLetterCandidates,
+  loadAfterSaleEvidenceScanWorkForLease,
   reconcileAfterSaleEvidenceDeadLetter,
+  reconcileAfterSaleEvidenceScanDeadLetter,
   recordAfterSaleEvidenceDeletionFailure,
   requestAfterSaleEvidenceRescan,
   type InitializeAfterSaleEvidenceInput,
@@ -143,6 +147,91 @@ describe('after-sale evidence lifecycle input boundaries', () => {
         result: { ...baseInput.result, engine: '' },
       }),
     );
+    await inputError(
+      applyAfterSaleEvidenceScanResult(unusedClient, systemContext, {
+        ...baseInput,
+        evidenceId: 'not-a-uuid',
+      }),
+    );
+    await inputError(
+      applyAfterSaleEvidenceScanResult(unusedClient, systemContext, {
+        ...baseInput,
+        expectedVersion: 0,
+      }),
+    );
+  });
+
+  it('rejects invalid scan lease identities before opening a transaction', async () => {
+    const lease = {
+      outboxExpectedVersion: 2,
+      outboxMessageId: MESSAGE_ID,
+      workerId: 'm63-b2b-d2-worker',
+    };
+    await inputError(
+      loadAfterSaleEvidenceScanWorkForLease(unusedClient, systemContext, {
+        ...lease,
+        workerId: '',
+      }),
+    );
+    await inputError(
+      loadAfterSaleEvidenceScanWorkForLease(unusedClient, systemContext, {
+        ...lease,
+        outboxExpectedVersion: 0,
+      }),
+    );
+    await inputError(
+      applyAfterSaleEvidenceScanResultForLease(unusedClient, systemContext, {
+        ...lease,
+        claimTtlSeconds: 24 * 60 * 60,
+        failedRetentionSeconds: 24 * 60 * 60,
+        result: {
+          engine: 'clamav',
+          engineVersion: '1.5.3',
+          signatureVersion: '20260729',
+          verdict: 'CLEAN',
+        },
+        scanGeneration: 0,
+      }),
+    );
+  });
+
+  it('bounds both lease-bound scan transactions to two seconds', async () => {
+    const sentinel = new Error('transaction callback must not run');
+    const transaction = vi.fn().mockRejectedValue(sentinel);
+    const client = { $transaction: transaction } as never;
+    const lease = {
+      outboxExpectedVersion: 2,
+      outboxMessageId: MESSAGE_ID,
+      workerId: 'm63-b2b-d2-worker',
+    };
+
+    await expect(loadAfterSaleEvidenceScanWorkForLease(client, systemContext, lease)).rejects.toBe(
+      sentinel,
+    );
+    expect(transaction).toHaveBeenLastCalledWith(expect.any(Function), {
+      isolationLevel: 'Serializable',
+      timeout: 2_000,
+    });
+
+    transaction.mockClear();
+    await expect(
+      applyAfterSaleEvidenceScanResultForLease(client, systemContext, {
+        ...lease,
+        claimTtlSeconds: 24 * 60 * 60,
+        failedRetentionSeconds: 24 * 60 * 60,
+        result: {
+          engine: 'clamav',
+          engineVersion: '1.5.3',
+          signatureVersion: '20260729',
+          verdict: 'CLEAN',
+        },
+        scanGeneration: 1,
+      }),
+    ).rejects.toBe(sentinel);
+    expect(transaction).toHaveBeenLastCalledWith(expect.any(Function), {
+      isolationLevel: 'Serializable',
+      timeout: 2_000,
+    });
   });
 
   it('requires a bounded unique claim set and access to expire before retention', async () => {
@@ -208,6 +297,26 @@ describe('after-sale evidence lifecycle input boundaries', () => {
         ...override,
         messageId: MESSAGE_ID,
         scanFailedRetentionSeconds: 24 * 60 * 60,
+      }),
+    );
+  });
+
+  it('bounds scan dead-letter listing and validates its narrow reconciliation input', async () => {
+    await inputError(
+      listAfterSaleEvidenceScanDeadLetterCandidates(unusedClient, systemContext, {
+        batchSize: 0,
+      }),
+    );
+    await inputError(
+      reconcileAfterSaleEvidenceScanDeadLetter(unusedClient, systemContext, {
+        messageId: 'not-a-uuid',
+        scanFailedRetentionSeconds: 24 * 60 * 60,
+      }),
+    );
+    await inputError(
+      reconcileAfterSaleEvidenceScanDeadLetter(unusedClient, systemContext, {
+        messageId: MESSAGE_ID,
+        scanFailedRetentionSeconds: 0,
       }),
     );
   });

@@ -62,6 +62,10 @@ export type ValidatedAfterSaleEvidenceObject = Readonly<{
 }>;
 
 export interface AfterSaleEvidenceObjectStorageProvider {
+  consumeValidatedObject<T>(
+    declaration: AfterSaleEvidenceObjectDeclaration,
+    consumer: (bytes: AsyncIterable<Uint8Array>) => Promise<T>,
+  ): Promise<Readonly<{ object: ValidatedAfterSaleEvidenceObject; result: T }>>;
   createProtectedReadTarget(
     identity: AfterSaleEvidenceObjectIdentity,
   ): Promise<Readonly<{ expiresAt: Date; url: string }>>;
@@ -306,6 +310,11 @@ function isExplicitNoSuchKeyError(error: unknown): boolean {
   return identity?.name === 'NoSuchKey' && identity.httpStatusCode === 404;
 }
 
+function isPreconditionFailedError(error: unknown): boolean {
+  const identity = providerErrorIdentity(error);
+  return identity?.httpStatusCode === 412 || identity?.name === 'PreconditionFailed';
+}
+
 function mapProviderError(error: unknown): never {
   if (error instanceof AfterSaleEvidenceStorageError) throw error;
   if (isObjectNotFoundError(error)) return fail('NOT_FOUND');
@@ -324,18 +333,22 @@ function providerChecksumToHex(value: string): string | null {
 function assertHeadMetadata(
   declaration: AfterSaleEvidenceObjectDeclaration,
   head: HeadObjectCommandOutput,
-): void {
+): string {
   const providerChecksum = head.ChecksumSHA256
     ? providerChecksumToHex(head.ChecksumSHA256)
     : undefined;
   if (
     head.ContentLength !== declaration.byteSize ||
     head.ContentType !== declaration.mimeType ||
+    typeof head.ETag !== 'string' ||
+    head.ETag.length < 3 ||
+    head.ETag.length > 130 ||
     providerChecksum === null ||
     (providerChecksum !== undefined && providerChecksum !== declaration.checksumSha256)
   ) {
     fail('METADATA_MISMATCH');
   }
+  return head.ETag;
 }
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
@@ -358,15 +371,19 @@ function destroyBody(body: unknown): void {
   }
 }
 
-async function validateBody(
+type BodyValidationState = {
+  object?: ValidatedAfterSaleEvidenceObject;
+};
+
+async function* validatedBody(
   declaration: AfterSaleEvidenceObjectDeclaration,
   response: GetObjectCommandOutput,
   abort: () => void,
-): Promise<ValidatedAfterSaleEvidenceObject> {
+  state: BodyValidationState,
+): AsyncGenerator<Uint8Array, void, void> {
   const body = response.Body;
   if (!isAsyncIterable(body)) {
     abort();
-    destroyBody(body);
     return fail('UPSTREAM_UNAVAILABLE', true);
   }
   const digest = createHash('sha256');
@@ -375,43 +392,45 @@ async function validateBody(
   let byteSize = 0;
   let completed = false;
   try {
-    for await (const rawChunk of body) {
-      if (!(rawChunk instanceof Uint8Array)) return fail('UPSTREAM_UNAVAILABLE', true);
-      const chunk = Buffer.from(rawChunk.buffer, rawChunk.byteOffset, rawChunk.byteLength);
-      byteSize += chunk.byteLength;
-      if (byteSize > declaration.byteSize || byteSize > maximumBytes(declaration.mimeType)) {
-        abort();
-        return fail('CONTENT_MISMATCH');
+    try {
+      for await (const rawChunk of body) {
+        if (!(rawChunk instanceof Uint8Array)) return fail('UPSTREAM_UNAVAILABLE', true);
+        const chunk = Buffer.from(rawChunk.buffer, rawChunk.byteOffset, rawChunk.byteLength);
+        byteSize += chunk.byteLength;
+        if (byteSize > declaration.byteSize || byteSize > maximumBytes(declaration.mimeType)) {
+          abort();
+          return fail('CONTENT_MISMATCH');
+        }
+        digest.update(chunk);
+        if (prefixLength < prefix.byteLength) {
+          const copyLength = Math.min(prefix.byteLength - prefixLength, chunk.byteLength);
+          chunk.copy(prefix, prefixLength, 0, copyLength);
+          prefixLength += copyLength;
+        }
+        yield chunk;
       }
-      digest.update(chunk);
-      if (prefixLength < prefix.byteLength) {
-        const copyLength = Math.min(prefix.byteLength - prefixLength, chunk.byteLength);
-        chunk.copy(prefix, prefixLength, 0, copyLength);
-        prefixLength += copyLength;
-      }
+    } catch (error) {
+      return mapProviderError(error);
     }
+    const checksumSha256 = digest.digest('hex');
+    const detectedMimeType = detectAfterSaleEvidenceMimeType(
+      prefix.subarray(0, prefixLength),
+      byteSize,
+    );
+    if (
+      byteSize !== declaration.byteSize ||
+      checksumSha256 !== declaration.checksumSha256 ||
+      detectedMimeType !== declaration.mimeType
+    ) {
+      return fail('CONTENT_MISMATCH');
+    }
+    state.object = { byteSize, checksumSha256, mimeType: detectedMimeType };
     completed = true;
-  } catch (error) {
-    return mapProviderError(error);
   } finally {
-    if (!completed || byteSize !== declaration.byteSize) {
+    if (!completed) {
       abort();
-      destroyBody(body);
     }
   }
-  const checksumSha256 = digest.digest('hex');
-  const detectedMimeType = detectAfterSaleEvidenceMimeType(
-    prefix.subarray(0, prefixLength),
-    byteSize,
-  );
-  if (
-    byteSize !== declaration.byteSize ||
-    checksumSha256 !== declaration.checksumSha256 ||
-    detectedMimeType !== declaration.mimeType
-  ) {
-    fail('CONTENT_MISMATCH');
-  }
-  return { byteSize, checksumSha256, mimeType: detectedMimeType };
 }
 
 function runtimeCredentials(
@@ -533,7 +552,18 @@ export class S3AfterSaleEvidenceStorageProvider implements AfterSaleEvidenceObje
   public async validateUploadedObject(
     declaration: AfterSaleEvidenceObjectDeclaration,
   ): Promise<ValidatedAfterSaleEvidenceObject> {
+    const consumed = await this.consumeValidatedObject(declaration, async (bytes) => {
+      for await (const chunk of bytes) void chunk;
+    });
+    return consumed.object;
+  }
+
+  public async consumeValidatedObject<T>(
+    declaration: AfterSaleEvidenceObjectDeclaration,
+    consumer: (bytes: AsyncIterable<Uint8Array>) => Promise<T>,
+  ): Promise<Readonly<{ object: ValidatedAfterSaleEvidenceObject; result: T }>> {
     assertDeclaration(declaration);
+    let entityTag: string;
     try {
       const head = await this.#readClient.send(
         new HeadObjectCommand({
@@ -543,7 +573,7 @@ export class S3AfterSaleEvidenceStorageProvider implements AfterSaleEvidenceObje
         }),
         { abortSignal: AbortSignal.timeout(this.config.requestTimeoutMs) },
       );
-      assertHeadMetadata(declaration, head);
+      entityTag = assertHeadMetadata(declaration, head);
     } catch (error) {
       return mapProviderError(error);
     }
@@ -551,20 +581,38 @@ export class S3AfterSaleEvidenceStorageProvider implements AfterSaleEvidenceObje
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), this.config.requestTimeoutMs);
     timeout.unref();
+    let response: GetObjectCommandOutput;
     try {
-      const response = await this.#readClient.send(
+      response = await this.#readClient.send(
         new GetObjectCommand({
           Bucket: this.config.bucket,
           ChecksumMode: 'ENABLED',
+          IfMatch: entityTag,
           Key: declaration.objectKey,
         }),
         { abortSignal: abortController.signal },
       );
-      return await validateBody(declaration, response, () => abortController.abort());
     } catch (error) {
+      clearTimeout(timeout);
+      if (isPreconditionFailedError(error)) return fail('CONTENT_MISMATCH');
       return mapProviderError(error);
+    }
+
+    const state: BodyValidationState = {};
+    let accepted = false;
+    try {
+      const result = await consumer(
+        validatedBody(declaration, response, () => abortController.abort(), state),
+      );
+      if (!state.object) return fail('CONTENT_MISMATCH');
+      accepted = true;
+      return { object: state.object, result };
     } finally {
       clearTimeout(timeout);
+      if (!accepted) {
+        abortController.abort();
+        destroyBody(response.Body);
+      }
     }
   }
 

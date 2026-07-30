@@ -12,7 +12,7 @@ import {
   withAfterSaleEvidenceSystemTransaction,
   withStoreTransaction,
 } from './index';
-import { appendOutboxMessageInTransaction } from './reliable-messaging';
+import { appendOutboxMessageInTransaction, ReliableMessagingError } from './reliable-messaging';
 
 export const AFTER_SALE_EVIDENCE_AGGREGATE_TYPE = 'AFTER_SALE_EVIDENCE' as const;
 export const AFTER_SALE_EVIDENCE_SCAN_EVENT = 'after-sale.evidence.scan.requested' as const;
@@ -123,6 +123,16 @@ type ParsedEvidenceOutbox = Readonly<{
   expectedVersion: number;
 }>;
 
+type ScanWorkRow = {
+  byte_size: bigint;
+  checksum_sha256: string;
+  deployment_environment: string;
+  evidence_id: string;
+  mime_type: string;
+  object_key: string;
+  scan_generation: number;
+};
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const CHECKSUM_PATTERN = /^[0-9a-f]{64}$/u;
 const ENVIRONMENT_PATTERN = /^[a-z][a-z0-9-]{1,31}$/u;
@@ -135,6 +145,7 @@ const DELETE_MIN_BASE_DELAY_MS = 60_000;
 const DELETE_MAX_DELAY_MS = 6 * 60 * 60 * 1_000;
 const DELETE_MAX_ATTEMPTS = 8;
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1_000;
+const SCAN_LEASE_TRANSACTION_TIMEOUT_MS = 2_000;
 
 function digest(value: unknown): string {
   return createHash('sha256')
@@ -311,6 +322,16 @@ async function clock(transaction: StoreTransaction): Promise<Date> {
   return row.current_time;
 }
 
+async function wallClock(transaction: StoreTransaction): Promise<Date> {
+  const row = (
+    await transaction.$queryRaw<ClockRow[]>`
+      SELECT pg_catalog.clock_timestamp() AS current_time
+    `
+  )[0];
+  if (!row) throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
+  return row.current_time;
+}
+
 async function lockMemberEvidenceQuota(
   transaction: StoreTransaction,
   storeId: string,
@@ -371,21 +392,6 @@ async function lockedEvidence(
   )[0];
 }
 
-async function evidenceOutbox(
-  transaction: StoreTransaction,
-  context: AfterSaleEvidenceSystemContext,
-  messageId: string,
-): Promise<EvidenceOutboxRow | undefined> {
-  return (
-    await transaction.$queryRaw<EvidenceOutboxRow[]>`
-      SELECT id, store_id, aggregate_type, aggregate_id, event_type, event_version,
-        payload, status, lease_owner, lease_expires_at, completed_at, version
-      FROM outbox_messages
-      WHERE store_id = ${context.storeId}::uuid AND id = ${messageId}::uuid
-    `
-  )[0];
-}
-
 async function lockedEvidenceOutbox(
   transaction: StoreTransaction,
   context: AfterSaleEvidenceSystemContext,
@@ -402,7 +408,56 @@ async function lockedEvidenceOutbox(
   )[0];
 }
 
-async function hasEvidenceOutboxIdentity(
+export type AfterSaleEvidenceScanLeaseInput = Readonly<{
+  outboxExpectedVersion: number;
+  outboxMessageId: string;
+  workerId: string;
+}>;
+
+function assertEvidenceOutboxLeaseInput(input: AfterSaleEvidenceScanLeaseInput): void {
+  if (
+    !UUID_PATTERN.test(input.outboxMessageId) ||
+    !Number.isSafeInteger(input.outboxExpectedVersion) ||
+    input.outboxExpectedVersion < 1 ||
+    !input.workerId.trim() ||
+    input.workerId.length > 128
+  ) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
+  }
+}
+
+async function lockedValidScanOutboxLease(
+  transaction: StoreTransaction,
+  context: AfterSaleEvidenceSystemContext,
+  input: AfterSaleEvidenceScanLeaseInput,
+): Promise<Readonly<{ message: EvidenceOutboxRow; parsed: ParsedEvidenceOutbox }>> {
+  const message = await lockedEvidenceOutbox(transaction, context, input.outboxMessageId);
+  const current = await assertLockedScanOutboxLeaseCurrent(transaction, message, input);
+  const parsed = parseEvidenceOutbox(current.message, context.storeId);
+  if (parsed.eventType !== AFTER_SALE_EVIDENCE_SCAN_EVENT) return stateConflict();
+  return { message: current.message, parsed };
+}
+
+async function assertLockedScanOutboxLeaseCurrent(
+  transaction: StoreTransaction,
+  message: EvidenceOutboxRow | undefined,
+  input: AfterSaleEvidenceScanLeaseInput,
+): Promise<Readonly<{ message: EvidenceOutboxRow; now: Date }>> {
+  const now = await wallClock(transaction);
+  if (
+    !message ||
+    message.status !== 'PROCESSING' ||
+    message.lease_owner !== input.workerId ||
+    !(message.lease_expires_at instanceof Date) ||
+    message.lease_expires_at <= now ||
+    message.version !== input.outboxExpectedVersion
+  ) {
+    throw new ReliableMessagingError('OUTBOX_LEASE_LOST');
+  }
+  return { message, now };
+}
+
+async function evidenceOutboxIdentity(
   transaction: StoreTransaction,
   context: AfterSaleEvidenceSystemContext,
   input: Readonly<{
@@ -410,8 +465,8 @@ async function hasEvidenceOutboxIdentity(
     evidenceId: string;
     expectedVersion: number;
   }>,
-): Promise<boolean> {
-  const row = (
+): Promise<EvidenceOutboxRow | undefined> {
+  return (
     await transaction.$queryRaw<EvidenceOutboxRow[]>`
       SELECT id, store_id, aggregate_type, aggregate_id, event_type, event_version,
         payload, status, lease_owner, lease_expires_at, completed_at, version
@@ -429,12 +484,108 @@ async function hasEvidenceOutboxIdentity(
       LIMIT 1
     `
   )[0];
+}
+
+async function hasEvidenceOutboxIdentity(
+  transaction: StoreTransaction,
+  context: AfterSaleEvidenceSystemContext,
+  input: Readonly<{
+    eventType: AfterSaleEvidenceLifecycleEvent;
+    evidenceId: string;
+    expectedVersion: number;
+  }>,
+): Promise<boolean> {
+  const row = await evidenceOutboxIdentity(transaction, context, input);
   if (!row) return false;
   const parsed = parseEvidenceOutbox(row, context.storeId);
   return (
     parsed.evidenceId === input.evidenceId &&
     parsed.eventType === input.eventType &&
     parsed.expectedVersion === input.expectedVersion
+  );
+}
+
+async function hasConvergentScanOutboxIdentity(
+  transaction: StoreTransaction,
+  context: AfterSaleEvidenceSystemContext,
+  input: Readonly<{ evidenceId: string; expectedVersion: number }>,
+): Promise<boolean> {
+  const row = await evidenceOutboxIdentity(transaction, context, {
+    ...input,
+    eventType: AFTER_SALE_EVIDENCE_SCAN_EVENT,
+  });
+  if (!row || row.status === 'COMPLETED') return false;
+  const parsed = parseEvidenceOutbox(row, context.storeId);
+  return (
+    parsed.evidenceId === input.evidenceId &&
+    parsed.eventType === AFTER_SALE_EVIDENCE_SCAN_EVENT &&
+    parsed.expectedVersion === input.expectedVersion
+  );
+}
+
+async function hasNewerConvergentScanOutboxIdentity(
+  transaction: StoreTransaction,
+  context: AfterSaleEvidenceSystemContext,
+  input: Readonly<{
+    currentEvidenceVersion: number;
+    evidenceId: string;
+    oldExpectedVersion: number;
+  }>,
+): Promise<boolean> {
+  const row = (
+    await transaction.$queryRaw<EvidenceOutboxRow[]>`
+      SELECT id, store_id, aggregate_type, aggregate_id, event_type, event_version,
+        payload, status, lease_owner, lease_expires_at, completed_at, version
+      FROM outbox_messages newer
+      WHERE newer.store_id = ${context.storeId}::uuid
+        AND newer.aggregate_type = ${AFTER_SALE_EVIDENCE_AGGREGATE_TYPE}
+        AND newer.aggregate_id = ${input.evidenceId}::uuid
+        AND newer.event_type = ${AFTER_SALE_EVIDENCE_SCAN_EVENT}
+        AND newer.event_version = 1
+        AND newer.status IN (
+          'PENDING'::outbox_status,
+          'PROCESSING'::outbox_status,
+          'DEAD_LETTER'::outbox_status
+        )
+        AND (
+          (
+            newer.status = 'PENDING'::outbox_status
+            AND newer.lease_owner IS NULL AND newer.lease_expires_at IS NULL
+            AND newer.completed_at IS NULL
+          ) OR (
+            newer.status = 'PROCESSING'::outbox_status
+            AND newer.lease_owner IS NOT NULL AND newer.lease_expires_at IS NOT NULL
+            AND newer.completed_at IS NULL
+          ) OR (
+            newer.status = 'DEAD_LETTER'::outbox_status
+            AND newer.lease_owner IS NULL AND newer.lease_expires_at IS NULL
+            AND newer.completed_at IS NOT NULL
+          )
+        )
+        AND pg_catalog.jsonb_typeof(newer.payload) = 'object'
+        AND newer.payload ?& ARRAY['evidence_id', 'expected_version', 'store_id']::text[]
+        AND newer.payload - ARRAY['evidence_id', 'expected_version', 'store_id']::text[] = '{}'::jsonb
+        AND newer.payload->>'store_id' = newer.store_id::text
+        AND newer.payload->>'evidence_id' = newer.aggregate_id::text
+        AND CASE
+          WHEN pg_catalog.jsonb_typeof(newer.payload->'expected_version') = 'number'
+            AND newer.payload->>'expected_version' ~ '^[1-9][0-9]*$'
+          THEN (newer.payload->>'expected_version')::numeric <= 9007199254740991
+            AND (newer.payload->>'expected_version')::numeric > ${input.oldExpectedVersion}
+            AND (newer.payload->>'expected_version')::numeric <= ${input.currentEvidenceVersion}
+          ELSE false
+        END
+      ORDER BY newer.id DESC
+      LIMIT 1
+    `
+  )[0];
+  if (!row) return false;
+  const parsed = parseEvidenceOutbox(row, context.storeId);
+  return (
+    parsed.eventType === AFTER_SALE_EVIDENCE_SCAN_EVENT &&
+    parsed.evidenceId === input.evidenceId &&
+    parsed.expectedVersion > input.oldExpectedVersion &&
+    parsed.expectedVersion <= input.currentEvidenceVersion
   );
 }
 
@@ -750,6 +901,74 @@ export type RequestAfterSaleEvidenceRescanInput = Readonly<{
   expectedVersion: number;
 }>;
 
+async function requeuePendingEvidenceScanInTransaction(
+  transaction: StoreTransaction,
+  context: AfterSaleEvidenceSystemContext,
+  current: EvidenceRow,
+): Promise<EvidenceRow> {
+  const rows = await transaction.$queryRaw<Array<EvidenceRow & { scan_requested_at: Date }>>`
+    WITH timing AS (
+      SELECT pg_catalog.clock_timestamp() AS requested_at
+    )
+    UPDATE after_sale_evidence_files evidence
+    SET scan_requested_at = timing.requested_at,
+      scan_generation = evidence.scan_generation + 1,
+      version = evidence.version + 1, updated_at = timing.requested_at
+    FROM timing
+    WHERE evidence.store_id = ${context.storeId}::uuid
+      AND evidence.id = ${current.id}::uuid
+      AND evidence.version = ${current.version}
+      AND evidence.status = 'PENDING' AND evidence.after_sale_id IS NULL
+      AND evidence.confirmed_at IS NOT NULL AND evidence.scan_requested_at IS NOT NULL
+      AND evidence.scan_completed_at IS NULL AND evidence.scan_result_code IS NULL
+      AND evidence.scan_requested_at < timing.requested_at
+    RETURNING evidence.id, evidence.store_id, evidence.member_id, evidence.after_sale_id,
+      evidence.object_key, evidence.byte_size, evidence.status,
+      evidence.upload_deadline_at, evidence.confirmed_at, evidence.scan_requested_at,
+      evidence.scan_generation, evidence.claim_deadline_at,
+      evidence.ordinary_access_deadline_at, evidence.retention_deadline_at,
+      evidence.legal_hold_active, evidence.delete_attempt_count,
+      evidence.next_delete_attempt_at, evidence.delete_exhausted_at, evidence.version
+  `;
+  const rescanned = rows[0];
+  if (!rescanned) stateConflict();
+  // PostgreSQL timestamps retain microseconds while JavaScript Date values retain
+  // milliseconds. The extra millisecond keeps the outbox within the guarded window.
+  await appendEvidenceMessage(transaction, context, {
+    availableAt: new Date(rescanned.scan_requested_at.getTime() + 1),
+    eventType: AFTER_SALE_EVIDENCE_SCAN_EVENT,
+    evidenceId: rescanned.id,
+    expectedVersion: rescanned.version,
+    maxAttempts: 5,
+  });
+  return rescanned;
+}
+
+async function ensureAuthoritativeScanAfterVersionDrift(
+  transaction: StoreTransaction,
+  context: AfterSaleEvidenceSystemContext,
+  input: Readonly<{ current: EvidenceRow; expectedVersion: number }>,
+): Promise<EvidenceRow> {
+  if (
+    input.current.version <= input.expectedVersion ||
+    input.current.status !== 'PENDING' ||
+    input.current.after_sale_id !== null ||
+    input.current.confirmed_at === null ||
+    input.current.scan_generation < 1
+  ) {
+    return input.current;
+  }
+  if (
+    await hasConvergentScanOutboxIdentity(transaction, context, {
+      evidenceId: input.current.id,
+      expectedVersion: input.current.version,
+    })
+  ) {
+    return input.current;
+  }
+  return requeuePendingEvidenceScanInTransaction(transaction, context, input.current);
+}
+
 export async function requestAfterSaleEvidenceRescan(
   client: PrismaClient,
   context: AfterSaleEvidenceSystemContext,
@@ -775,47 +994,110 @@ export async function requestAfterSaleEvidenceRescan(
       ) {
         return { evidence: evidenceRecord(current), requested: false };
       }
-      const rows = await transaction.$queryRaw<Array<EvidenceRow & { scan_requested_at: Date }>>`
-        WITH timing AS (
-          SELECT pg_catalog.clock_timestamp() AS requested_at
-        )
-        UPDATE after_sale_evidence_files evidence
-        SET scan_requested_at = timing.requested_at,
-          scan_generation = evidence.scan_generation + 1,
-          version = evidence.version + 1, updated_at = timing.requested_at
-        FROM timing
-        WHERE evidence.store_id = ${context.storeId}::uuid
-          AND evidence.id = ${input.evidenceId}::uuid
-          AND evidence.version = ${input.expectedVersion}
-          AND evidence.status = 'PENDING' AND evidence.after_sale_id IS NULL
-          AND evidence.confirmed_at IS NOT NULL AND evidence.scan_requested_at IS NOT NULL
-          AND evidence.scan_completed_at IS NULL AND evidence.scan_result_code IS NULL
-          AND evidence.scan_requested_at < timing.requested_at
-        RETURNING evidence.id, evidence.store_id, evidence.member_id, evidence.after_sale_id,
-          evidence.object_key, evidence.byte_size, evidence.status,
-          evidence.upload_deadline_at, evidence.confirmed_at, evidence.scan_requested_at,
-          evidence.scan_generation, evidence.claim_deadline_at,
-          evidence.ordinary_access_deadline_at, evidence.retention_deadline_at,
-          evidence.legal_hold_active, evidence.delete_attempt_count,
-          evidence.next_delete_attempt_at, evidence.delete_exhausted_at, evidence.version
-      `;
-      const rescanned = rows[0];
-      if (!rescanned) {
-        throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
-      }
-      // PostgreSQL timestamps retain microseconds while JavaScript Date values retain
-      // milliseconds. Scheduling one millisecond later keeps the outbox time at or after
-      // the authoritative scan request without widening the database's one-second guard.
-      await appendEvidenceMessage(transaction, context, {
-        availableAt: new Date(rescanned.scan_requested_at.getTime() + 1),
-        eventType: AFTER_SALE_EVIDENCE_SCAN_EVENT,
-        evidenceId: rescanned.id,
-        expectedVersion: rescanned.version,
-        maxAttempts: 5,
-      });
+      const rescanned = await requeuePendingEvidenceScanInTransaction(
+        transaction,
+        context,
+        current,
+      );
       return { evidence: evidenceRecord(rescanned), requested: true };
     },
     { isolationLevel: 'Serializable', timeout: 15_000 },
+  );
+}
+
+export type AfterSaleEvidenceScanWork = Readonly<{
+  byteSize: number;
+  checksumSha256: string;
+  deploymentEnvironment: string;
+  evidenceId: string;
+  mimeType: AfterSaleEvidenceMimeType;
+  objectKey: string;
+  scanGeneration: number;
+}>;
+
+export type LoadAfterSaleEvidenceScanWorkForLeaseResult =
+  | Readonly<{ outcome: 'READY'; work: AfterSaleEvidenceScanWork }>
+  | Readonly<{ outcome: 'SUPERSEDED' }>;
+
+export async function loadAfterSaleEvidenceScanWorkForLease(
+  client: PrismaClient,
+  context: AfterSaleEvidenceSystemContext,
+  input: AfterSaleEvidenceScanLeaseInput,
+): Promise<LoadAfterSaleEvidenceScanWorkForLeaseResult> {
+  assertEvidenceOutboxLeaseInput(input);
+  return withAfterSaleEvidenceSystemTransaction(
+    client,
+    context,
+    async (transaction) => {
+      const lease = await lockedValidScanOutboxLease(transaction, context, input);
+      const current = await lockedEvidence(transaction, lease.parsed.evidenceId);
+      if (!current) return stateConflict();
+      await assertLockedScanOutboxLeaseCurrent(transaction, lease.message, input);
+      if (current.version !== lease.parsed.expectedVersion) {
+        await ensureAuthoritativeScanAfterVersionDrift(transaction, context, {
+          current,
+          expectedVersion: lease.parsed.expectedVersion,
+        });
+        await assertLockedScanOutboxLeaseCurrent(transaction, lease.message, input);
+        return { outcome: 'SUPERSEDED' };
+      }
+      if (
+        current.status !== 'PENDING' ||
+        current.confirmed_at === null ||
+        current.scan_generation < 1
+      ) {
+        return { outcome: 'SUPERSEDED' };
+      }
+      const row = (
+        await transaction.$queryRaw<ScanWorkRow[]>`
+          SELECT evidence.id AS evidence_id, evidence.byte_size,
+            evidence.checksum_sha256, evidence.mime_type::text AS mime_type,
+            evidence.scan_generation, object.object_key,
+            pg_catalog.split_part(object.object_key, '/', 1) AS deployment_environment
+          FROM after_sale_evidence_files evidence
+          JOIN after_sale_evidence_objects object
+            ON object.store_id = evidence.store_id
+            AND object.evidence_file_id = evidence.id
+            AND object.object_role = 'ORIGINAL'::after_sale_evidence_object_role
+            AND object.deleted_at IS NULL
+          WHERE evidence.store_id = ${context.storeId}::uuid
+            AND evidence.id = ${lease.parsed.evidenceId}::uuid
+            AND evidence.version = ${lease.parsed.expectedVersion}
+            AND evidence.status = 'PENDING'::after_sale_evidence_status
+            AND evidence.confirmed_at IS NOT NULL
+            AND evidence.scan_requested_at IS NOT NULL
+            AND evidence.scan_completed_at IS NULL
+            AND evidence.scan_result_code IS NULL
+            AND evidence.object_key = object.object_key
+        `
+      )[0];
+      const byteSize = row ? Number(row.byte_size) : Number.NaN;
+      if (
+        !row ||
+        !Number.isSafeInteger(byteSize) ||
+        byteSize < 1 ||
+        !AFTER_SALE_EVIDENCE_MIME_TYPES.includes(row.mime_type as AfterSaleEvidenceMimeType) ||
+        !CHECKSUM_PATTERN.test(row.checksum_sha256) ||
+        !ENVIRONMENT_PATTERN.test(row.deployment_environment) ||
+        row.scan_generation !== current.scan_generation
+      ) {
+        return stateConflict();
+      }
+      await assertLockedScanOutboxLeaseCurrent(transaction, lease.message, input);
+      return {
+        outcome: 'READY',
+        work: {
+          byteSize,
+          checksumSha256: row.checksum_sha256,
+          deploymentEnvironment: row.deployment_environment,
+          evidenceId: row.evidence_id,
+          mimeType: row.mime_type as AfterSaleEvidenceMimeType,
+          objectKey: row.object_key,
+          scanGeneration: row.scan_generation,
+        },
+      };
+    },
+    { isolationLevel: 'Serializable', timeout: SCAN_LEASE_TRANSACTION_TIMEOUT_MS },
   );
 }
 
@@ -834,15 +1116,17 @@ export type AfterSaleEvidenceScanResult =
       verdict: 'INDETERMINATE' | 'MALICIOUS';
     }>;
 
-function assertScanResult(input: ApplyAfterSaleEvidenceScanResultInput): void {
+type ScanResultProjectionInput = Readonly<{
+  claimTtlSeconds: number;
+  failedRetentionSeconds: number;
+  result: AfterSaleEvidenceScanResult;
+  scanGeneration: number;
+}>;
+
+function assertScanResult(input: ScanResultProjectionInput): void {
   assertPositiveInteger(input.claimTtlSeconds, 7 * 24 * 60 * 60);
-  assertPositiveInteger(input.expectedVersion, Number.MAX_SAFE_INTEGER);
   assertPositiveInteger(input.failedRetentionSeconds, 7 * 24 * 60 * 60);
-  if (
-    !UUID_PATTERN.test(input.evidenceId) ||
-    !Number.isSafeInteger(input.scanGeneration) ||
-    input.scanGeneration < 1
-  ) {
+  if (!Number.isSafeInteger(input.scanGeneration) || input.scanGeneration < 1) {
     throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
   }
   const versions = [input.result.engine, input.result.engineVersion, input.result.signatureVersion];
@@ -864,12 +1148,75 @@ export type ApplyAfterSaleEvidenceScanResultInput = Readonly<{
   scanGeneration: number;
 }>;
 
+async function applyAfterSaleEvidenceScanResultInTransaction(
+  transaction: StoreTransaction,
+  context: AfterSaleEvidenceSystemContext,
+  input: ApplyAfterSaleEvidenceScanResultInput,
+  current: EvidenceRow,
+  now: Date,
+): Promise<Readonly<{ applied: boolean; evidence: AfterSaleEvidenceRecord }>> {
+  if (
+    current.version !== input.expectedVersion ||
+    current.scan_generation !== input.scanGeneration ||
+    current.confirmed_at === null ||
+    current.status !== 'PENDING'
+  ) {
+    return { applied: false, evidence: evidenceRecord(current) };
+  }
+  const status =
+    input.result.verdict === 'CLEAN'
+      ? 'READY_UNCLAIMED'
+      : input.result.verdict === 'MALICIOUS'
+        ? 'QUARANTINED'
+        : 'FAILED';
+  const resultCode = input.result.verdict === 'CLEAN' ? 'CLEAN' : input.result.code;
+  const deadline = new Date(
+    now.getTime() +
+      (input.result.verdict === 'CLEAN' ? input.claimTtlSeconds : input.failedRetentionSeconds) *
+        1_000,
+  );
+  const engine = input.result.engine ?? null;
+  const engineVersion = input.result.engineVersion ?? null;
+  const signatureVersion = input.result.signatureVersion ?? null;
+  const rows = await transaction.$queryRaw<EvidenceRow[]>(Prisma.sql`
+    UPDATE after_sale_evidence_files
+    SET status = ${status}::after_sale_evidence_status,
+      scan_result_code = ${resultCode}, scan_completed_at = ${now},
+      scanner_engine = ${engine}, scanner_engine_version = ${engineVersion},
+      scanner_signature_version = ${signatureVersion},
+      claim_deadline_at = ${deadline}, version = version + 1, updated_at = ${now}
+    WHERE store_id = ${context.storeId}::uuid AND id = ${input.evidenceId}::uuid
+      AND status = 'PENDING' AND scan_generation = ${input.scanGeneration}
+      AND version = ${input.expectedVersion}
+    RETURNING id, store_id, member_id, after_sale_id, object_key, byte_size, status,
+      upload_deadline_at, confirmed_at, scan_generation, claim_deadline_at,
+      ordinary_access_deadline_at, retention_deadline_at, legal_hold_active,
+      delete_attempt_count, next_delete_attempt_at, delete_exhausted_at, version
+  `);
+  const updated = rows[0];
+  if (!updated) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
+  }
+  await appendEvidenceMessage(transaction, context, {
+    availableAt: deadline,
+    eventType: AFTER_SALE_EVIDENCE_EXPIRE_EVENT,
+    evidenceId: updated.id,
+    expectedVersion: updated.version,
+    maxAttempts: 3,
+  });
+  return { applied: true, evidence: evidenceRecord(updated) };
+}
+
 export async function applyAfterSaleEvidenceScanResult(
   client: PrismaClient,
   context: AfterSaleEvidenceSystemContext,
   input: ApplyAfterSaleEvidenceScanResultInput,
 ): Promise<Readonly<{ applied: boolean; evidence: AfterSaleEvidenceRecord }>> {
   assertScanResult(input);
+  assertPositiveInteger(input.expectedVersion, Number.MAX_SAFE_INTEGER);
+  if (!UUID_PATTERN.test(input.evidenceId)) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
+  }
   return withAfterSaleEvidenceSystemTransaction(
     client,
     context,
@@ -879,60 +1226,70 @@ export async function applyAfterSaleEvidenceScanResult(
       if (!current) {
         throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_NOT_FOUND');
       }
-      if (
-        current.version !== input.expectedVersion ||
-        current.scan_generation !== input.scanGeneration ||
-        current.confirmed_at === null ||
-        current.status !== 'PENDING'
-      ) {
-        return { applied: false, evidence: evidenceRecord(current) };
-      }
-      const status =
-        input.result.verdict === 'CLEAN'
-          ? 'READY_UNCLAIMED'
-          : input.result.verdict === 'MALICIOUS'
-            ? 'QUARANTINED'
-            : 'FAILED';
-      const resultCode = input.result.verdict === 'CLEAN' ? 'CLEAN' : input.result.code;
-      const deadline = new Date(
-        now.getTime() +
-          (input.result.verdict === 'CLEAN'
-            ? input.claimTtlSeconds
-            : input.failedRetentionSeconds) *
-            1_000,
+      return applyAfterSaleEvidenceScanResultInTransaction(
+        transaction,
+        context,
+        input,
+        current,
+        now,
       );
-      const engine = input.result.engine ?? null;
-      const engineVersion = input.result.engineVersion ?? null;
-      const signatureVersion = input.result.signatureVersion ?? null;
-      const rows = await transaction.$queryRaw<EvidenceRow[]>(Prisma.sql`
-        UPDATE after_sale_evidence_files
-        SET status = ${status}::after_sale_evidence_status,
-          scan_result_code = ${resultCode}, scan_completed_at = ${now},
-          scanner_engine = ${engine}, scanner_engine_version = ${engineVersion},
-          scanner_signature_version = ${signatureVersion},
-          claim_deadline_at = ${deadline}, version = version + 1, updated_at = ${now}
-        WHERE store_id = ${context.storeId}::uuid AND id = ${input.evidenceId}::uuid
-          AND status = 'PENDING' AND scan_generation = ${input.scanGeneration}
-          AND version = ${input.expectedVersion}
-        RETURNING id, store_id, member_id, after_sale_id, object_key, byte_size, status,
-          upload_deadline_at, confirmed_at, scan_generation, claim_deadline_at,
-          ordinary_access_deadline_at, retention_deadline_at, legal_hold_active,
-          delete_attempt_count, next_delete_attempt_at, delete_exhausted_at, version
-      `);
-      const updated = rows[0];
-      if (!updated) {
-        throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
-      }
-      await appendEvidenceMessage(transaction, context, {
-        availableAt: deadline,
-        eventType: AFTER_SALE_EVIDENCE_EXPIRE_EVENT,
-        evidenceId: updated.id,
-        expectedVersion: updated.version,
-        maxAttempts: 3,
-      });
-      return { applied: true, evidence: evidenceRecord(updated) };
     },
     { isolationLevel: 'Serializable', timeout: 15_000 },
+  );
+}
+
+export type ApplyAfterSaleEvidenceScanResultForLeaseInput = AfterSaleEvidenceScanLeaseInput &
+  ScanResultProjectionInput;
+
+export type ApplyAfterSaleEvidenceScanResultForLeaseResult = Readonly<{
+  evidence: AfterSaleEvidenceRecord;
+  outcome: 'APPLIED' | 'SUPERSEDED';
+}>;
+
+export async function applyAfterSaleEvidenceScanResultForLease(
+  client: PrismaClient,
+  context: AfterSaleEvidenceSystemContext,
+  input: ApplyAfterSaleEvidenceScanResultForLeaseInput,
+): Promise<ApplyAfterSaleEvidenceScanResultForLeaseResult> {
+  assertEvidenceOutboxLeaseInput(input);
+  assertScanResult(input);
+  return withAfterSaleEvidenceSystemTransaction(
+    client,
+    context,
+    async (transaction) => {
+      const lease = await lockedValidScanOutboxLease(transaction, context, input);
+      const current = await lockedEvidence(transaction, lease.parsed.evidenceId);
+      if (!current) return stateConflict();
+      const { now } = await assertLockedScanOutboxLeaseCurrent(transaction, lease.message, input);
+      if (current.version !== lease.parsed.expectedVersion) {
+        const authoritative = await ensureAuthoritativeScanAfterVersionDrift(transaction, context, {
+          current,
+          expectedVersion: lease.parsed.expectedVersion,
+        });
+        await assertLockedScanOutboxLeaseCurrent(transaction, lease.message, input);
+        return { evidence: evidenceRecord(authoritative), outcome: 'SUPERSEDED' };
+      }
+      const projected = await applyAfterSaleEvidenceScanResultInTransaction(
+        transaction,
+        context,
+        {
+          claimTtlSeconds: input.claimTtlSeconds,
+          evidenceId: lease.parsed.evidenceId,
+          expectedVersion: lease.parsed.expectedVersion,
+          failedRetentionSeconds: input.failedRetentionSeconds,
+          result: input.result,
+          scanGeneration: input.scanGeneration,
+        },
+        current,
+        now,
+      );
+      await assertLockedScanOutboxLeaseCurrent(transaction, lease.message, input);
+      return {
+        evidence: projected.evidence,
+        outcome: projected.applied ? 'APPLIED' : 'SUPERSEDED',
+      };
+    },
+    { isolationLevel: 'Serializable', timeout: SCAN_LEASE_TRANSACTION_TIMEOUT_MS },
   );
 }
 
@@ -1305,6 +1662,98 @@ export type AfterSaleEvidenceDeadLetterReconciliationResult = Readonly<{
   outcome: AfterSaleEvidenceDeadLetterReconciliationOutcome;
 }>;
 
+export type AfterSaleEvidenceScanDeadLetterCandidate = Readonly<{
+  messageId: string;
+}>;
+
+export async function listAfterSaleEvidenceScanDeadLetterCandidates(
+  client: PrismaClient,
+  context: AfterSaleEvidenceSystemContext,
+  input: Readonly<{ batchSize: number }>,
+): Promise<readonly AfterSaleEvidenceScanDeadLetterCandidate[]> {
+  assertPositiveInteger(input.batchSize, 100);
+  return withAfterSaleEvidenceSystemTransaction(client, context, async (transaction) => {
+    const rows = await transaction.$queryRaw<Array<{ message_id: string }>>`
+      SELECT message.id AS message_id
+      FROM outbox_messages message
+      JOIN after_sale_evidence_files evidence
+        ON evidence.store_id = message.store_id
+        AND evidence.id = message.aggregate_id
+      WHERE message.store_id = ${context.storeId}::uuid
+        AND message.status = 'DEAD_LETTER'::outbox_status
+        AND message.aggregate_type = ${AFTER_SALE_EVIDENCE_AGGREGATE_TYPE}
+        AND message.event_type = ${AFTER_SALE_EVIDENCE_SCAN_EVENT}
+        AND message.event_version = 1
+        AND message.lease_owner IS NULL
+        AND message.lease_expires_at IS NULL
+        AND message.completed_at IS NOT NULL
+        AND pg_catalog.jsonb_typeof(message.payload) = 'object'
+        AND message.payload ?& ARRAY['evidence_id', 'expected_version', 'store_id']::text[]
+        AND message.payload - ARRAY['evidence_id', 'expected_version', 'store_id']::text[] = '{}'::jsonb
+        AND message.payload->>'store_id' = message.store_id::text
+        AND message.payload->>'evidence_id' = message.aggregate_id::text
+        AND evidence.status = 'PENDING'::after_sale_evidence_status
+        AND evidence.confirmed_at IS NOT NULL
+        AND evidence.scan_generation > 0
+        AND CASE
+          WHEN pg_catalog.jsonb_typeof(message.payload->'expected_version') = 'number'
+            AND message.payload->>'expected_version' ~ '^[1-9][0-9]*$'
+          THEN (message.payload->>'expected_version')::numeric <= 9007199254740991
+            AND evidence.version >= (message.payload->>'expected_version')::numeric
+          ELSE false
+        END
+        AND NOT EXISTS (
+          SELECT 1
+          FROM outbox_messages newer
+          WHERE newer.store_id = evidence.store_id
+              AND newer.aggregate_type = ${AFTER_SALE_EVIDENCE_AGGREGATE_TYPE}
+              AND newer.aggregate_id = evidence.id
+              AND newer.event_type = ${AFTER_SALE_EVIDENCE_SCAN_EVENT}
+              AND newer.event_version = 1
+              AND newer.status IN (
+                'PENDING'::outbox_status,
+                'PROCESSING'::outbox_status,
+                'DEAD_LETTER'::outbox_status
+              )
+              AND pg_catalog.jsonb_typeof(newer.payload) = 'object'
+              AND newer.payload ?& ARRAY['evidence_id', 'expected_version', 'store_id']::text[]
+              AND newer.payload - ARRAY['evidence_id', 'expected_version', 'store_id']::text[] = '{}'::jsonb
+              AND newer.payload->>'store_id' = evidence.store_id::text
+              AND newer.payload->>'evidence_id' = evidence.id::text
+              AND (
+                (
+                  newer.status = 'PENDING'::outbox_status
+                  AND newer.lease_owner IS NULL AND newer.lease_expires_at IS NULL
+                  AND newer.completed_at IS NULL
+                ) OR (
+                  newer.status = 'PROCESSING'::outbox_status
+                  AND newer.lease_owner IS NOT NULL AND newer.lease_expires_at IS NOT NULL
+                  AND newer.completed_at IS NULL
+                ) OR (
+                  newer.status = 'DEAD_LETTER'::outbox_status
+                  AND newer.lease_owner IS NULL AND newer.lease_expires_at IS NULL
+                  AND newer.completed_at IS NOT NULL
+                )
+              )
+              AND CASE
+                WHEN pg_catalog.jsonb_typeof(newer.payload->'expected_version') = 'number'
+                  AND newer.payload->>'expected_version' ~ '^[1-9][0-9]*$'
+                  AND pg_catalog.jsonb_typeof(message.payload->'expected_version') = 'number'
+                  AND message.payload->>'expected_version' ~ '^[1-9][0-9]*$'
+                THEN (newer.payload->>'expected_version')::numeric <= 9007199254740991
+                  AND (newer.payload->>'expected_version')::numeric
+                    > (message.payload->>'expected_version')::numeric
+                  AND (newer.payload->>'expected_version')::numeric <= evidence.version
+                ELSE false
+              END
+        )
+      ORDER BY message.completed_at, message.id
+      LIMIT ${input.batchSize}
+    `;
+    return rows.map((row) => ({ messageId: row.message_id }));
+  });
+}
+
 function assertDeadLetterReconciliationInput(
   input: ReconcileAfterSaleEvidenceDeadLetterInput,
 ): void {
@@ -1344,10 +1793,10 @@ async function reconcileScanDeadLetterInTransaction(
   }
   if (
     input.current.version > input.parsed.expectedVersion &&
-    (await hasEvidenceOutboxIdentity(transaction, context, {
-      eventType: AFTER_SALE_EVIDENCE_SCAN_EVENT,
+    (await hasNewerConvergentScanOutboxIdentity(transaction, context, {
+      currentEvidenceVersion: input.current.version,
       evidenceId: input.current.id,
-      expectedVersion: input.current.version,
+      oldExpectedVersion: input.parsed.expectedVersion,
     }))
   ) {
     return {
@@ -1387,6 +1836,44 @@ async function reconcileScanDeadLetterInTransaction(
     eventType: input.parsed.eventType,
     outcome: 'SCAN_FAILED',
   };
+}
+
+export async function reconcileAfterSaleEvidenceScanDeadLetter(
+  client: PrismaClient,
+  context: AfterSaleEvidenceSystemContext,
+  input: Readonly<{ messageId: string; scanFailedRetentionSeconds: number }>,
+): Promise<AfterSaleEvidenceDeadLetterReconciliationResult> {
+  assertPositiveInteger(input.scanFailedRetentionSeconds, 7 * 24 * 60 * 60);
+  if (!UUID_PATTERN.test(input.messageId)) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
+  }
+  return withAfterSaleEvidenceSystemTransaction(
+    client,
+    context,
+    async (transaction) => {
+      const message = await lockedEvidenceOutbox(transaction, context, input.messageId);
+      if (!message) return stateConflict();
+      const parsed = parseEvidenceOutbox(message, context.storeId);
+      if (parsed.eventType !== AFTER_SALE_EVIDENCE_SCAN_EVENT) return stateConflict();
+      const current = await lockedEvidence(transaction, parsed.evidenceId);
+      if (!current) return stateConflict();
+      if (message.status !== 'DEAD_LETTER') {
+        return {
+          evidence: evidenceRecord(current),
+          eventType: parsed.eventType,
+          outcome: 'NOT_DEAD_LETTER',
+        };
+      }
+      assertDeadLetterShape(message);
+      return reconcileScanDeadLetterInTransaction(transaction, context, {
+        current,
+        now: await wallClock(transaction),
+        parsed,
+        scanFailedRetentionSeconds: input.scanFailedRetentionSeconds,
+      });
+    },
+    { isolationLevel: 'Serializable', timeout: 15_000 },
+  );
 }
 
 async function reconcileExpireDeadLetterInTransaction(
@@ -1585,22 +2072,11 @@ export async function reconcileAfterSaleEvidenceDeadLetter(
     client,
     context,
     async (transaction) => {
-      const snapshot = await evidenceOutbox(transaction, context, input.messageId);
-      if (!snapshot) return stateConflict();
-      const snapshotParsed = parseEvidenceOutbox(snapshot, context.storeId);
-      const current = await lockedEvidence(transaction, snapshotParsed.evidenceId);
-      if (!current) return stateConflict();
       const message = await lockedEvidenceOutbox(transaction, context, input.messageId);
       if (!message) return stateConflict();
       const parsed = parseEvidenceOutbox(message, context.storeId);
-      if (
-        message.id !== snapshot.id ||
-        parsed.evidenceId !== snapshotParsed.evidenceId ||
-        parsed.eventType !== snapshotParsed.eventType ||
-        parsed.expectedVersion !== snapshotParsed.expectedVersion
-      ) {
-        return stateConflict();
-      }
+      const current = await lockedEvidence(transaction, parsed.evidenceId);
+      if (!current) return stateConflict();
       if (message.status !== 'DEAD_LETTER') {
         return {
           evidence: evidenceRecord(current),

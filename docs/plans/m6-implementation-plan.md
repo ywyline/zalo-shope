@@ -1,7 +1,8 @@
 # M6 售后、会员、内容与主动分享专项实施计划
 
-> 状态：已批准；M6.1、M6.2、M6.3-A、M6.3-B0、B1、B2a、B2b-D0 与 B2b-D1 repository +
-> local/test storage validation 已完成且适用仓库门禁通过；B2/B2b、B3-B7、
+> 状态：已批准；M6.1、M6.2、M6.3-A、M6.3-B0、B1、B2a、B2b-D0、B2b-D1 repository +
+> local/test storage validation 与 B2b-D2 repository implementation + local/test scanner worker
+> validation 已完成且适用仓库门禁通过；B2/B2b、B3-B7、
 > M6.3、UI 与生产启用未完成或未授权并保持失败关闭；M6 整体未完成
 >
 > 版本：1.0
@@ -129,6 +130,20 @@ D1 定向 config/integrations 单元 65/65、真实 MinIO 7/7、完整 integrati
 HTTP、worker、scanner、D0 outbox 消费、B3 claim 调用方、管理员读取审计或生产 KMS/lifecycle/
 versioning/Object Lock/rollout；五项 runtime capability 与 OpenAPI status 不变。B2b/B2、B3-B7、M6.3、
 M6 和 P0 继续未完成。
+
+M6.3-B2b-D2 授权与仓库/local-test 完成记录（2026-07-30）：用户在 D1 后再次要求按严谨工作流
+继续，本轮只实施真实 ClamAV scanner 与 scan worker。D2 以 D1 HEAD/`If-Match` GET 同流重算实际
+长度/SHA-256/magic 并扫描，通过固定 evidence SYSTEM scope 在网络调用前后复核权威 outbox/evidence/
+ORIGINAL、商城、严格 payload、version/generation 与数据库时钟租约；legal-hold 同状态版本漂移会
+原子生成下一 generation/outbox。独立 scan dead-letter reconciler 将仍权威的 `PENDING` 收敛为
+`FAILED`，旧消息只 `SUPERSEDED`。
+
+D2 真实 PostgreSQL + MinIO + ClamAV 20/20、完整 integration 32 文件/270 项、43 段迁移演练、
+生产依赖 high、OpenAPI 556/112/0/0、Gitleaks、差异检查与独立复审通过。两个租约事务各限 2 秒，
+默认超时组合的租约下限为 29 秒；worker 关闭时先 drain 再释放 Prisma/S3。只将 repository
+implementation + local/test scanner worker validation 标记 `COMPLETE`；HTTP、B3 claim、保护读取/
+审计、expire/delete worker、外部告警和生产 rollout 未完成，B2b/B2、B3-B7、M6.3、M6 与 P0 均
+不因此完成。完整证据见 `docs/reports/m6.3-b2b-d2-scanner-worker-completion-report.md`。
 
 ## 2. 目标与非目标
 
@@ -264,8 +279,9 @@ M6 和 P0 继续未完成。
 ### M6.3：售后申请、审核、退货与结算协调
 
 实施顺序细分为 M6.3-A 前置安全收口和 M6.3-B 售后运行时；当前 M6.3-A 与
-M6.3-B0/B1/B2a/B2b-D0 仓库实施，以及 B2b-D1 repository + local/test storage validation 已完成。
-B2/B2b、B3-B7 仍未完成或未授权并失败关闭。A/B0/B1/B2a/D0/D1 的局部交付也不代表 M6.3 完成，详见
+M6.3-B0/B1/B2a/B2b-D0 仓库实施、B2b-D1 repository + local/test storage validation，以及 B2b-D2
+repository implementation + local/test scanner worker validation 已完成。B2/B2b、B3-B7 仍未完成
+或未授权并失败关闭。A/B0/B1/B2a/D0-D2 的局部交付也不代表 M6.3 完成，详见
 `docs/plans/m6.3-implementation-plan.md`。
 
 - B1 只读列表/详情使用严格响应投影和三语历史政策回退；不得因 RLS 没有列级保护而使用宽
@@ -283,6 +299,9 @@ B2/B2b、B3-B7 仍未完成或未授权并失败关闭。A/B0/B1/B2a/D0/D1 的�
 - B2b-D1 仅提供独立 storage adapter、失败关闭配置和 local/test MinIO bucket/IAM/真实 bytes 校验。
   adapter 没有 API/worker 调用方，不消费 D0 outbox；签名 GET、幂等 DELETE 和 magic 校验不能据此
   变成保护读取、删除补偿或 malware scanning 运行时。
+- B2b-D2 仅提供内部真实 ClamAV scanner、D1 同流内容复验、scan worker、租约安全投影和持久 scan
+  dead-letter 收敛。D2 不注册凭证 HTTP，不实现 B3 claim、保护读取/审计、expire/delete worker、
+  外部告警或 production rollout。
 - 买家提交/取消、管理员审核、返件登记与可信物流事实、待验收读取和售后时间线；完整返件验收写路径
   及 exactly-once 库存恢复属于 M6.4。
 - ONLINE 通过内部原语关联 M5 Refund，并消费成功/失败/取消/不确定权威结果；COD 使用可从退款响应
@@ -431,3 +450,7 @@ D0 的独立最终证据、`NOT_RUN/BLOCKED` 项和限制见
 D1 当前证据见 `docs/reports/m6.3-b2b-d1-evidence-storage-completion-report.md`。生产依赖 high 与
 OpenAPI 回归、最终 `verify`、Gitleaks 和差异复审均已有通过证据。该局部完成同样不完成
 B2b/B2、M6.3、M6 或 P0。
+D2 当前证据见 `docs/reports/m6.3-b2b-d2-scanner-worker-completion-report.md`。真实 scanner worker、
+租约竞争与死信收敛只在 repository/local-test 边界完成；生产 scanner/storage、HTTP、claim、保护
+读取/审计、expire/delete worker、外部告警与 rollout 继续未完成。该局部同样不完成 B2b/B2、
+M6.3、M6 或 P0。

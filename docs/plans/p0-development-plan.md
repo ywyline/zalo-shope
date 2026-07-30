@@ -1,8 +1,9 @@
 # P0 分阶段开发计划
 
 > 状态：已批准，M0 已完成，M1 实施完成但验收有保留；M2.1-M2.8.4、M3.1-M3.7、M4 与 M5.1-M5.4 已完成自动化收口；
-> M5.5-M5.7 仓库自动化已实施但外部验收仍阻塞；M6.1、M6.2、M6.3-A、M6.3-B0、B1、B2a、B2b-D0
-> 与 B2b-D1 repository + local/test storage validation 已完成且 D1 适用仓库门禁通过；B2/B2b、B3-B7、
+> M5.5-M5.7 仓库自动化已实施但外部验收仍阻塞；M6.1、M6.2、M6.3-A、M6.3-B0、B1、B2a、B2b-D0、
+> B2b-D1 repository + local/test storage validation 与 B2b-D2 repository implementation +
+> local/test scanner worker validation 已完成且适用仓库门禁通过；B2/B2b、B3-B7、
 > M6.3、UI 与生产启用未完成或未授权并保持失败关闭；P0 整体未完成
 >
 > 版本：0.12
@@ -158,6 +159,19 @@ scanner、B3 claim、管理员读取审计或 production KMS/lifecycle/versionin
 bucket 物理删除和 AWS 最小 read IAM 不存在对象 `403` 仍是生产阻断。B2b/B2、B3-B7、M6.3、M6、M5
 与 P0 均未完成。
 
+M6.3-B2b-D2 授权与仓库/local-test 完成记录（2026-07-30）：D1 后用户再次要求按严谨工作流继续，
+本轮只实现真实 ClamAV scanner 与 scan worker。D1 同流 HEAD/`If-Match` GET 同时复验长度、SHA-256、
+magic 并扫描；固定 SYSTEM scope 在网络前后复核权威 outbox/evidence/ORIGINAL、商城、严格 payload、
+version/generation 与租约。legal-hold 同状态版本漂移会原子排队下一 generation；持久 scan dead-letter
+reconciler 只把仍权威的待扫描对象安全收敛为 `FAILED`。
+
+D2 真实基础设施 20/20、完整 integration 32 文件/270 项、43 段迁移演练、生产依赖 high、OpenAPI、
+Gitleaks、差异检查与独立复审均通过。两个租约事务各限 2 秒，默认最小租约 29 秒；关闭时先 drain
+再释放共享 Prisma/S3。只将 repository implementation + local/test scanner worker validation 标记
+`COMPLETE`；没有 HTTP、B3 claim、保护读取/审计、expire/delete worker、外部告警或 production
+rollout，B2b/B2、B3-B7、M6.3、M6、M5 与 P0 均未完成。完整证据见
+`docs/reports/m6.3-b2b-d2-scanner-worker-completion-report.md`。
+
 ## 1. 总体范围
 
 本计划覆盖 `REQUIREMENTS.md` 第 22.1 节的 P0 能力及其安全、合规和验收前置条件。P1/P2 只保留架构扩展点，不进入实现范围。所有阶段使用同一套代码，通过商城配置、主题令牌和行业属性模板表达美妆/服装差异。
@@ -307,8 +321,9 @@ bucket 物理删除和 AWS 最小 read IAM 不存在对象 `403` 仍是生产阻
 
 当前局部状态：M6.3-B1 交付商城/主体隔离的售后列表与详情读取；B2a 政策列表/详情、草稿、版本列表/
 详情、发布和停用七接口已完成仓库实施；B2b-D0 只交付凭证 schema/RLS/ledger/数据库生命周期与可靠
-排队原语，B2b-D1 只交付独立 storage adapter/config 与 local/test MinIO IAM/真实 bytes 校验。B2a 不
-改写政策 RLS，保留会员历史政策读取；D0/D1 合计仍没有凭证 HTTP/worker/scanner，也不
+排队原语，B2b-D1 只交付独立 storage adapter/config 与 local/test MinIO IAM/真实 bytes 校验，
+B2b-D2 只交付内部真实 scanner、scan worker、租约安全投影和死信收敛。B2a 不改写政策 RLS，保留
+会员历史政策读取；D0-D2 合计仍没有凭证 HTTP、B3 claim、保护读取/审计或 expire/delete worker，也不
 交付下列完整 M6 产品范围。只读摘要、政策控制面或数据库原语存在，不能据此解释为凭证上传/读取、
 售后申请、审核、返件、退款、结算或 UI 可用。完整 B2b/B3-B7/生产政策与 enforcement/部署仍未授权
 并失败关闭。

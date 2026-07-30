@@ -81,7 +81,26 @@ services:
       - ./infra/minio/init.sh:/minio/init.sh:ro
       - ./infra/minio/policies:/policies:ro
 
+  clamav:
+    image: clamav/clamav-debian:1.5.3@sha256:9ea1c2bc1955c58d094bb3d168718d0173c7899096012523278ad76e06cc75a2
+    environment:
+      CLAMD_CONF_MaxFileSize: 55M
+      CLAMD_CONF_MaxScanSize: 55M
+      CLAMD_CONF_StreamMaxLength: 55M
+      TZ: Etc/UTC
+    ports:
+      - '127.0.0.1:3310:3310'
+    healthcheck:
+      test: ['CMD-SHELL', 'clamdcheck.sh']
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 5m
+    volumes:
+      - clamav-data:/var/lib/clamav
+
 volumes:
+  clamav-data:
   minio-data:
   postgres-data:
   redis-data:

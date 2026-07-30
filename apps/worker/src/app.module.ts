@@ -2,9 +2,13 @@ import { Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common
 import { parseRuntimeConfig, type RuntimeConfig } from '@zalo-shop/config';
 import { createRuntimePrismaClient } from '@zalo-shop/database';
 import {
+  ClamAvAfterSaleEvidenceScanner,
   ConfiguredPaymentProviderResolver,
   ConfiguredShippingProviderResolver,
   EnvironmentSecretReferenceResolver,
+  createAfterSaleEvidenceStorageProvider,
+  type AfterSaleEvidenceObjectStorageProvider,
+  type AfterSaleEvidenceScanner,
   type PaymentProviderResolver,
   type ShippingProviderResolver,
 } from '@zalo-shop/integrations';
@@ -12,6 +16,9 @@ import { createHttpLogger, createLogger } from '@zalo-shop/logger';
 import { checkInfrastructure } from '@zalo-shop/platform';
 
 import { HealthController, INFRASTRUCTURE_CHECKER, RUNTIME_CONFIG } from './health.controller';
+import { AfterSaleEvidenceDeadLetterService } from './after-sales-evidence/after-sale-evidence-dead-letter.service';
+import { AfterSaleEvidenceScanRequestedHandler } from './after-sales-evidence/after-sale-evidence-scan.handler';
+import { AfterSaleEvidenceStorageLifecycleService } from './after-sales-evidence/after-sale-evidence-storage-lifecycle.service';
 import { InventoryExpirationService } from './inventory/inventory-expiration.service';
 import { OrderReconciliationService } from './orders/order-reconciliation.service';
 import { OutboxMessageDispatcher } from './reliable-messaging/outbox-message-handler';
@@ -28,6 +35,8 @@ import { ShipmentProviderOperationHandler } from './shipments/shipment-provider-
 import { SHIPMENT_CANCEL_EVENT_TYPE, SHIPMENT_QUERY_EVENT_TYPE } from '@zalo-shop/database';
 import {
   OUTBOX_MESSAGE_HANDLERS,
+  WORKER_AFTER_SALE_EVIDENCE_SCANNER,
+  WORKER_AFTER_SALE_EVIDENCE_STORAGE,
   WORKER_DATABASE_CLIENT,
   WORKER_PAYMENT_PROVIDER,
   WORKER_SHIPPING_PROVIDER_RESOLVER,
@@ -58,6 +67,30 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
   });
 }
 
+function createEvidenceStorage(
+  config: RuntimeConfig,
+): AfterSaleEvidenceObjectStorageProvider | null {
+  if (config.EVIDENCE_SCANNER_PROVIDER !== 'clamav') return null;
+  return createAfterSaleEvidenceStorageProvider(config);
+}
+
+function createEvidenceScanner(config: RuntimeConfig): AfterSaleEvidenceScanner | null {
+  if (config.EVIDENCE_SCANNER_PROVIDER !== 'clamav') return null;
+  if (
+    config.EVIDENCE_SCANNER_HOST === undefined ||
+    config.EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS === undefined
+  ) {
+    throw new Error('Evidence scanner configuration is incomplete');
+  }
+  return new ClamAvAfterSaleEvidenceScanner({
+    host: config.EVIDENCE_SCANNER_HOST,
+    port: config.EVIDENCE_SCANNER_PORT,
+    responseLimitBytes: config.EVIDENCE_SCANNER_RESPONSE_LIMIT_BYTES,
+    signatureMaxAgeMs: config.EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS * 1_000,
+    timeoutMs: config.EVIDENCE_SCANNER_REQUEST_TIMEOUT_MS,
+  });
+}
+
 @Module({
   controllers: [HealthController],
   providers: [
@@ -72,6 +105,16 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
       useFactory: () => createPaymentProviderResolver(runtimeConfig),
     },
     {
+      inject: [RUNTIME_CONFIG],
+      provide: WORKER_AFTER_SALE_EVIDENCE_STORAGE,
+      useFactory: createEvidenceStorage,
+    },
+    {
+      inject: [RUNTIME_CONFIG],
+      provide: WORKER_AFTER_SALE_EVIDENCE_SCANNER,
+      useFactory: createEvidenceScanner,
+    },
+    {
       provide: WORKER_SHIPPING_PROVIDER_RESOLVER,
       useFactory: () => createShippingProviderResolver(runtimeConfig),
     },
@@ -79,6 +122,8 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
       inject: [
         RUNTIME_CONFIG,
         WORKER_DATABASE_CLIENT,
+        WORKER_AFTER_SALE_EVIDENCE_STORAGE,
+        WORKER_AFTER_SALE_EVIDENCE_SCANNER,
         WORKER_PAYMENT_PROVIDER,
         WORKER_SHIPPING_PROVIDER_RESOLVER,
       ],
@@ -86,10 +131,22 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
       useFactory: (
         config: RuntimeConfig,
         database: ReturnType<typeof createRuntimePrismaClient>,
+        evidenceStorage: AfterSaleEvidenceObjectStorageProvider | null,
+        evidenceScanner: AfterSaleEvidenceScanner | null,
         paymentProviderResolver: PaymentProviderResolver,
         shippingProviderResolver: ShippingProviderResolver,
       ) => [
         ...(config.NODE_ENV === 'test' ? [new TestOnlyOutboxHandler(config.NODE_ENV)] : []),
+        ...(config.EVIDENCE_SCANNER_PROVIDER === 'clamav'
+          ? [
+              new AfterSaleEvidenceScanRequestedHandler(
+                database,
+                evidenceStorage ?? missingEvidenceDependency(),
+                evidenceScanner ?? missingEvidenceDependency(),
+                config,
+              ),
+            ]
+          : []),
         ...(config.PAYMENT_PROVIDER === 'disabled'
           ? []
           : [
@@ -121,14 +178,22 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     },
     InventoryExpirationService,
     OrderReconciliationService,
+    AfterSaleEvidenceStorageLifecycleService,
     OutboxMessageDispatcher,
     ReliableOutboxService,
+    ...(runtimeConfig.EVIDENCE_SCANNER_PROVIDER === 'clamav'
+      ? [AfterSaleEvidenceDeadLetterService]
+      : []),
   ],
 })
 export class AppModule implements NestModule {
   public configure(consumer: MiddlewareConsumer): void {
     consumer.apply(createHttpLogger(logger)).forRoutes('*');
   }
+}
+
+function missingEvidenceDependency(): never {
+  throw new Error('Evidence scanner dependency is unavailable');
 }
 
 export function getWorkerRuntimeConfig(): RuntimeConfig {

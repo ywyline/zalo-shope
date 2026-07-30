@@ -26,6 +26,12 @@ validation `COMPLETE`；最终 verify、Gitleaks、差异复审、生产依赖 h
 没有注册 HTTP、worker 或 scanner，也未取得生产 KMS/lifecycle/versioning/Object Lock/rollout 证据；B2/B2b、B3-B7、
 M6.3、M6 和 P0 继续未完成。
 
+用户随后授权 B2b-D2。仓库已把 D1 的受控读取流、真实 ClamAV adapter、scan outbox handler、租约
+绑定数据库投影和持久 scan dead-letter 收敛接成 local/test worker 链路，并通过适用仓库门禁与独立
+复审；该局部结论只标记为 repository implementation + local/test scanner worker validation
+`COMPLETE`。这仍不完成 B2b/B2、B3-B7、M6.3、M6、P0、HTTP、保护读取/审计、expire/delete
+worker、外部告警或生产 rollout。
+
 ## 1. 决策范围
 
 本文确定首次脚手架前需要批准的技术方向，覆盖应用边界、多商城隔离、数据与集成原则、部署形态和质量门禁。本文不定义完整表字段、最终 API 契约或供应商私有参数；这些内容在后续专项设计中完成。
@@ -487,6 +493,45 @@ docs/
   verify（62 个单元文件/482 项）、Gitleaks、差异复审、生产依赖 high 与 OpenAPI 回归均通过；B2b/B2、
   M6.3、M6、P0、生产 storage、HTTP、worker、scanner、告警与 rollout 均未完成。
 
+### M6.3-B2b-D2 真实扫描与租约安全 worker 边界
+
+- D2 只消费 `after-sale.evidence.scan.requested` v1。worker 为每条消息构造固定 actor/scope 的
+  `createAfterSaleEvidenceSystemContext`，不接受或冒用管理员、会员及普通 StoreContext。条件注册要求
+  storage 与 scanner 配置同时完整；任一依赖缺失时失败关闭。
+- `AfterSaleEvidenceScanner` 使用 ClamAV TCP `zIDSESSION\0` 单连接会话：request 1 执行
+  `zVERSION\0`，request 2 执行 `zINSTREAM\0`，最后发送 `zEND\0`。帧不超过 64 KiB，总量不超过
+  50 MiB；响应 ID、顺序、NUL 终止、尾随字节、VERSION 产品名和签名时间均严格校验。内部 engine
+  固定为 `clamav`，只有精确 `2: stream: OK` 可成为 `CLEAN`；`FOUND` 只投影稳定
+  `MALWARE_DETECTED`，恶意签名正文不记录、不返回、不持久化。
+- storage consumer 先 HEAD 并要求非空 ETag，再以 `If-Match` GET 绑定同一对象。实际长度、SHA-256、
+  magic 与 scanner 都消费同一条最大 50 MiB 的有界流；对象验证和扫描响应必须都完整成功，才能进入
+  数据库结果投影，provider metadata 或单独 magic 检查都不能产生 `CLEAN`。
+- `loadAfterSaleEvidenceScanWorkForLease` 在网络调用前重读消息/evidence/ORIGINAL ledger；
+  `applyAfterSaleEvidenceScanResultForLease` 在单独 SERIALIZABLE 事务中用数据库
+  `clock_timestamp()` 再次复核消息仍为 `PROCESSING`、lease owner 一致、lease 严格未到期、消息
+  version、商城与严格 payload 身份，以及 evidence version/generation/status。lease 截止相等也拒绝；
+  两个入口在等待 evidence 行锁后都会重新读取数据库时钟并复核租约，事务各限制为 2 秒；loader
+  成功不构成提交授权。过期、重领、乱序或已投影消息只能 `SUPERSEDED`，不能覆盖新事实。
+- legal hold 等同状态更新可能只推进 evidence version。旧 scan message 发现这种漂移时，会在同一
+  SYSTEM 事务把 generation/version 再推进一次并排队唯一的新 scan outbox；旧 worker 只返回
+  `SUPERSEDED`，避免权威 `PENDING` 凭证失去可收敛的扫描身份。
+- 通用 outbox 不会重领 `DEAD_LETTER`，因此 D2 另以持久、有界批次轮询 scan v1 候选。
+  `listAfterSaleEvidenceScanDeadLetterCandidates` 与
+  `reconcileAfterSaleEvidenceScanDeadLetter` 重锁权威事实：仍可操作的当前 scan 死信把 `PENDING`
+  收敛为带 `SCAN_OUTBOX_DEAD_LETTER` 的 `FAILED` 并可靠排队 expire；旧 version/generation 返回
+  `SUPERSEDED`，不能覆盖新扫描或把死信直接标成成功。
+- D2 不新增 schema、迁移、RLS、grant、trigger、enum 或 OpenAPI runtime status；M2→current 仍为
+  43 段。它不注册上传/确认/状态 HTTP，不提供 B3 claim、保护读取/管理员读取审计，也不消费
+  expire/delete outbox 或物理删除对象。
+- 没有 heartbeat 的 D2 worker 要求租约至少覆盖 HEAD + max(GET, scanner) + 两个 2 秒数据库事务 +
+  5 秒提交余量；默认超时组合的最小租约为 29 秒。关闭进程时 outbox、dead-letter 和库存轮询先停止
+  领取并等待在途工作，随后才断开共享 Prisma 和销毁 S3 client。
+- D2 已在全部适用门禁通过后获得 repository implementation + local/test scanner worker validation
+  `COMPLETE` 的局部结论。production 仍需批准 TTL，冻结 Clamd loopback sidecar/网络隔离
+  （Clamd TCP 本身无认证/TLS）、签名更新与 freshness、HA/吞吐/容量/监控/SLA，以及 storage
+  IAM/KMS/versioning/Object Lock/lifecycle/错误语义和删除补偿方案；任一缺失时 production capability
+  与 rollout 保持关闭。
+
 ## 7. 身份、安全与隐私
 
 - Mini App 使用 Zalo Token/Header 与服务端会话交换，不依赖普通浏览器 Cookie、LocalStorage 或 SessionStorage 作为认证根。
@@ -505,6 +550,10 @@ catalog/content 继续使用既有 `MediaStorageProvider`；售后凭证只能�
 仅是 local/test S3-compatible 证据，不代表 AWS 或生产 provider。生产上线前必须在精确目标验证
 checksum、create-only、SSE-KMS、最小 IAM、不存在对象错误、超时、物理删除、lifecycle 与恢复；任何
 一项未确认时 evidence runtime capability 保持关闭。
+
+D2 scan worker 只能通过 D1 的独立 read 身份读取规范 ORIGINAL。HEAD 的非空 ETag 与后续
+`If-Match` GET 共同冻结本次读取对象，同一有界正文流同时服务实际内容校验和 ClamAV；worker 不直接
+接收客户端 key、URL、商城或 actor 作为授权依据。
 
 ### Zalo
 

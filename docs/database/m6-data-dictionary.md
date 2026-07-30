@@ -1,8 +1,9 @@
 # M6 售后、会员与分享数据字典
 
 > 状态：M6.1 契约已冻结；M6.2 schema/RLS、M6.3-A、M6.3-B0、B1、B2a、B2b-D0 与
-> B2b-D1 repository + local/test storage validation 已完成且适用仓库门禁通过；B2/B2b、B3-B7、
-> M6.3、UI 与生产 rollout 未完成或未授权并保持失败关闭
+> B2b-D1 repository + local/test storage validation 与 B2b-D2 repository implementation +
+> local/test scanner worker validation 已完成且适用仓库门禁通过；B2/B2b、B3-B7、M6.3、UI 与
+> 生产 rollout 未完成或未授权并保持失败关闭
 >
 > 日期：2026-07-29
 
@@ -65,6 +66,12 @@ M6.3-B2b-D1 不增加 schema、RLS、数据库函数或迁移；M2→current 仍
 D1 在 integrations/config/infra 层增加独立 evidence S3-compatible adapter、失败关闭配置和 local/test
 MinIO 最小 IAM/真实 bytes 校验，但没有把 provider 接入 D0 confirm/delete 原语、HTTP 或 worker。
 因此数据库中仍不存在由 D1 自动形成的上传验证、扫描、保护读取或 provider 物理删除事实。
+
+M6.3-B2b-D2 已接入 D1 同流读取、真实 ClamAV adapter、scan outbox handler、租约绑定结果投影和
+持久 scan dead-letter 收敛，并完成适用测试、全仓门禁、文档与独立复审。D2 不增加 schema、迁移、
+RLS、grant、trigger、enum 或 OpenAPI runtime status，迁移总数继续是 43。该局部只标记为 repository
+implementation + local/test scanner worker validation `COMPLETE`；完整 B2b/B2、B3 claim、HTTP、
+保护读取/审计、expire/delete worker 与生产 rollout 不在该结论内。
 
 ## 1. 统一约定
 
@@ -356,10 +363,12 @@ B0 增加独立 `SYSTEM` 分支，但不把普通 StoreContext 或固定伪管�
   outbox 同事务提交。D0 当时没有对象存储适配器；D1 后续虽已提供独立 adapter 和 local/test 真实
   bytes 校验，但尚无 HTTP/worker 调用方把它接入该原语。因此 confirm 事务仍不读取 provider 对象，
   不能表述为已实现的真实上传确认能力。
-- 未来受信 scanner 的规范结果只有精确 `CLEAN` 可把当前 generation 的 `PENDING` 推进为
+- 受信 scanner 的规范结果只有精确 `CLEAN` 可把当前 generation 的 `PENDING` 推进为
   `READY_UNCLAIMED`；恶意进入 `QUARANTINED`，超时、不可用或不确定进入 `FAILED`。D0 测试直接调用
-  scan 结果投影原语，只证明 generation/version 竞争和状态约束，不是 scanner 运行证据。各结果都
-  必须获得显式清理截止并与 expire outbox 同事务提交。
+  scan 结果投影原语，只证明 generation/version 竞争和状态约束。D2 当前实现用同一 ClamAV
+  `zIDSESSION\0` 连接依次执行 request 1 `zVERSION\0`、request 2 `zINSTREAM\0` 和 `zEND\0`；只把
+  严格 NUL 帧中的精确 `2: stream: OK` 解释为 `CLEAN`，并验证响应 ID、签名 freshness 与稳定
+  engine `clamav`。恶意签名正文会被丢弃。各结果仍必须获得显式清理截止并与 expire outbox 同事务提交。
 - 创建售后事务按 evidence IDs 锁行，验证同商城/同会员、认领窗口未过期、扫描通过且从未 claim，
   再一次性写入 `(store_id, after_sale_id, member_id)`；同一凭证不能复用到第二个售后。D0 已提供
   transaction-scoped claim 原语并同时冻结 `claimed_at/ordinary_access_deadline_at/
@@ -393,9 +402,10 @@ retention_deadline_at`，但没有 B3 调用方或 HTTP 路由，不能单独 cl
   尝试次数与审计元数据；该最小元数据继续受 RLS 与审计保留策略保护。
 - 只允许 JPEG/PNG/WebP 与 MP4，拒绝 SVG、脚本和可执行内容。
 - 每单最多 6 个文件；图片单个最多 10 MiB、视频最多 50 MiB。确认时校验 magic bytes、声明类型、
-  长度和 checksum。D1 adapter 已在 local/test MinIO 对实际 bytes 实现该校验，但没有 confirm HTTP/
-  service 调用方；D0 数据库仍只保存/约束声明元数据。未扫描或隔离对象不能读取，magic 通过也不等于
-  scanner `CLEAN`。
+  长度和 checksum。D2 storage consumer 先 HEAD 并要求非空 ETag，再以 `If-Match` GET 锁定同一对象；
+  实际长度、SHA-256、magic 和 scanner 输入使用同一条不超过 50 MiB 的有界流。只有 storage 校验和
+  scanner 都完整成功才可投影结果。这里仍没有 confirm HTTP/service 调用方；D0 数据库只保存/约束
+  声明元数据，magic 通过也不等于 scanner `CLEAN`。
 - 买家只能读取本人售后凭证，管理员需要专门权限；短期 no-store URL，每次管理员读取写审计。
 
 ### 5.1.1 `after_sale_evidence_objects`
@@ -702,3 +712,36 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
 - D1 没有把 adapter 接入 confirm、scan、claim、protected-read 或 delete worker。OpenAPI runtime status
   与五项 capability 不变；production storage、scanner、HTTP、worker、管理员读取审计和 rollout 继续
   未完成。最终 `verify`（62 个单元文件/482 项）、Gitleaks、`git diff --check` 与独立高风险复审均通过。
+
+## 13. M6.3-B2b-D2 scanner worker 与数据库提交边界
+
+- D2 不新增数据库列、索引、约束、状态、枚举、RLS、grant、trigger、函数或迁移；D0 evidence/ledger
+  与 outbox 仍是权威事实，M2→current 迁移总数保持 43。OpenAPI operation runtime status 也不变。
+- `loadAfterSaleEvidenceScanWorkForLease` 只为严格 scan v1 消息加载当前 evidence 与规范 ORIGINAL。
+  它复核消息为 `PROCESSING`、lease owner、数据库时钟下仍有效的 lease、消息 version、商城与精确
+  payload，以及 evidence 的 `PENDING`、version 和 generation；不匹配返回 `SUPERSEDED` 或失败关闭，
+  返回 work 也不授权稍后的提交。取得 evidence 行锁并读取 work 后还会重新读取数据库时钟复核租约；
+  事务最长 2 秒。
+- `applyAfterSaleEvidenceScanResultForLease` 在独立 SERIALIZABLE 事务中再次使用数据库
+  `clock_timestamp()`，逐项复核 `PROCESSING`、owner、严格未到期 lease（相等也拒绝）、outbox message
+  version、store/payload 身份和 evidence version/generation/status。只有复核成功才调用结果投影并与
+  expire outbox 原子提交；等待 evidence 行锁后也会重新读取数据库时钟，事务最长 2 秒。旧租约、
+  重领、重复或乱序结果不能覆盖当前事实。
+- 若 legal hold 等操作只推进 `PENDING` evidence version，旧 scan identity 会在同一 SYSTEM 事务推进
+  generation/version 并排队新的权威 scan outbox；若已有当前 version 的可收敛消息则保持幂等。旧
+  worker/dead letter 不能覆盖或吞掉新 generation。
+- `listAfterSaleEvidenceScanDeadLetterCandidates` 按商城返回有界、持久的 scan v1 `DEAD_LETTER` 候选；
+  `reconcileAfterSaleEvidenceScanDeadLetter` 再锁消息与 evidence。仍处于当前待扫描身份的对象收敛为
+  `FAILED`、稳定 code `SCAN_OUTBOX_DEAD_LETTER` 并排队 expire；已有新 version/generation 的旧消息
+  返回 `SUPERSEDED`，不得倒退或直接产生成功结果。
+- worker 仅通过 `createAfterSaleEvidenceSystemContext` 使用固定 actor 和
+  `system_scope=after-sale-evidence-lifecycle`，不冒用管理员、会员或普通 StoreContext。网络调用前后的
+  数据库检查与 provider/scanner 调用分离，消息 payload 从不成为授权或内容元数据来源。
+- ClamAV adapter 在单一 `zIDSESSION\0` TCP 会话执行 `zVERSION\0`、`zINSTREAM\0`、`zEND\0`，帧最大
+  64 KiB、总正文最大 50 MiB；严格校验 request/response ID、顺序、NUL framing、响应上限、engine
+  VERSION 和签名时间。只有 `2: stream: OK` 成为 `CLEAN`；`FOUND` 的 signature 文本不记录、不持久化。
+- D2 的定向与真实 MinIO/ClamAV integration、完整 integration、`verify`、依赖审计、OpenAPI 回归、
+  Gitleaks、差异检查和独立复审均已通过，因此局部标记 repository implementation + local/test
+  scanner worker validation `COMPLETE`。
+  该局部结论不包含 HTTP upload/confirm/status、B3 claim、保护读取/管理员读取审计、expire/delete
+  worker、外部告警、生产参数审批、production storage/scanner 或 rollout；B2b/B2/M6.3/M6/P0 继续未完成。

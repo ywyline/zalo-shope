@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
-import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  type OnApplicationShutdown,
+  type OnModuleDestroy,
+  type OnModuleInit,
+} from '@nestjs/common';
 import type { RuntimeConfig } from '@zalo-shop/config';
 import { expireDueReservations, type PrismaClient } from '@zalo-shop/database';
 import { createStoreContext } from '@zalo-shop/domain';
@@ -19,9 +25,12 @@ type StoreRegistryEntry = {
 };
 
 @Injectable()
-export class InventoryExpirationService implements OnModuleDestroy, OnModuleInit {
+export class InventoryExpirationService
+  implements OnApplicationShutdown, OnModuleDestroy, OnModuleInit
+{
+  private activeRun?: Promise<void>;
   private readonly logger;
-  private running = false;
+  private stopping = false;
   private timer?: ReturnType<typeof setInterval>;
 
   public constructor(
@@ -44,18 +53,36 @@ export class InventoryExpirationService implements OnModuleDestroy, OnModuleInit
   }
 
   public async onModuleDestroy(): Promise<void> {
-    if (this.timer) clearInterval(this.timer);
+    this.stopping = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+    await this.activeRun;
+  }
+
+  public async onApplicationShutdown(): Promise<void> {
     await this.database.$disconnect();
   }
 
   public async runOnce(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
+    if (this.stopping || this.activeRun) return;
+    const activeRun = this.processBatch();
+    this.activeRun = activeRun;
+    try {
+      await activeRun;
+    } finally {
+      if (this.activeRun === activeRun) this.activeRun = undefined;
+    }
+  }
+
+  private async processBatch(): Promise<void> {
     try {
       const stores = await this.database.$queryRaw<StoreRegistryEntry[]>`
         SELECT * FROM app_security.list_active_stores()
       `;
       for (const store of stores) {
+        if (this.stopping) break;
         const context = createStoreContext({
           actor: { id: INVENTORY_WORKER_ACTOR_ID, type: 'admin' },
           correlationId: randomUUID(),
@@ -101,8 +128,6 @@ export class InventoryExpirationService implements OnModuleDestroy, OnModuleInit
         { error: error instanceof Error ? error.message : 'unknown' },
         'Inventory reservation expiry scan failed',
       );
-    } finally {
-      this.running = false;
     }
   }
 }

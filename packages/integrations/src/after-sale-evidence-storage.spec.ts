@@ -225,6 +225,7 @@ describe('S3 after-sale evidence storage provider', () => {
         ChecksumSHA256: Buffer.from(expected.checksumSha256, 'hex').toString('base64'),
         ContentLength: body.byteLength,
         ContentType: expected.mimeType,
+        ETag: '"validated-etag"',
       })
       .mockResolvedValueOnce({ Body: chunks(body.subarray(0, 5), body.subarray(5)) });
 
@@ -233,8 +234,84 @@ describe('S3 after-sale evidence storage provider', () => {
       checksumSha256: expected.checksumSha256,
       mimeType: expected.mimeType,
     });
+    const getCommand = send.mock.calls[1]?.[0] as { input?: Record<string, unknown> };
+    expect(getCommand.input).toMatchObject({ IfMatch: '"validated-etag"' });
     const headCommand = send.mock.calls[0]?.[0] as { input?: Record<string, unknown> };
     expect(headCommand.input).toMatchObject({ ChecksumMode: 'ENABLED' });
+  });
+
+  it('feeds the same ETag-bound validated stream to a bounded consumer', async () => {
+    const body = fixture('image/png');
+    const expected = declaration(body, 'image/png');
+    send
+      .mockResolvedValueOnce({
+        ContentLength: body.byteLength,
+        ContentType: expected.mimeType,
+        ETag: '"consumer-etag"',
+      })
+      .mockResolvedValueOnce({ Body: chunks(body.subarray(0, 4), body.subarray(4)) });
+
+    const consumed = await provider.consumeValidatedObject(expected, async (bytes) => {
+      const observed: Buffer[] = [];
+      for await (const chunk of bytes) observed.push(Buffer.from(chunk));
+      return Buffer.concat(observed).toString('hex');
+    });
+
+    expect(consumed.object).toEqual({
+      byteSize: body.byteLength,
+      checksumSha256: expected.checksumSha256,
+      mimeType: expected.mimeType,
+    });
+    expect(consumed.result).toBe(body.toString('hex'));
+    const getCommand = send.mock.calls[1]?.[0] as { input?: Record<string, unknown> };
+    expect(getCommand.input).toMatchObject({ IfMatch: '"consumer-etag"' });
+  });
+
+  it('aborts an ETag-bound body when a consumer returns before validation completes', async () => {
+    const body = fixture('image/png');
+    const expected = declaration(body, 'image/png');
+    const responseBody = chunks(body.subarray(0, 4), body.subarray(4));
+    const destroy = vi.spyOn(responseBody, 'destroy');
+    send
+      .mockResolvedValueOnce({
+        ContentLength: body.byteLength,
+        ContentType: expected.mimeType,
+        ETag: '"early-return-etag"',
+      })
+      .mockResolvedValueOnce({ Body: responseBody });
+
+    await expectStorageError(
+      provider.consumeValidatedObject(expected, async (bytes) => {
+        for await (const chunk of bytes) {
+          void chunk;
+          break;
+        }
+        return 'EARLY';
+      }),
+      'CONTENT_MISMATCH',
+    );
+    expect(destroy).toHaveBeenCalled();
+  });
+
+  it('rejects a HEAD-to-GET object change without exposing the ETag', async () => {
+    const body = fixture('image/jpeg');
+    const expected = declaration(body, 'image/jpeg');
+    send
+      .mockResolvedValueOnce({
+        ContentLength: body.byteLength,
+        ContentType: expected.mimeType,
+        ETag: '"sensitive-provider-etag"',
+      })
+      .mockRejectedValueOnce({ $metadata: { httpStatusCode: 412 }, name: 'PreconditionFailed' });
+
+    let received: unknown;
+    try {
+      await provider.validateUploadedObject(expected);
+    } catch (error) {
+      received = error;
+    }
+    expect(received).toMatchObject({ code: 'CONTENT_MISMATCH', retryable: false });
+    expect(String(received)).not.toContain('sensitive-provider-etag');
   });
 
   it('fails closed on HEAD length, MIME or provider-checksum mismatches', async () => {
@@ -257,7 +334,11 @@ describe('S3 after-sale evidence storage provider', () => {
   it('fails closed on checksum, magic, short and overlong content', async () => {
     const body = fixture('image/png');
     const expected = declaration(body, 'image/png');
-    const head = { ContentLength: body.byteLength, ContentType: expected.mimeType };
+    const head = {
+      ContentLength: body.byteLength,
+      ContentType: expected.mimeType,
+      ETag: '"content-etag"',
+    };
 
     send
       .mockResolvedValueOnce(head)
@@ -280,7 +361,11 @@ describe('S3 after-sale evidence storage provider', () => {
     const expected = declaration(body, 'image/jpeg');
     const destroyMalformed = vi.fn();
     send
-      .mockResolvedValueOnce({ ContentLength: body.byteLength, ContentType: expected.mimeType })
+      .mockResolvedValueOnce({
+        ContentLength: body.byteLength,
+        ContentType: expected.mimeType,
+        ETag: '"malformed-etag"',
+      })
       .mockResolvedValueOnce({ Body: { destroy: destroyMalformed } });
     await expectStorageError(
       provider.validateUploadedObject(expected),
@@ -299,7 +384,11 @@ describe('S3 after-sale evidence storage provider', () => {
       },
     };
     send
-      .mockResolvedValueOnce({ ContentLength: body.byteLength, ContentType: expected.mimeType })
+      .mockResolvedValueOnce({
+        ContentLength: body.byteLength,
+        ContentType: expected.mimeType,
+        ETag: '"interrupted-etag"',
+      })
       .mockResolvedValueOnce({ Body: interruptedBody });
     await expectStorageError(
       provider.validateUploadedObject(expected),

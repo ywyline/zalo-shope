@@ -1,8 +1,9 @@
 # M6 售后、会员与分享权限矩阵
 
 > 状态：M6.1 契约已冻结；M6.2 权限目录/数据库 scope 已迁移；M6.3-A settings、
-> M6.3-B0、B1、B2a、B2b-D0 与 B2b-D1 repository + local/test storage validation 已完成且适用仓库
-> 门禁通过；B2/B2b、B3-B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭
+> M6.3-B0、B1、B2a、B2b-D0、B2b-D1 repository + local/test storage validation 与 B2b-D2
+> repository implementation + local/test scanner worker validation 已完成且适用仓库门禁通过；
+> B2/B2b、B3-B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭
 >
 > 日期：2026-07-29
 
@@ -17,7 +18,10 @@ M6.2 已登记下列 12 项 STORE 权限且不自动给生产角色扩权；loca
 数据库生命周期、专用 SYSTEM scope、对象 ledger、配额锁、严格 outbox 与 reconciliation 原语；它
 没有启用任何凭证 HTTP、worker、对象存储、scanner 或生产角色。D1 后续只新增内部 storage adapter、
 失败关闭配置和 local/test MinIO bucket/IAM/真实 bytes 校验，不增加 STORE 权限，也没有 HTTP/worker
-调用方。其他售后写入、凭证文件访问、会员、分享 controller/service/worker/UI 仍未交付。本矩阵中除明确标为 M6.3-A、B1、B2a、D0 数据层或 D1 local/test storage 已实现的动作外，其余动作行是 B0 已冻结、等待完整 B2b/B3-B7
+调用方。D2 只接入内部 scan worker、ClamAV、租约绑定投影与 scan dead-letter 收敛，同样不增加
+STORE 权限或角色授权，也不开放凭证 HTTP/读取。其他售后写入、凭证文件访问、会员、分享
+controller/service/worker/UI 仍未交付。本矩阵中除明确标为 M6.3-A、B1、B2a、D0 数据层、D1 local/test storage
+或 D2 local/test 内部扫描切片的动作外，其余动作行是 B0 已冻结、等待完整 B2b/B3-B7
 或后续里程碑另行授权实施的契约，不代表按钮、API、worker 或生产角色授权已经交付。
 B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transaction actor，不是可授予管理员
 角色的权限，也不能复用固定管理员 UUID。
@@ -84,18 +88,18 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
 
 ## 3. 买家能力
 
-| 能力              | 身份与范围               | 控制                                                                                                  |
-| ----------------- | ------------------------ | ----------------------------------------------------------------------------------------------------- |
-| 查看售后列表/详情 | 当前商城认证会员本人     | B1 已实现；显式 store/member scope + FORCE RLS、签名游标、严格 select、no-store                       |
-| 创建/取消售后     | 当前商城认证会员本人     | B3 契约；同 policy/version/hash、权威交付、服务端金额；当前未授权、未注册写路由                       |
-| 上传/读取凭证     | 当前会员、当前售后单     | 完整 B2b；D0 只有数据库原语，D1 只有未接线 storage adapter；无 HTTP/scanner，任一能力不可用时失败关闭 |
-| 提交返件信息      | 当前会员、已批准返件     | B5 契约；只写 SUBMITTED 并追加 START_RETURN 到 RETURN_PENDING；当前未授权、不能标记运输中             |
-| 收藏              | 当前会员、当前商城商品   | PUT/DELETE 幂等；下架商品只返回受限摘要                                                               |
-| 浏览历史          | 当前会员、当前商城商品   | 最多 100；可单删/清空；匿名不写入                                                                     |
-| 会员中心          | 当前会员                 | 复用本人资料、地址、券和订单事实，不返回管理字段                                                      |
-| 隐私请求受理/查询 | 当前会员、当前商城       | 真实 SUBMITTED 事实；不声称导出/删除/注销已完成                                                       |
-| 创建/解析分享     | 当前商城；创建可选会员   | 只接受公共 code/locale/受限来源；服务端解析已发布目标                                                 |
-| 记录分享结果      | interaction token 持有人 | token 绑定 shortCode/交互/有效期；仅完成/取消统计                                                     |
+| 能力              | 身份与范围               | 控制                                                                                      |
+| ----------------- | ------------------------ | ----------------------------------------------------------------------------------------- |
+| 查看售后列表/详情 | 当前商城认证会员本人     | B1 已实现；显式 store/member scope + FORCE RLS、签名游标、严格 select、no-store           |
+| 创建/取消售后     | 当前商城认证会员本人     | B3 契约；同 policy/version/hash、权威交付、服务端金额；当前未授权、未注册写路由           |
+| 上传/读取凭证     | 当前会员、当前售后单     | 完整 B2b；D2 只接内部 scanner worker；无 HTTP/claim/保护读取，任一能力不可用时失败关闭    |
+| 提交返件信息      | 当前会员、已批准返件     | B5 契约；只写 SUBMITTED 并追加 START_RETURN 到 RETURN_PENDING；当前未授权、不能标记运输中 |
+| 收藏              | 当前会员、当前商城商品   | PUT/DELETE 幂等；下架商品只返回受限摘要                                                   |
+| 浏览历史          | 当前会员、当前商城商品   | 最多 100；可单删/清空；匿名不写入                                                         |
+| 会员中心          | 当前会员                 | 复用本人资料、地址、券和订单事实，不返回管理字段                                          |
+| 隐私请求受理/查询 | 当前会员、当前商城       | 真实 SUBMITTED 事实；不声称导出/删除/注销已完成                                           |
+| 创建/解析分享     | 当前商城；创建可选会员   | 只接受公共 code/locale/受限来源；服务端解析已发布目标                                     |
+| 记录分享结果      | interaction token 持有人 | token 绑定 shortCode/交互/有效期；仅完成/取消统计                                         |
 
 会员不能通过订单 UUID、订单行 UUID、售后号、商品 code、分享短码、游标或 Header 访问其他会员
 或商城数据。RLS 只作纵深防御，服务查询仍显式包含 `store_id/member_id`。
@@ -133,6 +137,9 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
 - scan/expire/delete outbox 写入还受严格 actor 规则：会员只能在初始化/确认/claim 的允许事务排队
   scan/expire；delete 只能由 evidence SYSTEM 排队。所有消息只携带
   `store_id/evidence_id/expected_version`，未来 worker 不得把消息当作授权或权威状态。
+- D2 scan handler 与 dead-letter service 每次都通过 `createAfterSaleEvidenceSystemContext` 构造上述固定
+  actor/scope，并只从服务端消息确定当前商城。worker 名称、管理员 token、请求体 actor/store/scope 或
+  普通 StoreContext 都不能获得该 principal；外部扫描前后的数据库 lease 与权威 evidence 复核仍不可省略。
 
 ## 5. 分享和公开兜底边界
 
@@ -180,6 +187,9 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
   最小身份；content 身份不能访问 evidence，三种 evidence 身份不能访问 content 或执行角色外动作。
   bootstrap root 只用于创建 bucket/user/policy，应用与测试证据不得使用 root。production bucket/IAM/
   KMS/lifecycle/versioning/Object Lock 仍未验收，不能沿用 local/test 结论。
+- D2 scan worker 只使用 D1 的 evidence read 身份执行 HEAD 和 GET，不获得 upload/delete、content bucket
+  或 RBAC 权限。HEAD 必须取得非空 ETag，GET 必须带 `If-Match`；实际长度、SHA-256、magic 与 ClamAV
+  共用同一有界流。消息中的 store/evidence/version 只能定位数据库事实，不能直接授权对象读取。
 - 管理员下载 URL 仍只是完整 B2b 契约。D1 内部 adapter 能创建短期 `private, no-store` 目标，但没有
   HTTP 授权、无差别错误或每次访问审计；持有 `store.after-sales.evidence.read` 仍不能读取对象。
 - 未来凭证清理 worker 必须使用 D1 独立最小对象删除权限，只按数据库 ledger 中已持久化的精确商城对象 key 删除原件和
@@ -331,3 +341,29 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
 - 因此只将 D1 repository implementation + local/test storage validation 标记 `COMPLETE`。最终
   verify、Gitleaks、`git diff --check` 与独立高风险复审均通过；B2b/B2/M6.3/M6/P0、HTTP、worker、
   scanner、管理员读取审计、生产 IAM/KMS/lifecycle 与 rollout 均未完成。
+
+## 12. B2b-D2 scanner worker 与当前授权边界
+
+- D2 不新增 STORE permission code、不修改角色 seed，也不创建可授予的 scanner 权限。ClamAV 网络
+  配置和 evidence read provider 凭据都是 server-only 运行配置，不是 RBAC、管理员 token 或会员能力。
+- scan handler 只接受严格 `after-sale.evidence.scan.requested` v1，并通过固定 evidence SYSTEM context
+  读取权威消息/evidence/ORIGINAL ledger。网络调用前后分别校验；结果提交用数据库
+  `clock_timestamp()` 复核 `PROCESSING`、lease owner、严格未到期 lease、消息 version、store/payload
+  以及 evidence version/generation/status。lease 到期相等也拒绝，旧租约或旧 generation 不能写结果。
+- loader 和 result primitive 在等待 evidence 行锁后都会重新读取数据库时钟并复核租约，且各自事务
+  最长 2 秒。legal hold 等同状态 version 漂移只允许通过固定 SYSTEM scope 原子生成下一 generation/
+  scan outbox，旧消息不能借此取得新版本授权。
+- ClamAV 仅在单一 `zIDSESSION\0` 连接以 request 1/2 执行 VERSION/INSTREAM。严格协议、签名 freshness
+  与 50 MiB 流边界通过后，只有精确 `2: stream: OK` 可成为 `CLEAN`；malware signature、provider
+  原始错误、对象 key、签名 URL 和 checksum 均不得进入日志、审计或稳定数据库错误。
+- scan `DEAD_LETTER` 由独立持久、有界轮询重新锁定权威事实。当前待扫描对象只能收敛为带
+  `SCAN_OUTBOX_DEAD_LETTER` 的 `FAILED` 并排队清理；旧 version/generation 必须 `SUPERSEDED`。该内部
+  收敛不构成管理员 dead-letter 管理入口或外部告警。
+- `store.after-sales.evidence.read` 仍不可用：D2 没有新增 HTTP 路由、短期读取 URL、管理员逐次读取审计
+  或 B3 claim，也没有 expire/delete worker。D2 不改变现有 RLS、grant、trigger、enum、迁移或 OpenAPI
+  runtime status；迁移总数仍为 43。
+- D2 已在全部适用测试、仓库门禁、文档和独立复审通过后，将 repository implementation + local/test
+  scanner worker validation 局部标记 `COMPLETE`。production 仍需
+  单独批准 TTL、Clamd loopback sidecar/网络隔离（TCP 本身无认证/TLS）、签名更新/freshness、HA/容量/
+  监控/SLA、storage IAM/KMS/versioning/Object Lock/lifecycle/错误语义、删除补偿及 HTTP 授权/审计与 rollout；
+  B2b/B2/M6.3/M6/P0 继续未完成。

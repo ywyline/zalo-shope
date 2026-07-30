@@ -11,6 +11,13 @@ validation 标记 `COMPLETE`；`verify`、Gitleaks、差异复审、生产依赖
 精确通过证据。D1 没有 HTTP、worker、scanner、B3 claim 调用方、管理员读取审计或生产 storage
 rollout，不能据此标记 B2b/B2、M6.3、M6 或 P0 完成。
 
+M6.3-B2b-D2 已完成真实 ClamAV 单会话 scanner、D1 同流 HEAD/`If-Match` GET 内容复验、严格 scan
+outbox handler、租约绑定数据库投影、版本漂移重排队、scan dead-letter 收敛和优雅停机 drain。真实
+PostgreSQL + MinIO + ClamAV D2 集成 20/20、完整 integration 32 个文件/270 项、43 段迁移演练、
+生产依赖 high、OpenAPI、Gitleaks 与独立复审均已通过。该结论只标记 repository implementation +
+local/test scanner worker validation `COMPLETE`；没有 HTTP、B3 claim、保护读取/审计、expire/delete
+worker、外部告警或 production storage/scanner/rollout，完整 B2b/B2、M6.3、M6 与 P0 继续未完成。
+
 B2a 仓库内只读预检的本地测试库结果为 `policies=0, versions=0`。D0 owner preflight 的本地结果为
 `files=0, transitions=0, outbox=0, idempotency=0`；runtime RLS 连接按预期以 SQLSTATE `42501`
 失败关闭。两者都不能替代未获授权的 staging/production 精确目标库 rollout 前重跑与留证。
@@ -18,8 +25,9 @@ B2a 仓库内只读预检的本地测试库结果为 `policies=0, versions=0`。
 Post-M3 仓库内就绪收口证据继续有效。Zalo Testing 版本 6 已完成 iPhone 美妆商城登录和中国手机号保存成功路径；Android、服装商城及完整异常矩阵仍为 `PARTIAL`。M4 浏览器验收使用真实本地 API、PostgreSQL 和 Zalo 测试桥，不能替代 Zalo 宿主真机。真实 staging S3/CDN、越南权威行政区主数据、近生产规模性能、两个商城的 Zalo Checkout/ZaloPay 与 GHN sandbox 配置/密钥/回调条件、生产凭据/权限、远程 CI 和越南/中国个人信息专业合规签字仍待外部输入。阶段证据见 `docs/reports/m4-completion-report.md`、`docs/reports/m5.1-completion-report.md`、`docs/reports/m5.2-completion-report.md`、`docs/reports/m5.3-completion-report.md`、`docs/reports/m5.4-completion-report.md`、`docs/reports/m5.5-progress-report.md`、`docs/reports/m5.6-progress-report.md`、`docs/reports/m5.7-progress-report.md`、`docs/reports/m6.1-completion-report.md`、`docs/reports/m6.2-completion-report.md`、`docs/reports/m6.3-a-completion-report.md`、`docs/reports/m6.3-b0-completion-report.md`、`docs/reports/m6.3-b1-completion-report.md`、`docs/reports/m6.3-b2a-completion-report.md` 与 `docs/reports/m6.3-b2b-d0-completion-report.md`。B0 已按其独立报告完成适用门禁；B0 未新增运行时或 UI，因此没有执行或声称 B0 专属 E2E，也不把 M6.3-A 的 E2E 冒充为 B0 证据。B2a 与 D0 报告只证明各自仓库实施 `COMPLETE`，不证明目标库 preflight、生产 rollout、完整 B2/B2b 或 M6.3 完成。
 
 D1 当前证据与未完成门禁见
-`docs/reports/m6.3-b2b-d1-evidence-storage-completion-report.md`；该报告只证明 repository +
-local/test storage validation，不证明 production S3/KMS/lifecycle/versioning/Object Lock、scanner、
+`docs/reports/m6.3-b2b-d1-evidence-storage-completion-report.md`；D2 证据见
+`docs/reports/m6.3-b2b-d2-scanner-worker-completion-report.md`。两份报告只证明各自明确标注的
+repository/local-test 边界，不证明 production S3/KMS/lifecycle/versioning/Object Lock、scanner、
 worker、HTTP 或完整 B2b 可用。
 
 ## 应用与包
@@ -160,6 +168,10 @@ M1 包含商城、身份、RBAC、会话、同意和审计表，并强制 runtim
 D1 不修改 Prisma、RLS 或数据库迁移；M2→current 仍为 43 段，不能把 storage adapter 记作第 44
 段迁移。D1 回滚通过保持 evidence provider disabled 完成，不能通过删除 bucket 或数据库事实清理未来
 真实对象。
+
+D2 同样不增加 schema、RLS 或迁移，迁移总数保持 43。应用回滚必须先停止 scanner consumer；已有
+evidence/outbox/transition 事实保留并由兼容 worker/reconciler 向安全终态收敛，不得清空数据库或
+删除 bucket 作为回滚。
 
 ```powershell
 corepack pnpm db:generate
@@ -427,6 +439,26 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   方法不能使 `protectedReadAvailable` 或 `deletionCompensationAvailable` 为 true；magic 校验也不是
   malware scanning。完整边界见
   `docs/reports/m6.3-b2b-d1-evidence-storage-completion-report.md`。
+
+## M6.3-B2b-D2 真实扫描与租约安全 worker
+
+- `EVIDENCE_SCANNER_PROVIDER` 默认 `disabled`；启用 `clamav` 必须同时启用 D1 S3 storage、提供
+  server-only host/signature freshness/retention 配置，并满足租约预算。production 只接受显式
+  loopback sidecar 地址，因为 Clamd TCP 本身没有认证或 TLS。
+- scanner 在单一 `zIDSESSION\0` 连接严格执行 VERSION/INSTREAM/END，最大正文 50 MiB。只有精确
+  `stream: OK` 可成为 `CLEAN`；EICAR/`FOUND` 只投影稳定 `MALWARE_DETECTED`，不记录恶意签名、
+  provider 正文、对象 key 或 checksum。
+- worker 从 D0 权威 evidence/ORIGINAL ledger 加载对象身份，使用 D1 read 身份执行 HEAD 和带
+  `If-Match` 的 GET；实际长度、SHA-256、magic 与 scanner 消费同一有界流。网络调用前后都在专用
+  SYSTEM scope 复核商城、严格 payload、version/generation 与未过期租约。
+- loader/result 两个租约绑定事务各限制为 2 秒，并在 evidence 行锁等待后重新读取数据库时钟。默认
+  10 秒 storage/scanner 超时组合要求 `OUTBOX_WORKER_LEASE_MS >= 29000`；D2 不实现 heartbeat。
+- outbox、scan dead-letter 与库存轮询关闭时先停止领取并等待在途工作，随后才断开共享 Prisma 和
+  销毁 S3 client。通用 outbox 在 scanner disabled 时仍可能把已存在的 scan 消息按 unsupported handler
+  写入死信，因此关闭 scanner 不等于暂停既有 scan 队列；当前凭证 HTTP producer 尚未开放。
+- local/test ClamAV 只证明协议和仓库协调，不证明生产网络隔离、签名更新、HA、吞吐、容量、监控或
+  SLA。完整证据和剩余阻断见
+  `docs/reports/m6.3-b2b-d2-scanner-worker-completion-report.md`。
 
 ## 环境与密钥
 

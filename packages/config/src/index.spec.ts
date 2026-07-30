@@ -51,6 +51,15 @@ const validEvidenceStorageEnvironment = {
   NODE_ENV: 'test',
 };
 
+const validEvidenceScannerEnvironment = {
+  ...validEvidenceStorageEnvironment,
+  AFTER_SALE_EVIDENCE_CLAIM_TTL_SECONDS: '86400',
+  AFTER_SALE_EVIDENCE_FAILED_RETENTION_SECONDS: '86400',
+  EVIDENCE_SCANNER_HOST: '127.0.0.1',
+  EVIDENCE_SCANNER_PROVIDER: 'clamav',
+  EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS: '604800',
+};
+
 const productionPlaceholderFields = [
   'AFTER_SALE_CURSOR_HMAC_KEYS',
   'AUTH_JWT_SECRET',
@@ -103,6 +112,13 @@ describe('parseRuntimeConfig', () => {
     expect(config.EVIDENCE_STORAGE_READ_URL_TTL_SECONDS).toBe(60);
     expect(config.EVIDENCE_STORAGE_REQUEST_TIMEOUT_MS).toBe(10_000);
     expect(config.EVIDENCE_STORAGE_UPLOAD_URL_TTL_SECONDS).toBe(300);
+    expect(config.EVIDENCE_SCANNER_DEAD_LETTER_BATCH_SIZE).toBe(25);
+    expect(config.EVIDENCE_SCANNER_DEAD_LETTER_INTERVAL_MS).toBe(5_000);
+    expect(config.EVIDENCE_SCANNER_PORT).toBe(3310);
+    expect(config.EVIDENCE_SCANNER_PROVIDER).toBe('disabled');
+    expect(config.EVIDENCE_SCANNER_REQUEST_TIMEOUT_MS).toBe(10_000);
+    expect(config.EVIDENCE_SCANNER_RESPONSE_LIMIT_BYTES).toBe(4_096);
+    expect(config.EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS).toBeUndefined();
     expect(config.PAYMENT_RECONCILIATION_ENABLED).toBe(false);
     expect(config.ZALO_CHECKOUT_REQUEST_TIMEOUT_MS).toBe(5_000);
     expect(config.ZALO_CHECKOUT_RESPONSE_LIMIT_BYTES).toBe(131_072);
@@ -159,6 +175,87 @@ describe('parseRuntimeConfig', () => {
         EVIDENCE_STORAGE_BUCKET: 'evidence-bucket',
         EVIDENCE_STORAGE_PROVIDER: 's3',
       }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
+  it('enables the real evidence scanner only with storage, lifecycle policy and lease budget', () => {
+    expect(parseRuntimeConfig(validEvidenceScannerEnvironment)).toMatchObject({
+      AFTER_SALE_EVIDENCE_CLAIM_TTL_SECONDS: 86_400,
+      AFTER_SALE_EVIDENCE_FAILED_RETENTION_SECONDS: 86_400,
+      EVIDENCE_SCANNER_HOST: '127.0.0.1',
+      EVIDENCE_SCANNER_PORT: 3_310,
+      EVIDENCE_SCANNER_PROVIDER: 'clamav',
+      EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS: 604_800,
+    });
+
+    for (const field of [
+      'AFTER_SALE_EVIDENCE_CLAIM_TTL_SECONDS',
+      'AFTER_SALE_EVIDENCE_FAILED_RETENTION_SECONDS',
+      'EVIDENCE_SCANNER_HOST',
+      'EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS',
+    ] as const) {
+      expect(() => parseRuntimeConfig({ ...validEvidenceScannerEnvironment, [field]: '' })).toThrow(
+        InvalidEnvironmentError,
+      );
+    }
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEvidenceScannerEnvironment,
+        EVIDENCE_STORAGE_PROVIDER: 'disabled',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEvidenceScannerEnvironment,
+        OUTBOX_WORKER_LEASE_MS: '28999',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(
+      parseRuntimeConfig({
+        ...validEvidenceScannerEnvironment,
+        OUTBOX_WORKER_LEASE_MS: '29000',
+      }).OUTBOX_WORKER_LEASE_MS,
+    ).toBe(29_000);
+    expect(
+      parseRuntimeConfig({
+        ...validEvidenceScannerEnvironment,
+        OUTBOX_WORKER_LEASE_MS: '30000',
+      }).OUTBOX_WORKER_LEASE_MS,
+    ).toBe(30_000);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEvidenceScannerEnvironment,
+        EVIDENCE_SCANNER_RESPONSE_LIMIT_BYTES: '255',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+  });
+
+  it('allows only an explicit loopback ClamAV sidecar in production', () => {
+    const productionScanner = {
+      ...validEvidenceScannerEnvironment,
+      ...validProductionEnvironment,
+      EVIDENCE_STORAGE_BUCKET: 'production-evidence-fixture',
+      EVIDENCE_STORAGE_DELETE_ACCESS_KEY: 'd'.repeat(24),
+      EVIDENCE_STORAGE_DELETE_SECRET_KEY: 'D'.repeat(40),
+      EVIDENCE_STORAGE_ENDPOINT: 'https://evidence.example.test',
+      EVIDENCE_STORAGE_FORCE_PATH_STYLE: 'false',
+      EVIDENCE_STORAGE_KMS_KEY_ID: 'arn:aws:kms:ap-southeast-1:123456789012:key/example',
+      EVIDENCE_STORAGE_PROVIDER: 's3',
+      EVIDENCE_STORAGE_READ_ACCESS_KEY: 'r'.repeat(24),
+      EVIDENCE_STORAGE_READ_SECRET_KEY: 'R'.repeat(40),
+      EVIDENCE_STORAGE_REGION: 'ap-southeast-1',
+      EVIDENCE_STORAGE_SERVER_SIDE_ENCRYPTION: 'aws:kms',
+      EVIDENCE_STORAGE_UPLOAD_ACCESS_KEY: 'u'.repeat(24),
+      EVIDENCE_STORAGE_UPLOAD_SECRET_KEY: 'U'.repeat(40),
+      EVIDENCE_SCANNER_HOST: '127.0.0.1',
+      NODE_ENV: 'production',
+    };
+    expect(parseRuntimeConfig(productionScanner).EVIDENCE_SCANNER_PROVIDER).toBe('clamav');
+    expect(() =>
+      parseRuntimeConfig({ ...productionScanner, EVIDENCE_SCANNER_HOST: 'clamd.internal' }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({ ...productionScanner, EVIDENCE_SCANNER_HOST: 'localhost' }),
     ).toThrow(InvalidEnvironmentError);
   });
 

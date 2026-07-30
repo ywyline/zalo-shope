@@ -26,9 +26,10 @@ type StoreRegistryEntry = {
 
 @Injectable()
 export class ReliableOutboxService implements OnModuleDestroy, OnModuleInit {
+  private activeRun?: Promise<void>;
   private readonly logger;
+  private stopping = false;
   private readonly workerId = `outbox-${randomUUID()}`;
-  private running = false;
   private timer?: ReturnType<typeof setInterval>;
 
   public constructor(
@@ -45,22 +46,37 @@ export class ReliableOutboxService implements OnModuleDestroy, OnModuleInit {
     this.timer.unref();
   }
 
-  public onModuleDestroy(): void {
-    if (this.timer) clearInterval(this.timer);
+  public async onModuleDestroy(): Promise<void> {
+    this.stopping = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+    await this.activeRun;
   }
 
   public async runOnce(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
+    if (this.stopping || this.activeRun) return;
+    const activeRun = this.processBatch();
+    this.activeRun = activeRun;
+    try {
+      await activeRun;
+    } finally {
+      if (this.activeRun === activeRun) this.activeRun = undefined;
+    }
+  }
+
+  private async processBatch(): Promise<void> {
     try {
       const stores = await this.database.$queryRaw<StoreRegistryEntry[]>`
         SELECT * FROM app_security.list_active_stores()
       `;
-      for (const store of stores) await this.runStore(store);
+      for (const store of stores) {
+        if (this.stopping) break;
+        await this.runStore(store);
+      }
     } catch {
       this.logger.error({}, 'Reliable outbox scan failed');
-    } finally {
-      this.running = false;
     }
   }
 
@@ -74,7 +90,7 @@ export class ReliableOutboxService implements OnModuleDestroy, OnModuleInit {
     });
     try {
       let claimed = 0;
-      while (claimed < this.config.OUTBOX_WORKER_BATCH_SIZE) {
+      while (!this.stopping && claimed < this.config.OUTBOX_WORKER_BATCH_SIZE) {
         const messages = await claimOutboxMessages(this.database, context, {
           batchSize: 1,
           leaseDurationMs: this.config.OUTBOX_WORKER_LEASE_MS,

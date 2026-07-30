@@ -19,7 +19,7 @@
     "format:check": "prettier --check .",
     "infra:down": "docker compose down --remove-orphans",
     "infra:logs": "docker compose logs --tail=100",
-    "infra:up": "docker compose up -d --wait postgres redis minio && docker compose run --rm minio-init",
+    "infra:up": "docker compose up -d --wait postgres redis minio clamav && docker compose run --rm minio-init",
     "lint": "corepack pnpm run build:packages && eslint . --max-warnings=0",
     "test": "corepack pnpm run test:unit",
     "test:e2e": "corepack pnpm run build:packages && dotenv -e .env.test.example -- corepack pnpm run test:e2e:run",

@@ -438,3 +438,4 @@ export * from './ghn-contract';
 export * from './ghn-shipping-provider';
 export * from './shipping-provider-resolver';
 export * from './after-sale-evidence-storage';
+export * from './after-sale-evidence-scanner';

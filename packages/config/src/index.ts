@@ -39,7 +39,33 @@ const optionalNonEmptyString = z.preprocess(
   z.string().min(1).optional(),
 );
 
+function optionalInteger(minimum: number, maximum: number) {
+  return z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.coerce.number().int().min(minimum).max(maximum).optional(),
+  );
+}
+
+const optionalScannerHost = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z
+    .string()
+    .trim()
+    .min(1)
+    .max(253)
+    .refine(
+      (value) =>
+        isIP(value) !== 0 ||
+        (/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/iu.test(value) && !value.includes('..')),
+      'must be an IP address or DNS host name',
+    )
+    .transform((value) => value.toLowerCase())
+    .optional(),
+);
+
 const OBJECT_STORAGE_BUCKET_PATTERN = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/u;
+const EVIDENCE_SCAN_LEASE_TRANSACTION_TIMEOUT_MS = 2_000;
+const EVIDENCE_SCAN_COMMIT_MARGIN_MS = 5_000;
 
 function isValidObjectStorageBucket(value: string): boolean {
   return OBJECT_STORAGE_BUCKET_PATTERN.test(value) && !value.includes('..') && isIP(value) === 0;
@@ -231,6 +257,31 @@ const runtimeConfigSchema = z
     EVIDENCE_STORAGE_UPLOAD_SECRET_KEY: optionalSecret,
     EVIDENCE_STORAGE_UPLOAD_SESSION_TOKEN: optionalSecret,
     EVIDENCE_STORAGE_UPLOAD_URL_TTL_SECONDS: z.coerce.number().int().min(60).max(900).default(300),
+    EVIDENCE_SCANNER_DEAD_LETTER_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(25),
+    EVIDENCE_SCANNER_DEAD_LETTER_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(300_000)
+      .default(5_000),
+    EVIDENCE_SCANNER_HOST: optionalScannerHost,
+    EVIDENCE_SCANNER_PORT: z.coerce.number().int().min(1).max(65_535).default(3310),
+    EVIDENCE_SCANNER_PROVIDER: z.enum(['clamav', 'disabled']).default('disabled'),
+    EVIDENCE_SCANNER_REQUEST_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(500)
+      .max(120_000)
+      .default(10_000),
+    EVIDENCE_SCANNER_RESPONSE_LIMIT_BYTES: z.coerce
+      .number()
+      .int()
+      .min(256)
+      .max(16_384)
+      .default(4_096),
+    EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS: optionalInteger(3_600, 30 * 24 * 60 * 60),
+    AFTER_SALE_EVIDENCE_CLAIM_TTL_SECONDS: optionalInteger(60, 7 * 24 * 60 * 60),
+    AFTER_SALE_EVIDENCE_FAILED_RETENTION_SECONDS: optionalInteger(60, 7 * 24 * 60 * 60),
     INVENTORY_EXPIRATION_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
     INVENTORY_EXPIRATION_INTERVAL_MS: z.coerce
       .number()
@@ -395,6 +446,50 @@ const runtimeConfigSchema = z
         });
       }
     }
+    if (config.EVIDENCE_SCANNER_PROVIDER === 'clamav') {
+      for (const [field, value] of [
+        ['EVIDENCE_SCANNER_HOST', config.EVIDENCE_SCANNER_HOST],
+        [
+          'EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS',
+          config.EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS,
+        ],
+        ['AFTER_SALE_EVIDENCE_CLAIM_TTL_SECONDS', config.AFTER_SALE_EVIDENCE_CLAIM_TTL_SECONDS],
+        [
+          'AFTER_SALE_EVIDENCE_FAILED_RETENTION_SECONDS',
+          config.AFTER_SALE_EVIDENCE_FAILED_RETENTION_SECONDS,
+        ],
+      ] as const) {
+        if (value !== undefined) continue;
+        context.addIssue({
+          code: 'custom',
+          message: 'is required when EVIDENCE_SCANNER_PROVIDER=clamav',
+          path: [field],
+        });
+      }
+      if (config.EVIDENCE_STORAGE_PROVIDER !== 's3') {
+        context.addIssue({
+          code: 'custom',
+          message: 'requires EVIDENCE_STORAGE_PROVIDER=s3',
+          path: ['EVIDENCE_SCANNER_PROVIDER'],
+        });
+      }
+      const scanLeaseBudgetMs =
+        config.EVIDENCE_STORAGE_REQUEST_TIMEOUT_MS +
+        Math.max(
+          config.EVIDENCE_STORAGE_REQUEST_TIMEOUT_MS,
+          config.EVIDENCE_SCANNER_REQUEST_TIMEOUT_MS,
+        ) +
+        2 * EVIDENCE_SCAN_LEASE_TRANSACTION_TIMEOUT_MS +
+        EVIDENCE_SCAN_COMMIT_MARGIN_MS;
+      if (config.OUTBOX_WORKER_LEASE_MS < scanLeaseBudgetMs) {
+        context.addIssue({
+          code: 'custom',
+          message:
+            'must cover evidence storage and scanner timeouts, two 2000ms evidence transactions and a 5000ms commit margin',
+          path: ['OUTBOX_WORKER_LEASE_MS'],
+        });
+      }
+    }
     if (config.OUTBOX_WORKER_RETRY_MAX_DELAY_MS < config.OUTBOX_WORKER_RETRY_BASE_DELAY_MS) {
       context.addIssue({
         code: 'custom',
@@ -493,6 +588,19 @@ const runtimeConfigSchema = z
             code: 'custom',
             message: 'must not use a repository development or test placeholder in production',
             path: [field],
+          });
+        }
+      }
+      if (config.EVIDENCE_SCANNER_PROVIDER === 'clamav') {
+        const host = config.EVIDENCE_SCANNER_HOST;
+        const loopback =
+          host === '::1' ||
+          (host !== undefined && isIP(host) === 4 && host.split('.')[0] === '127');
+        if (!loopback) {
+          context.addIssue({
+            code: 'custom',
+            message: 'must use an explicit loopback sidecar address in production',
+            path: ['EVIDENCE_SCANNER_HOST'],
           });
         }
       }
