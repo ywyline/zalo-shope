@@ -136,6 +136,7 @@ describe('parseRuntimeConfig', () => {
     expect(config.EVIDENCE_SCANNER_RESPONSE_LIMIT_BYTES).toBe(4_096);
     expect(config.EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS).toBeUndefined();
     expect(config.AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED).toBe(false);
+    expect(config.AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED).toBe(false);
     expect(config.AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS).toBeUndefined();
     expect(config.AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES).toBeUndefined();
     expect(config.AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_BYTES).toBeUndefined();
@@ -319,6 +320,34 @@ describe('parseRuntimeConfig', () => {
         AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: 'false',
       }).AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED,
     ).toBe(false);
+  });
+
+  it('enables protected evidence reads only with storage and lifecycle deletion', () => {
+    const protectedReads = {
+      ...validEvidenceStorageEnvironment,
+      AFTER_SALE_EVIDENCE_DELETE_MAX_ATTEMPTS: '8',
+      AFTER_SALE_EVIDENCE_DELETE_RETRY_BASE_DELAY_MS: '60000',
+      AFTER_SALE_EVIDENCE_DELETE_RETRY_MAX_DELAY_MS: '21600000',
+      AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: 'true',
+      AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED: 'true',
+    };
+    expect(parseRuntimeConfig(protectedReads)).toMatchObject({
+      AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED: true,
+      EVIDENCE_SCANNER_PROVIDER: 'disabled',
+      EVIDENCE_STORAGE_PROVIDER: 's3',
+    });
+    expect(() =>
+      parseRuntimeConfig({
+        ...protectedReads,
+        AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: 'false',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...protectedReads,
+        EVIDENCE_STORAGE_PROVIDER: 'disabled',
+      }),
+    ).toThrow(InvalidEnvironmentError);
   });
 
   it('allows only an explicit loopback ClamAV sidecar in production', () => {

@@ -348,12 +348,31 @@ lifecycle/rollout，B2b/B2、B3-B7、M6.3、M6、M5 与 P0 均未完成。完整
 详情、发布和停用七接口已完成仓库实施；B2b-D0 只交付凭证 schema/RLS/ledger/数据库生命周期与可靠
 排队原语，B2b-D1 只交付独立 storage adapter/config 与 local/test MinIO IAM/真实 bytes 校验，
 B2b-D2 只交付内部真实 scanner、scan worker、租约安全投影和死信收敛，B2b-D3 只交付默认关闭的
-会员预上传/确认/owner 状态 HTTP，B2b-D4 只交付 local/test 到期与物理删除补偿。B2a 不改写政策
-RLS，保留会员历史政策读取；D0-D4 合计仍没有 B3 claim、凭证正文保护读取/审计、legal hold 管理或
-外部告警，也不交付下列完整 M6 产品范围。只读摘要、
-政策控制面或预上传状态存在，不能据此解释为售后凭证正文读取、
-售后申请、审核、返件、退款、结算或 UI 可用。完整 B2b/B3-B7/生产政策与 enforcement/部署仍未授权
+会员预上传/确认/owner 状态 HTTP，B2b-D4 只交付 local/test 到期与物理删除补偿，B2b-D5 以默认关闭、
+repository implementation + local/test validation `COMPLETE` 状态交付 member/admin 凭证正文保护读取与
+管理员逐次审计。B2a 不改写政策 RLS，保留会员历史政策读取；
+D0-D5 合计仍没有 B3 claim caller、legal hold 管理或外部告警，也不交付下列完整 M6 产品范围。只读摘要、
+政策控制面、预上传状态或保护读取存在，不能据此解释为售后申请、审核、返件、退款、结算或 UI 可用。完整
+B2b/B3-B7/生产政策与 enforcement/部署仍未授权
 并失败关闭。
+
+D5 的第 44-48 段迁移只建立数据库保护读取边界，不增加业务表、列、枚举或 STORE 权限代码：第 44 段
+`20260730100000_m63_b2b_d5_protected_read_lock` 建立 evidence `FOR SHARE` 锁读；第 45 段
+`20260730103000_m63_b2b_d5_authorization_revalidation` 最终锁定并复验商城、actor、Bearer/session 与管理员
+RBAC；第 46 段 `20260730104000_m63_b2b_d5_member_authorization_grant_fix` 仅补 guard 的
+`members.store_id` 列级 `SELECT`；第 47 段 `20260730105000_m63_b2b_d5_expiry_revalidation` 在 evidence 锁
+取得后再次校验 Bearer/session/signed URL/ordinary deadline；第 48 段
+`20260731100000_m63_b2b_d5_commit_deadline_revalidation` 绑定 URL 与 Bearer/session 截止并保留一秒提交余量。
+集群级
+`zalo_shop_evidence_read_guard` 不可登录、不可继承、非 superuser、不可创建数据库/角色、不可复制、不可绕过
+RLS 且无角色成员关系；受限 security-definer 函数以固定 `search_path`、`row_security=on` 和 `FOR SHARE`
+完成最终重验，继续阻塞生命周期写入而不扩大 `zalo_shop_runtime` 或 member `UPDATE` 权限。第 44、45、47、
+48 段需要 PostgreSQL `rolsuper` 的受控 maintenance executor 转移或替换 definer ownership，不能将该权限
+给予 runtime。
+回滚先关闭 capability 并等待在途请求和 URL TTL；仅 local/test 且无任何
+`after-sale.evidence.protected_read.issued` 审计事实时按 `48 -> 47 -> 46 -> 45 -> 44` 逆序执行；第 48、47
+段的逆向脚本只做审计事实 guard，不恢复较弱函数。任一 audit fail-fast，从不删除该 cluster-level role；
+生产纠正保持 forward-only。
 
 交付：
 
@@ -366,7 +385,9 @@ RLS，保留会员历史政策读取；D0-D4 合计仍没有 B3 claim、凭证�
 测试与验收：
 
 - 单元/集成：售后状态、退款幂等、库存恢复条件和政策版本。
-- 安全：凭证文件授权、会员数据隔离、隐私请求审计。
+- 安全：凭证文件授权、会员数据隔离、隐私请求审计；D5 的 session/store/account/direct-RBAC/
+  cross-store-RBAC 撤销竞态、evidence 锁等待后的到期重验、44-48 migration/`rolsuper` preflight 与
+  issued-read-audit rollback fail-fast。
 - E2E：退款、退货、换货、收藏、优惠券和分享目标解析。
 - 真机验证分享链接打开正确商城、语言和对象。
 

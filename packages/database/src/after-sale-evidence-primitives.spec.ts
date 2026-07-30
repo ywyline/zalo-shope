@@ -16,11 +16,14 @@ import {
   initializeAfterSaleEvidenceUpload,
   listAfterSaleEvidenceScanDeadLetterCandidates,
   loadAfterSaleEvidenceScanWorkForLease,
+  prepareAdminAfterSaleEvidenceProtectedRead,
   prepareAfterSaleEvidenceUploadConfirmation,
+  prepareMemberAfterSaleEvidenceProtectedRead,
   readMemberAfterSaleEvidenceUpload,
   reconcileAfterSaleEvidenceDeadLetter,
   reconcileAfterSaleEvidenceScanDeadLetter,
   recordAfterSaleEvidenceDeletionFailure,
+  revalidateMemberAfterSaleEvidenceProtectedReadInTransaction,
   requestAfterSaleEvidenceRescan,
   type InitializeAfterSaleEvidenceInput,
 } from './after-sale-evidence-primitives';
@@ -58,6 +61,16 @@ const adminContext: StoreContext = createStoreContext({
   storeCode: 'beauty',
   storeId: STORE_ID,
 });
+const protectedReadMemberContext = createStoreContext({
+  accessSessionExpiresAt: new Date('2099-08-01T12:30:00.000Z'),
+  accessSessionId: '70000000-0000-4000-8000-000000000001',
+  accessTokenExpiresAt: new Date('2099-08-01T12:30:00.000Z'),
+  actor: { id: MEMBER_ID, type: 'member' },
+  correlationId: 'm63-b2b-d5-member-revalidation',
+  locale: 'vi',
+  storeCode: 'beauty',
+  storeId: STORE_ID,
+});
 const systemContext = createAfterSaleEvidenceSystemContext({
   correlationId: 'm63-b2b-d0-system-boundaries',
   storeId: STORE_ID,
@@ -74,6 +87,35 @@ const validUpload: InitializeAfterSaleEvidenceInput = {
   mimeType: 'image/jpeg',
   uploadTtlSeconds: 15 * 60,
 };
+
+const protectedReadSnapshot = {
+  afterSaleId: AFTER_SALE_ID,
+  evidenceId: EVIDENCE_ID,
+  legalHoldActive: false,
+  objectKey: `test/${STORE_ID}/staged/${EVIDENCE_ID}/original`,
+  ordinaryAccessDeadlineAt: new Date('2099-08-01T12:00:00.000Z'),
+  version: 4,
+};
+
+function protectedReadRow(
+  overrides: Partial<{
+    legal_hold_active: boolean;
+    version: number;
+  }> = {},
+) {
+  return {
+    after_sale_id: AFTER_SALE_ID,
+    id: EVIDENCE_ID,
+    legal_hold_active: false,
+    member_id: MEMBER_ID,
+    object_key: protectedReadSnapshot.objectKey,
+    ordinary_access_deadline_at: protectedReadSnapshot.ordinaryAccessDeadlineAt,
+    status: 'READY' as const,
+    store_id: STORE_ID,
+    version: 4,
+    ...overrides,
+  };
+}
 
 function inputError(promise: Promise<unknown>) {
   return expect(promise).rejects.toMatchObject({ code: 'AFTER_SALE_EVIDENCE_INPUT_INVALID' });
@@ -141,6 +183,121 @@ describe('after-sale evidence lifecycle input boundaries', () => {
     await expect(
       readMemberAfterSaleEvidenceUpload(unusedClient, adminContext, EVIDENCE_ID),
     ).rejects.toMatchObject({ code: 'AFTER_SALE_EVIDENCE_SCOPE_DENIED' });
+  });
+
+  it('rejects protected-read identities and actor scopes before opening a transaction', async () => {
+    await inputError(
+      prepareMemberAfterSaleEvidenceProtectedRead(unusedClient, memberContext, {
+        afterSaleId: 'not-a-uuid',
+        evidenceId: EVIDENCE_ID,
+      }),
+    );
+    await inputError(
+      prepareAdminAfterSaleEvidenceProtectedRead(unusedClient, adminContext, {
+        afterSaleId: AFTER_SALE_ID,
+        evidenceId: 'not-a-uuid',
+      }),
+    );
+    await expect(
+      prepareAdminAfterSaleEvidenceProtectedRead(unusedClient, memberContext, {
+        afterSaleId: AFTER_SALE_ID,
+        evidenceId: EVIDENCE_ID,
+      }),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_EVIDENCE_SCOPE_DENIED' });
+  });
+
+  it('retains repeatable-read visibility for the D3 confirmation and status operations', async () => {
+    const sentinel = new Error('transaction callback must not run');
+    const transaction = vi.fn().mockRejectedValue(sentinel);
+    const client = { $transaction: transaction } as never;
+
+    await expect(
+      prepareAfterSaleEvidenceUploadConfirmation(client, memberContext, {
+        evidenceId: EVIDENCE_ID,
+        expectedVersion: 1,
+        idempotencyKey: 'm63-b2b-confirm-isolation',
+      }),
+    ).rejects.toBe(sentinel);
+    expect(transaction).toHaveBeenLastCalledWith(expect.any(Function), {
+      isolationLevel: 'RepeatableRead',
+      timeout: 15_000,
+    });
+
+    transaction.mockClear();
+    await expect(
+      readMemberAfterSaleEvidenceUpload(client, memberContext, EVIDENCE_ID),
+    ).rejects.toBe(sentinel);
+    expect(transaction).toHaveBeenLastCalledWith(expect.any(Function), {
+      isolationLevel: 'RepeatableRead',
+      timeout: 15_000,
+    });
+  });
+
+  it('permits only a single legal-hold version change during protected-read revalidation', async () => {
+    const targetExpiresAt = new Date('2099-08-01T11:59:00.000Z');
+    const currentTime = new Date('2099-08-01T11:00:00.000Z');
+    const revalidationTransaction = (row: ReturnType<typeof protectedReadRow>) =>
+      ({
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValueOnce([row])
+          .mockResolvedValueOnce([{ current_time: currentTime }]),
+      }) as unknown as StoreTransaction;
+
+    await expect(
+      revalidateMemberAfterSaleEvidenceProtectedReadInTransaction(
+        revalidationTransaction(protectedReadRow({ legal_hold_active: true, version: 5 })),
+        protectedReadMemberContext,
+        protectedReadSnapshot,
+        targetExpiresAt,
+      ),
+    ).resolves.toMatchObject({ legalHoldActive: true, version: 5 });
+
+    await expect(
+      revalidateMemberAfterSaleEvidenceProtectedReadInTransaction(
+        revalidationTransaction(protectedReadRow({ version: 5 })),
+        protectedReadMemberContext,
+        protectedReadSnapshot,
+        targetExpiresAt,
+      ),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_EVIDENCE_NOT_FOUND' });
+    await expect(
+      revalidateMemberAfterSaleEvidenceProtectedReadInTransaction(
+        revalidationTransaction(protectedReadRow({ legal_hold_active: true, version: 6 })),
+        protectedReadMemberContext,
+        protectedReadSnapshot,
+        targetExpiresAt,
+      ),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_EVIDENCE_NOT_FOUND' });
+  });
+
+  it('rejects a member read when the token expires after the authorization lock returns', async () => {
+    const tokenExpiresAt = new Date('2099-08-01T11:30:00.000Z');
+    const authorizedMemberContext = createStoreContext({
+      accessSessionExpiresAt: new Date('2099-08-01T12:30:00.000Z'),
+      accessSessionId: '70000000-0000-4000-8000-000000000001',
+      accessTokenExpiresAt: tokenExpiresAt,
+      actor: { id: MEMBER_ID, type: 'member' },
+      correlationId: 'm63-b2b-d5-post-lock-token-expiry',
+      locale: 'vi',
+      storeCode: 'beauty',
+      storeId: STORE_ID,
+    });
+    const transaction = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([protectedReadRow()])
+        .mockResolvedValueOnce([{ current_time: new Date(tokenExpiresAt.getTime() + 1) }]),
+    } as unknown as StoreTransaction;
+
+    await expect(
+      revalidateMemberAfterSaleEvidenceProtectedReadInTransaction(
+        transaction,
+        authorizedMemberContext,
+        protectedReadSnapshot,
+        new Date('2099-08-01T11:59:00.000Z'),
+      ),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_EVIDENCE_NOT_FOUND' });
   });
 
   it('rejects non-positive scan generations and incomplete trusted scanner identity', async () => {

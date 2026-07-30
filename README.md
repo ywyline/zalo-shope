@@ -34,6 +34,13 @@ MinIO 6/6、完整 integration 34 文件/280 项、完整 `verify` 69 文件/545
 管理员审计、legal hold 管理、外部告警、production IAM/KMS/versioning/Object Lock/lifecycle 与 rollout
 仍未完成。
 
+M6.3-B2b-D5 已完成默认关闭的 member/admin 已 claim `READY` ORIGINAL 保护读取和管理员逐次审计。
+签名 URL 严格受 ordinary-access、Bearer 与持久 session 最早截止点约束，最终事务锁定并复验商城、主体、
+session、RBAC、evidence 与提交余量；D5 审计使用服务端生成的 correlation ID，并记录规范化 peer
+`source_ip`。当前只将 default-disabled repository implementation + local/test protected-read validation
+标记 `COMPLETE`；B3 claim、legal-hold/dead-letter 管理、外部告警、production IAM/KMS/versioning/
+Object Lock/lifecycle、bearer-URL 风险接受和 rollout 仍未完成。
+
 B2a 仓库内只读预检的本地测试库结果为 `policies=0, versions=0`。D0 owner preflight 的本地结果为
 `files=0, transitions=0, outbox=0, idempotency=0`；runtime RLS 连接按预期以 SQLSTATE `42501`
 失败关闭。两者都不能替代未获授权的 staging/production 精确目标库 rollout 前重跑与留证。
@@ -44,9 +51,10 @@ D1 当前证据与未完成门禁见
 `docs/reports/m6.3-b2b-d1-evidence-storage-completion-report.md`；D2 证据见
 `docs/reports/m6.3-b2b-d2-scanner-worker-completion-report.md`；D3 证据见
 `docs/reports/m6.3-b2b-d3-member-evidence-http-completion-report.md`；D4 证据见
-`docs/reports/m6.3-b2b-d4-evidence-deletion-worker-completion-report.md`。四份报告只证明各自明确标注的
+`docs/reports/m6.3-b2b-d4-evidence-deletion-worker-completion-report.md`；D5 证据见
+`docs/reports/m6.3-b2b-d5-protected-evidence-read-completion-report.md`。五份报告只证明各自明确标注的
 repository/local-test 边界，不证明 production S3/KMS/lifecycle/versioning/Object Lock、scanner、
-保护读取、legal hold 管理、外部告警或完整 B2b 可用。
+legal hold 管理、外部告警、B3 claim 或完整 B2b 可用。
 
 ## 应用与包
 
@@ -515,6 +523,48 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   D4 的 MinIO 证据不证明 production versioned bucket 的历史版本物理删除，完整边界见
   `docs/reports/m6.3-b2b-d4-evidence-deletion-worker-completion-report.md`。
 
+## M6.3-B2b-D5 凭证保护读取与管理员逐次审计
+
+- D5 默认关闭的仓库实现与 local/test 保护读取验收已完成（`COMPLETE`），已注册
+  `GET /v1/after-sales/{afterSaleId}/evidence/{evidenceId}` 与
+  `GET /v1/admin/after-sales/{afterSaleId}/evidence/{evidenceId}`。两者仅对当前商城中已 claim、
+  `READY`、存在 header ORIGINAL key 且严格早于 `ordinary_access_deadline_at` 的凭证签发短期
+  `no-store`/`no-referrer` URL；错商城、错 owner/case、未 claim、过期、隔离、删除中或已删除统一为
+  不可枚举 `404`。
+- member 读取受现有商城+会员 RLS 和 MEMBER READ 限流保护；admin 额外要求
+  `store.after-sales.evidence.read`、当前商城 `store_id`，跨商城 super-admin 仍必须提供
+  固定 incident-reference 格式的 `X-Access-Reason`，而不是自由文本。成功管理员读取在最终数据库重验事务中恰写一条
+  `after-sale.evidence.protected_read.issued` 审计，不记录 URL、object key、checksum、scanner 或
+  provider 数据；审计或 Redis/storage 失败均失败关闭且不返回 URL。
+- 签名不持有数据库事务：先授权和读取，再以数据库普通访问截止截断签名 TTL，随后在 `FOR SHARE` 最终
+  重验。该事务除 evidence 外还锁定并重验 ACTIVE 商城、当前 actor、未撤销且未到期 session、Bearer
+  到期时间，以及管理员的当前商城 `store.after-sales.evidence.read` 或跨商城
+  `platform.stores.cross_access`；legal hold 仅阻止物理删除，不能在普通读取窗口内撤销读取。
+- D5 的五段前向迁移共同构成边界：第 44 段
+  `20260730100000_m63_b2b_d5_protected_read_lock` 建立最小 evidence `FOR SHARE` 读取；第 45 段
+  `20260730103000_m63_b2b_d5_authorization_revalidation` 以授权感知 definer 函数替代 runtime 入口并锁定
+  会话、商城、账号与 RBAC 事实；第 46 段
+  `20260730104000_m63_b2b_d5_member_authorization_grant_fix` 仅为 guard role 补充
+  `members.store_id` 的列级 `SELECT`，供 member 商城归属谓词使用；第 47 段
+  `20260730105000_m63_b2b_d5_expiry_revalidation` 在拿到 evidence 锁后再次校验 Bearer、session、已签 URL
+  与 ordinary-access deadline，避免等待 lifecycle 写锁期间过期；第 48 段
+  `20260731100000_m63_b2b_d5_commit_deadline_revalidation` 进一步把 URL 截止绑定到 Bearer/session 并保留
+  最终提交余量。
+- 集群级 `zalo_shop_evidence_read_guard` 必须 `NOLOGIN`、`NOINHERIT`、`NOSUPERUSER`、`NOCREATEDB`、
+  `NOCREATEROLE`、`NOREPLICATION`、`NOBYPASSRLS` 且无任何角色关系。第 44、45、47、48 段把 definer
+  ownership 转给该隔离角色，受控迁移 `DATABASE_URL` 的执行者必须是真正的 PostgreSQL `rolsuper`；不能
+  使用 `zalo_shop_runtime` 或仅具 `CREATEDB`/`CREATEROLE` 的常规迁移账号。
+- 回滚先关闭能力并等待在途请求和已签发 URL 的短 TTL 结束。仅 local/test 且不存在任何
+  `after-sale.evidence.protected_read.issued` 审计事实时，才可按 `48 -> 47 -> 46 -> 45 -> 44` 执行
+  `down.sql`；第 48、47 段的逆向脚本只做审计事实 guard，不恢复较弱函数。任一 issued-read audit 都必须
+  fail-fast。逆序回滚只撤销当前数据库的函数、RLS policies 和 grants，绝不删除集群级 guard role；生产或
+  已有受保护读取审计事实的环境只允许向前修复。
+- `AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED=false` 为默认。启用要求 D1 S3 evidence storage/read
+  identity；production 仍须在目标环境证明 HTTPS、最小 read IAM、KMS、bucket versioning/Object Lock/
+  lifecycle、legal-retention 语义和 bearer-URL 风险接受。D5 不是 B3 claim、legal hold 管理、production
+  rollout 或完整 B2b/B2/M6.3/M6/P0 完成声明。D5 的迁移、测试、门禁证据与生产阻断项见
+  `docs/reports/m6.3-b2b-d5-protected-evidence-read-completion-report.md`。
+
 ## 环境与密钥
 
 - `.env.example` 和 `.env.test.example` 只包含本地开发占位凭据。
@@ -526,6 +576,10 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   `S3_ACCESS_KEY`、`S3_SECRET_KEY` 或三种 evidence 身份中的任一凭据。示例值只适用于 local/test。
 - 固定本地 evidence bucket 必须从未启用版本控制；production 的 KMS/lifecycle/versioning/Object Lock、
   历史版本清理和恢复策略均需另行审批与目标环境证据。
+- `AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED` 默认 `false`；仅在 D1 S3 evidence storage/read
+  identity 已配置时可以开启。预签名 read URL 必须短于数据库
+  `ordinary_access_deadline_at`；local/test 可使用 MinIO HTTP，production 配置必须使用 HTTPS。该配置
+  门禁不证明 provider 最小 IAM、KMS、versioning/Object Lock/lifecycle 或 legal retention 已通过验收。
 - 日志默认遮盖认证、Cookie 和 Zalo Token 请求头。
 - `ZALO_IDENTITY_PROVIDER=test` 只允许 `NODE_ENV=test`；生产环境会拒绝启动该 provider。
 - `PAYMENT_PROVIDER=test` 同样只允许 `NODE_ENV=test` 且需要专用测试密钥；development/production 默认并应保持 `disabled`。真实适配器从商城 `private_key_secret_ref` 解析部署密钥，`env:ZALO_CHECKOUT_*` 只是受限的本地/部署 resolver 示例，不是把密钥写入仓库。

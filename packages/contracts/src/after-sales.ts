@@ -165,6 +165,22 @@ export const afterSaleEvidenceUploadResponseSchema = z
   })
   .strict();
 
+export const afterSaleEvidenceAccessResponseSchema = z
+  .object({
+    expires_at: afterSaleWireDateTimeSchema,
+    url: z
+      .string()
+      .url()
+      .refine((value) => {
+        try {
+          return ['http:', 'https:'].includes(new URL(value).protocol);
+        } catch {
+          return false;
+        }
+      }),
+  })
+  .strict();
+
 export const afterSaleTimelineResponseSchema = z
   .object({
     created_at: afterSaleWireDateTimeSchema,
@@ -298,8 +314,15 @@ export const afterSaleAdminStoreQuerySchema = z.object({ store_id: uuidSchema })
 export const afterSaleAdminReadQuerySchema = z
   .object({ locale: z.enum(['vi', 'zh', 'en']).optional(), store_id: uuidSchema })
   .strict();
+export const afterSaleEvidenceAdminReadQuerySchema = z.object({ store_id: uuidSchema }).strict();
 export const afterSaleMemberReadQuerySchema = z.object({}).strict();
 export const afterSaleEvidenceMemberQuerySchema = z.object({}).strict();
+// A D5 cross-store rationale is deliberately an incident reference instead of free text:
+// it is written to both cross-store and protected-read audit rows.
+export const afterSaleEvidenceProtectedReadAccessReasonSchema = z
+  .string()
+  .trim()
+  .regex(/^Protected evidence incident [A-Z][A-Z0-9]{1,15}-[1-9][0-9]{0,11}$/u);
 export const afterSaleStoreCodeHeaderSchema = z
   .string()
   .min(2)
@@ -769,6 +792,7 @@ export type AfterSaleCursorScope = z.infer<typeof afterSaleCursorScopeSchema>;
 export type AfterSaleResponse = z.infer<typeof afterSaleResponseSchema>;
 export type AfterSalePageResponse = z.infer<typeof afterSalePageResponseSchema>;
 export type AfterSaleEvidenceResponse = z.infer<typeof afterSaleEvidenceResponseSchema>;
+export type AfterSaleEvidenceAccessResponse = z.infer<typeof afterSaleEvidenceAccessResponseSchema>;
 export type AfterSaleEvidenceUploadRequest = z.infer<typeof afterSaleEvidenceUploadRequestSchema>;
 export type AfterSaleEvidenceUploadResponse = z.infer<typeof afterSaleEvidenceUploadResponseSchema>;
 export type AfterSalePolicyContent = z.infer<typeof afterSalePolicyContentSchema>;

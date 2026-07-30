@@ -12,6 +12,8 @@ import {
   resolveCorrelationId,
 } from './index';
 
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function captureDestination(chunks: string[]): Writable {
   return new Writable({
     write(chunk: Buffer, _encoding, callback) {
@@ -69,9 +71,17 @@ async function captureHttpLog(input: {
 describe('audit and log redaction', () => {
   it('accepts only correlation identifiers that satisfy the public minimum length', () => {
     expect(resolveCorrelationId('valid-id')).toBe('valid-id');
-    expect(resolveCorrelationId('short')).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-    );
+    expect(resolveCorrelationId('short')).toMatch(UUID_V4_PATTERN);
+  });
+
+  it.each([
+    ['a SHA-256 checksum', 'a'.repeat(64)],
+    ['an AWS access-key credential', 'AKIAIOSFODNN7EXAMPLE'],
+  ])('replaces %s instead of accepting it as a correlation ID', (_label, suppliedId) => {
+    const resolvedId = resolveCorrelationId(suppliedId);
+
+    expect(resolvedId).not.toBe(suppliedId);
+    expect(resolvedId).toMatch(UUID_V4_PATTERN);
   });
 
   it('recursively redacts sensitive keys while preserving safe context', () => {
@@ -210,9 +220,7 @@ describe('audit and log redaction', () => {
       };
     };
 
-    expect(log.request?.id).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-    );
+    expect(log.request?.id).toMatch(UUID_V4_PATTERN);
     expect(log.request?.headers?.['x-correlation-id']).toBe('[REDACTED]');
     expect(log.request?.headers?.forwarded).toBe('[REDACTED]');
     expect(log.request?.headers?.['x-forwarded-for']).toBe('[REDACTED]');
@@ -220,6 +228,38 @@ describe('audit and log redaction', () => {
     expect(log.request?.remoteAddress).toBe('[REDACTED]');
     expect(log.request?.remotePort).toBe('[REDACTED]');
     for (const secret of Object.values(secrets)) expect(serializedLogs).not.toContain(secret);
+  });
+
+  it('keeps an accepted client correlation ID searchable through the HTTP request identity', async () => {
+    const suppliedId = 'valid-client-correlation-id';
+    const serializedLogs = await captureHttpLog({
+      headers: { 'x-correlation-id': suppliedId },
+      path: '/',
+    });
+    const log = JSON.parse(serializedLogs.trim()) as {
+      request?: { headers?: Record<string, string>; id?: string };
+    };
+
+    expect(log.request?.id).toBe(suppliedId);
+    expect(log.request?.headers?.['x-correlation-id']).toBe('[REDACTED]');
+  });
+
+  it.each([
+    ['a SHA-256 checksum', 'b'.repeat(64)],
+    ['an AWS access-key credential', 'AKIAIOSFODNN7EXAMPLE'],
+  ])('does not propagate %s into HTTP request identity or logs', async (_label, suppliedId) => {
+    const serializedLogs = await captureHttpLog({
+      headers: { 'x-correlation-id': suppliedId },
+      path: '/',
+    });
+    const log = JSON.parse(serializedLogs.trim()) as {
+      request?: { headers?: Record<string, string>; id?: string };
+    };
+
+    expect(log.request?.id).toMatch(UUID_V4_PATTERN);
+    expect(log.request?.id).not.toBe(suppliedId);
+    expect(log.request?.headers?.['x-correlation-id']).not.toBe(suppliedId);
+    expect(serializedLogs).not.toContain(suppliedId);
   });
 
   it('redacts sensitive keys from Nest logger optional parameters', () => {

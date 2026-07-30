@@ -3,7 +3,9 @@
 > 状态：已批准；M6.1、M6.2、M6.3-A、M6.3-B0、B1、B2a、B2b-D0、B2b-D1 repository +
 > local/test storage validation、B2b-D2 repository implementation + local/test scanner worker
 > validation、B2b-D3 repository implementation + local/test member evidence HTTP validation 与
-> B2b-D4 repository implementation + local/test deletion worker validation 已完成且适用仓库门禁通过；B2/B2b、B3-B7、
+> B2b-D4 repository implementation + local/test deletion worker validation 已完成且适用仓库门禁通过；
+> B2b-D5 default-disabled repository implementation + local/test protected-read validation 已完成且
+> 适用仓库门禁通过；B2/B2b、B3-B7、
 > M6.3、UI 与生产启用未完成或未授权并保持失败关闭；M6 整体未完成
 >
 > 版本：1.0
@@ -308,9 +310,10 @@ versioning/Object Lock/lifecycle 与 rollout 未完成。完整证据见
 实施顺序细分为 M6.3-A 前置安全收口和 M6.3-B 售后运行时；当前 M6.3-A 与
 M6.3-B0/B1/B2a/B2b-D0 仓库实施、B2b-D1 repository + local/test storage validation、B2b-D2
 repository implementation + local/test scanner worker validation、B2b-D3 repository
-implementation + local/test member evidence HTTP validation，以及 B2b-D4 repository implementation +
-local/test deletion worker validation 已完成。B2/B2b、B3-B7 仍未完成或未授权并失败关闭。
-A/B0/B1/B2a/D0-D4 的局部交付也不代表 M6.3 完成，详见
+implementation + local/test member evidence HTTP validation、B2b-D4 repository implementation + local/test
+deletion worker validation 与 B2b-D5 default-disabled repository implementation + local/test
+protected-read validation 已完成。B2/B2b、B3-B7
+仍未完成或未授权并失败关闭。A/B0/B1/B2a/D0-D5 的局部交付也不代表 M6.3 完成，详见
 `docs/plans/m6.3-implementation-plan.md`。
 
 - B1 只读列表/详情使用严格响应投影和三语历史政策回退；不得因 RLS 没有列级保护而使用宽
@@ -334,6 +337,15 @@ A/B0/B1/B2a/D0-D4 的局部交付也不代表 M6.3 完成，详见
 - B2b-D3 仅开放默认关闭的会员初始化/确认/owner 状态 HTTP，并连接 D0 配额/scan outbox、D1
   create-only 上传与确认前真实 bytes 校验。它不实现 B3 claim、凭证正文 URL、管理员读取审计、
   expire/delete worker、legal hold 管理、外部告警或 production rollout。
+- B2b-D5 仅开放默认关闭的 member/admin 已 claim `READY` ORIGINAL 保护读取。签名 TTL 严格受
+  `ordinary_access_deadline_at`、Bearer 与持久 session 的最早截止点约束，最终数据库重验关闭签名竞态；
+  admin 要求 evidence.read 并逐次受审。第 44-48 段分别建立 evidence 锁读、最终
+  store/actor/session/RBAC 重验、guard 对 `members.store_id` 的最小列级 `SELECT`、evidence 锁后到期复验，
+  以及 URL 与 Bearer/session 截止绑定和一秒提交余量。guard 保持不可登录、不可继承、无角色关系、非
+  bypass-RLS；不增加业务表/列/枚举或 STORE 权限代码，也不扩大 runtime 或 member `UPDATE` 权限。
+  第 44、45、47、48 段只能由 PostgreSQL `rolsuper` 的受控 maintenance executor 部署。D5 repository
+  implementation + local/test validation 已完成，但不实现 B3 claim、legal hold 管理、外部告警或 production
+  storage/IAM/KMS/versioning/Object Lock/lifecycle/rollout。
 - 买家提交/取消、管理员审核、返件登记与可信物流事实、待验收读取和售后时间线；完整返件验收写路径
   及 exactly-once 库存恢复属于 M6.4。
 - ONLINE 通过内部原语关联 M5 Refund，并消费成功/失败/取消/不确定权威结果；COD 使用可从退款响应
@@ -415,6 +427,11 @@ A/B0/B1/B2a/D0-D4 的局部交付也不代表 M6.3 完成，详见
 - B2b-D1 不增加 schema、RLS 或迁移；M2→current 保持 43 段。应用回滚将 evidence provider 保持
   disabled 即可；MinIO bootstrap 可幂等重跑，但不得递归删除 bucket 作为回滚。未来已有真实对象时，
   只能沿 D0 ledger 与兼容 worker 收敛。
+- B2b-D5 的第 44-48 段只建立受限锁读/授权/expiry/commit-deadline revalidation，不改写业务事实。回滚先关闭 capability
+  并等待在途请求和 URL TTL；仅 local/test 且没有任何
+  `after-sale.evidence.protected_read.issued` 审计事实时，才可按 `48 -> 47 -> 46 -> 45 -> 44` 执行。第 48、
+  47 段的逆向脚本只做审计事实 guard，不恢复较弱函数；任一 issued-read audit 均 fail-fast，逆序脚本不删除
+  集群级 guard role；生产或已有该审计事实的环境只允许向前修复。
 - 应用回滚可关闭新建售后/分享入口，但必须保留兼容 worker 处理已有退款、结算、库存预留和运单至终态。
 
 ## 7. 风险、外部依赖和停止条件
@@ -427,14 +444,17 @@ A/B0/B1/B2a/D0-D4 的局部交付也不代表 M6.3 完成，详见
   数据字典、OpenAPI、迁移和安全测试。
 - M6.2 只交付数据事实边界；其历史范围保持不变。当前后续运行时已新增 B1 会员/管理员售后列表与详情，并完成 B2a 七个
   政策管理接口；D0-D2 分别完成数据库生命周期、storage 和 scanner 底座，D3 开放默认关闭的会员
-  初始化/确认/owner 状态 HTTP，D4 接通 local/test 到期与物理删除补偿。收藏、历史、隐私、分享以及售后申请/取消/审核/凭证正文保护读取/
+  初始化/确认/owner 状态 HTTP，D4 接通 local/test 到期与物理删除补偿，D5 完成默认关闭的 member/admin
+  保护读取与管理员逐次审计。收藏、历史、隐私、分享以及售后申请/取消/审核/
   返件/退款/结算仍未交付；表、原语、权限目录、只读响应或政策控制面存在不等于真实凭证能力、售后写路径或完整产品可用。
 - 证据对象视为敏感且不可信；必须限制类型、magic bytes、大小、数量、扫描状态、保留期和下载授权。
   到期立即停止普通访问；无 legal hold 时幂等删除原件、衍生物与扫描临时对象，失败有界重试并告警；
   legal hold 只延迟删除，不延长普通访问，删除后仅保留受 RLS 保护的最小审计元数据。会员和普通
   管理员响应只投影 `PENDING/READY/UNAVAILABLE`，不得区分隔离、删除中、删除失败或已删除。
 - D0 已实现上述规则的数据库形状、配额/版本/消息/删除 guard；D1-D4 已在 local/test 接通真实 bytes
-  校验、扫描、会员 confirmation 和删除补偿，但仍没有保护读取审计、legal hold 管理或外部告警。
+  校验、扫描、会员 confirmation 和删除补偿。D5 默认关闭，并已用 44-48 段在签名后锁定及复验
+  session、商城、账号、RBAC、授权期限和提交余量，repository + local/test 保护读取审计验收已完成。legal hold
+  管理或外部告警仍未交付。
   不得把 D4 MinIO 测试列为保护读取、production versioned-object 物理删除、生产 IAM/KMS/lifecycle 或 retention 的
   验收证据。版本化 bucket 物理删除和 AWS 最小 read IAM 不存在对象 `403` 语义仍阻塞生产。
 - M6.3-A 已按重新授权关闭 checkout enforcement 与既有 shipment purpose 前置风险；最终静态、
@@ -465,6 +485,14 @@ A/B0/B1/B2a/D0-D4 的局部交付也不代表 M6.3 完成，详见
   反向 IAM、幂等删除和最终无残留。初始化连续两次通过且 evidence bucket 版本控制必须从未启用。
   D1 无 UI/HTTP，专项 E2E 为 `NOT_APPLICABLE`；production provider/versioning/Object Lock、scanner、
   worker 与 rollout 为 `NOT_RUN/BLOCKED`。
+- B2b-D5：必须覆盖 member/admin 商城/主体/case 隔离、已 claim `READY` ORIGINAL、无差别 `404`、
+  session/store/account/RBAC 撤销竞态、cross-store AccessReason、管理员原子审计、锁等待后的
+  Bearer/session/signed-URL/ordinary-deadline 过期，以及 PostgreSQL + Redis + MinIO 的真实签名读取。
+  migration regression 必须验证 44-48、guard 最小属性和 `members.store_id` 列级授权、`rolsuper` 预检及
+  local/test rollback audit fail-fast。D5 无 UI/Zalo 宿主交互，专项浏览器 E2E 为 `NOT_APPLICABLE`；在
+  适用门禁重跑通过后仅将 repository implementation + local/test validation 标记 `COMPLETE`，生产仍为
+  `NOT_AUTHORIZED / NOT_RUN`。完整证据见
+  `docs/reports/m6.3-b2b-d5-protected-evidence-read-completion-report.md`。
 - E2E：双商城三语仅退款、退货退款、换货、收藏、历史、隐私入口、六类分享目标和异常恢复。
 - 真机：Android/iPhone 中由用户主动分享并打开正确商城、语言和对象；Web 预览不替代宿主证据。
 - 阶段门禁：定向测试、`corepack pnpm verify`、相关集成/E2E、迁移演练、生产依赖审计、Gitleaks、

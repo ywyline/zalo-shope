@@ -24,6 +24,7 @@ export type AdminHeaders = {
   accessReason?: string;
   accessToken: string;
   correlationId?: string;
+  sourceIp?: string;
   storeCode: string;
 };
 
@@ -319,6 +320,10 @@ export class AdminService {
     if (!store || store.id !== storeId) throw new ForbiddenException('Access denied');
     const context = createStoreContext({
       ...(headers.accessReason === undefined ? {} : { accessReason: headers.accessReason }),
+      accessSessionExpiresAt: principal.accessSessionExpiresAt,
+      accessSessionId: principal.sessionId,
+      accessTokenExpiresAt: principal.accessTokenExpiresAt,
+      adminAuthorizationScope: 'STORE',
       actor: { id: principal.subjectId, type: 'admin' },
       correlationId,
       locale: store.default_locale,
@@ -346,11 +351,23 @@ export class AdminService {
     }
     const reason = accessReasonSchema.safeParse(headers.accessReason);
     if (!reason.success) throw new ForbiddenException('Cross-store access reason is required');
-    const crossStoreContext = createStoreContext({ ...context, accessReason: reason.data });
+    const crossStoreContext = createStoreContext({
+      accessReason: reason.data,
+      accessSessionExpiresAt: principal.accessSessionExpiresAt,
+      accessSessionId: principal.sessionId,
+      accessTokenExpiresAt: principal.accessTokenExpiresAt,
+      adminAuthorizationScope: 'CROSS_STORE',
+      actor: { id: principal.subjectId, type: 'admin' },
+      correlationId,
+      locale: store.default_locale,
+      storeCode: store.code,
+      storeId,
+    });
     await withStoreTransaction(this.database, crossStoreContext, (transaction) =>
       this.writeAudit(transaction, crossStoreContext, {
         action: 'platform.cross_store.accessed',
         after: { requiredPermission },
+        ...(headers.sourceIp === undefined ? {} : { sourceIp: headers.sourceIp }),
         targetId: storeId,
         targetType: 'store',
       }),
@@ -404,6 +421,7 @@ export class AdminService {
       action: string;
       after?: unknown;
       before?: unknown;
+      sourceIp?: string;
       targetId?: string;
       targetType: string;
     },
@@ -419,6 +437,7 @@ export class AdminService {
         beforeData: json(event.before),
         correlationId: context.correlationId,
         reason: context.accessReason,
+        sourceIp: event.sourceIp,
         storeId: context.storeId,
         targetId: event.targetId,
         targetType: event.targetType,

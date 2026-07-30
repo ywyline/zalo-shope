@@ -100,6 +100,15 @@ export type AfterSaleEvidenceRecord = Readonly<{
   version: number;
 }>;
 
+export type AfterSaleEvidenceProtectedReadSnapshot = Readonly<{
+  afterSaleId: string;
+  evidenceId: string;
+  legalHoldActive: boolean;
+  objectKey: string;
+  ordinaryAccessDeadlineAt: Date;
+  version: number;
+}>;
+
 type ClockRow = { current_time: Date };
 type QuotaRow = { byte_count: bigint; file_count: bigint };
 type EvidenceOutboxRow = {
@@ -139,6 +148,18 @@ type EvidenceConfirmationRow = EvidenceRow & {
   mime_type: string;
 };
 
+type ProtectedReadEvidenceRow = Readonly<{
+  after_sale_id: string | null;
+  id: string;
+  legal_hold_active: boolean;
+  member_id: string;
+  object_key: string | null;
+  ordinary_access_deadline_at: Date | null;
+  status: AfterSaleEvidenceStatus;
+  store_id: string;
+  version: number;
+}>;
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const CHECKSUM_PATTERN = /^[0-9a-f]{64}$/u;
 const ENVIRONMENT_PATTERN = /^[a-z][a-z0-9-]{1,31}$/u;
@@ -152,6 +173,7 @@ const DELETE_MAX_DELAY_MS = 6 * 60 * 60 * 1_000;
 const DELETE_MAX_ATTEMPTS = 8;
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1_000;
 const SCAN_LEASE_TRANSACTION_TIMEOUT_MS = 2_000;
+const PROTECTED_READ_FINALIZATION_SAFETY_MS = 1_000;
 
 function digest(value: unknown): string {
   return createHash('sha256')
@@ -188,6 +210,12 @@ function assertMemberContext(context: StoreContext): void {
   }
 }
 
+function assertAdminContext(context: StoreContext): void {
+  if (context.actor.type !== 'admin') {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_SCOPE_DENIED');
+  }
+}
+
 function assertPositiveInteger(value: number, maximum: number): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
     throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
@@ -212,6 +240,18 @@ function assertDate(value: Date): void {
   if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
     throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
   }
+}
+
+function protectedReadAuthorizationDeadline(context: StoreContext): Date | undefined {
+  if (context.accessTokenExpiresAt === undefined || context.accessSessionExpiresAt === undefined) {
+    return undefined;
+  }
+  const tokenExpiresAt = new Date(context.accessTokenExpiresAt);
+  const sessionExpiresAt = new Date(context.accessSessionExpiresAt);
+  if (!Number.isFinite(tokenExpiresAt.getTime()) || !Number.isFinite(sessionExpiresAt.getTime())) {
+    return undefined;
+  }
+  return new Date(Math.min(tokenExpiresAt.getTime(), sessionExpiresAt.getTime()));
 }
 
 function stateConflict(): never {
@@ -378,6 +418,103 @@ async function evidenceSnapshot(
         AND id = ${evidenceId}::uuid
     `
   )[0];
+}
+
+async function protectedReadEvidenceSnapshot(
+  transaction: StoreTransaction,
+  evidenceId: string,
+): Promise<ProtectedReadEvidenceRow | undefined> {
+  return (
+    await transaction.$queryRaw<ProtectedReadEvidenceRow[]>`
+      SELECT id, store_id, member_id, after_sale_id, object_key, status, legal_hold_active,
+        ordinary_access_deadline_at, version
+      FROM after_sale_evidence_files
+      WHERE store_id = app_security.current_store_id()
+        AND id = ${evidenceId}::uuid
+    `
+  )[0];
+}
+
+async function lockedProtectedReadEvidenceSnapshot(
+  transaction: StoreTransaction,
+  input: Readonly<{
+    afterSaleId: string;
+    evidenceId: string;
+    targetExpiresAt: Date;
+  }>,
+): Promise<ProtectedReadEvidenceRow | undefined> {
+  return (
+    await transaction.$queryRaw<ProtectedReadEvidenceRow[]>`
+      SELECT id, store_id, member_id, after_sale_id, object_key, status, legal_hold_active,
+        ordinary_access_deadline_at, version
+      FROM app_security.lock_m63_b2b_protected_evidence_read_authorized(
+        ${input.evidenceId}::uuid,
+        ${input.afterSaleId}::uuid,
+        ${input.targetExpiresAt}::timestamptz
+      )
+    `
+  )[0];
+}
+
+function assertProtectedReadInput(
+  input: Readonly<{ afterSaleId: string; evidenceId: string }>,
+): void {
+  if (!UUID_PATTERN.test(input.afterSaleId) || !UUID_PATTERN.test(input.evidenceId)) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_INPUT_INVALID');
+  }
+}
+
+function protectedReadSnapshot(
+  row: ProtectedReadEvidenceRow | undefined,
+  context: StoreContext,
+  input: Readonly<{ afterSaleId: string; evidenceId: string }> &
+    Readonly<{
+      memberId?: string;
+      previous?: AfterSaleEvidenceProtectedReadSnapshot;
+      targetExpiresAt?: Date;
+    }>,
+  now: Date,
+): AfterSaleEvidenceProtectedReadSnapshot {
+  const authorizationDeadline = protectedReadAuthorizationDeadline(context);
+  const holdOnlyVersionDrift =
+    input.previous !== undefined &&
+    row !== undefined &&
+    row.version === input.previous.version + 1 &&
+    row.legal_hold_active !== input.previous.legalHoldActive;
+  if (
+    !row ||
+    row.id !== input.evidenceId ||
+    row.store_id !== context.storeId ||
+    row.after_sale_id !== input.afterSaleId ||
+    row.status !== 'READY' ||
+    row.object_key === null ||
+    row.ordinary_access_deadline_at === null ||
+    now >= row.ordinary_access_deadline_at ||
+    (input.memberId !== undefined && row.member_id !== input.memberId) ||
+    (input.previous !== undefined &&
+      (row.object_key !== input.previous.objectKey ||
+        row.ordinary_access_deadline_at.getTime() !==
+          input.previous.ordinaryAccessDeadlineAt.getTime() ||
+        (row.version !== input.previous.version && !holdOnlyVersionDrift))) ||
+    (input.targetExpiresAt !== undefined &&
+      (!(input.targetExpiresAt instanceof Date) ||
+        !Number.isFinite(input.targetExpiresAt.getTime()) ||
+        authorizationDeadline === undefined ||
+        now >= authorizationDeadline ||
+        input.targetExpiresAt.getTime() <= now.getTime() + PROTECTED_READ_FINALIZATION_SAFETY_MS ||
+        input.targetExpiresAt > authorizationDeadline ||
+        input.targetExpiresAt >= row.ordinary_access_deadline_at))
+  ) {
+    throw new AfterSaleEvidenceLifecycleError('AFTER_SALE_EVIDENCE_NOT_FOUND');
+  }
+  return {
+    afterSaleId: row.after_sale_id,
+    evidenceId: row.id,
+    legalHoldActive: row.legal_hold_active,
+    objectKey: row.object_key,
+    ordinaryAccessDeadlineAt: row.ordinary_access_deadline_at,
+    version: row.version,
+  };
 }
 
 async function lockedEvidence(
@@ -969,6 +1106,90 @@ export async function readMemberAfterSaleEvidenceUpload(
       return { evidence: evidenceRecord(row), observedAt };
     },
     { isolationLevel: 'RepeatableRead', timeout: 15_000 },
+  );
+}
+
+export async function prepareMemberAfterSaleEvidenceProtectedRead(
+  client: PrismaClient,
+  context: StoreContext,
+  input: Readonly<{ afterSaleId: string; evidenceId: string }>,
+): Promise<AfterSaleEvidenceProtectedReadSnapshot> {
+  assertMemberContext(context);
+  assertProtectedReadInput(input);
+  return withStoreTransaction(
+    client,
+    context,
+    async (transaction) =>
+      protectedReadSnapshot(
+        await protectedReadEvidenceSnapshot(transaction, input.evidenceId),
+        context,
+        { ...input, memberId: context.actor.id },
+        await wallClock(transaction),
+      ),
+    { isolationLevel: 'RepeatableRead', timeout: 15_000 },
+  );
+}
+
+export async function prepareAdminAfterSaleEvidenceProtectedRead(
+  client: PrismaClient,
+  context: StoreContext,
+  input: Readonly<{ afterSaleId: string; evidenceId: string }>,
+): Promise<AfterSaleEvidenceProtectedReadSnapshot> {
+  assertAdminContext(context);
+  assertProtectedReadInput(input);
+  return withStoreTransaction(
+    client,
+    context,
+    async (transaction) =>
+      protectedReadSnapshot(
+        await protectedReadEvidenceSnapshot(transaction, input.evidenceId),
+        context,
+        input,
+        await wallClock(transaction),
+      ),
+    { isolationLevel: 'RepeatableRead', timeout: 15_000 },
+  );
+}
+
+export async function revalidateMemberAfterSaleEvidenceProtectedReadInTransaction(
+  transaction: StoreTransaction,
+  context: StoreContext,
+  snapshot: AfterSaleEvidenceProtectedReadSnapshot,
+  targetExpiresAt: Date,
+): Promise<AfterSaleEvidenceProtectedReadSnapshot> {
+  assertMemberContext(context);
+  assertProtectedReadInput(snapshot);
+  assertDate(targetExpiresAt);
+  return protectedReadSnapshot(
+    await lockedProtectedReadEvidenceSnapshot(transaction, {
+      afterSaleId: snapshot.afterSaleId,
+      evidenceId: snapshot.evidenceId,
+      targetExpiresAt,
+    }),
+    context,
+    { ...snapshot, memberId: context.actor.id, previous: snapshot, targetExpiresAt },
+    await wallClock(transaction),
+  );
+}
+
+export async function revalidateAdminAfterSaleEvidenceProtectedReadInTransaction(
+  transaction: StoreTransaction,
+  context: StoreContext,
+  snapshot: AfterSaleEvidenceProtectedReadSnapshot,
+  targetExpiresAt: Date,
+): Promise<AfterSaleEvidenceProtectedReadSnapshot> {
+  assertAdminContext(context);
+  assertProtectedReadInput(snapshot);
+  assertDate(targetExpiresAt);
+  return protectedReadSnapshot(
+    await lockedProtectedReadEvidenceSnapshot(transaction, {
+      afterSaleId: snapshot.afterSaleId,
+      evidenceId: snapshot.evidenceId,
+      targetExpiresAt,
+    }),
+    context,
+    { ...snapshot, previous: snapshot, targetExpiresAt },
+    await wallClock(transaction),
   );
 }
 

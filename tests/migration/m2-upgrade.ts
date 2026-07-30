@@ -10,6 +10,7 @@ import {
   realpath,
   rm,
   stat,
+  writeFile,
 } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
@@ -53,6 +54,14 @@ const M5_MIGRATIONS = [
   '20260727001000_m57_refund_review_capacity_guard',
 ] as const;
 
+const D5_MIGRATIONS = [
+  '20260730100000_m63_b2b_d5_protected_read_lock',
+  '20260730103000_m63_b2b_d5_authorization_revalidation',
+  '20260730104000_m63_b2b_d5_member_authorization_grant_fix',
+  '20260730105000_m63_b2b_d5_expiry_revalidation',
+  '20260731100000_m63_b2b_d5_commit_deadline_revalidation',
+] as const;
+
 const M6_MIGRATIONS = [
   '20260727110000_m62_after_sales_member_share_foundation',
   '20260727111000_m62_permission_catalog',
@@ -73,6 +82,7 @@ const M6_MIGRATIONS = [
   '20260728110000_m63_b1_after_sale_admin_read_index',
   '20260729100000_m63_b2a_policy_control_plane',
   '20260729120000_m63_b2b_d0_evidence_lifecycle',
+  ...D5_MIGRATIONS,
 ] as const;
 
 type MigrationRecord = {
@@ -100,6 +110,7 @@ type IndexShapeRecord = {
 type OwnerPreflightRecord = {
   can_create_database: boolean;
   database_name: string;
+  is_superuser: boolean;
   runtime_role_exists: boolean;
   server_version_num: number;
   user_name: string;
@@ -300,6 +311,37 @@ async function migrationDirectories(): Promise<string[]> {
     }
   }
   return directories;
+}
+
+async function assertD5MigrationTransactionBoundaries(): Promise<void> {
+  for (const migrationName of D5_MIGRATIONS) {
+    const sql = await readFile(join(MIGRATIONS_ROOT, migrationName, 'migration.sql'), 'utf8');
+    const lines = sql.replace(/^\uFEFF/u, '').split(/\r?\n/u);
+    const substantiveLines = lines
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('--'));
+    const beginCount = lines.filter((line) => line.trim() === 'BEGIN;').length;
+    const commitCount = lines.filter((line) => line.trim() === 'COMMIT;').length;
+    if (
+      substantiveLines[0] !== 'BEGIN;' ||
+      substantiveLines.at(-1) !== 'COMMIT;' ||
+      beginCount !== 1 ||
+      commitCount !== 1
+    ) {
+      fail(
+        `M6.3-B2b-D5 migration must have one explicit top-level BEGIN and end with one COMMIT: ${migrationName}`,
+      );
+    }
+  }
+}
+
+function injectD5PreCommitFailure(sql: string, migrationName: string): string {
+  const commitOffset = sql.lastIndexOf('COMMIT;');
+  if (commitOffset < 0 || sql.slice(commitOffset + 'COMMIT;'.length).trim().length !== 0) {
+    fail(`cannot inject a D5 pre-commit failure into migration: ${migrationName}`);
+  }
+  const injectedFailure = `DO $d5_atomicity_injection$\nBEGIN\n  RAISE EXCEPTION 'M6.3-B2b-D5 injected pre-commit failure' USING ERRCODE = '55000';\nEND\n$d5_atomicity_injection$;\n\n`;
+  return `${sql.slice(0, commitOffset)}${injectedFailure}${sql.slice(commitOffset)}`;
 }
 
 async function createMigrationTree(
@@ -511,6 +553,768 @@ async function assertM63B2bD0Indexes(client: PrismaClientType): Promise<void> {
   });
 }
 
+async function assertM63B2bD5ProtectedReadLock(client: PrismaClientType): Promise<void> {
+  const records = await client.$queryRaw<
+    Array<{
+      authorization_function_exists: boolean;
+      authorization_function_has_safe_configuration: boolean;
+      authorization_function_has_post_lock_expiry_revalidation: boolean;
+      authorization_function_is_security_definer: boolean;
+      authorization_function_owner_is_guard: boolean;
+      authorization_runtime_can_execute: boolean;
+      authorization_public_cannot_execute: boolean;
+      authorization_guard_auth_column_privileges_are_exact: boolean;
+      authorization_auth_tables_are_forced_rls: boolean;
+      authorization_guard_write_policies_are_exact: boolean;
+      authorization_global_preserve_access_policies_are_exact: boolean;
+      guard_evidence_column_privileges_are_exact: boolean;
+      guard_has_no_role_relationships: boolean;
+      guard_role_is_restricted: boolean;
+      legacy_runtime_cannot_execute: boolean;
+      protected_read_function_exists: boolean;
+      protected_read_function_has_safe_configuration: boolean;
+      protected_read_function_is_security_definer: boolean;
+      protected_read_function_owner_is_guard: boolean;
+      public_cannot_execute_protected_read_function: boolean;
+      protected_read_lock_policies_are_exact: boolean;
+    }>
+  >`
+    WITH guard_role AS (
+      SELECT oid, rolbypassrls, rolcanlogin, rolinherit, rolsuper, rolcreatedb,
+        rolcreaterole, rolreplication
+      FROM pg_catalog.pg_roles
+      WHERE rolname = 'zalo_shop_evidence_read_guard'
+    ), legacy_function AS (
+      SELECT function_definition.oid, function_definition.proacl,
+        function_definition.proconfig, function_definition.proowner,
+        function_definition.prosecdef
+      FROM pg_catalog.pg_proc AS function_definition
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = function_definition.pronamespace
+      WHERE namespace.nspname = 'app_security'
+        AND function_definition.proname = 'lock_m63_b2b_protected_evidence_read'
+        AND function_definition.proargtypes =
+          ARRAY['uuid'::regtype, 'uuid'::regtype, 'timestamptz'::regtype]::oidvector
+    ), authorization_function AS (
+      SELECT function_definition.oid, function_definition.proacl,
+        function_definition.proconfig, function_definition.proowner,
+        function_definition.prosecdef,
+        pg_catalog.pg_get_functiondef(function_definition.oid) AS definition
+      FROM pg_catalog.pg_proc AS function_definition
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = function_definition.pronamespace
+      WHERE namespace.nspname = 'app_security'
+        AND function_definition.proname = 'lock_m63_b2b_protected_evidence_read_authorized'
+        AND function_definition.proargtypes =
+          ARRAY['uuid'::regtype, 'uuid'::regtype, 'timestamptz'::regtype]::oidvector
+    ), evidence_guard_required_columns AS (
+      SELECT * FROM (VALUES
+        ('id', 'SELECT'),
+        ('store_id', 'SELECT'),
+        ('member_id', 'SELECT'),
+        ('after_sale_id', 'SELECT'),
+        ('object_key', 'SELECT'),
+        ('status', 'SELECT'),
+        ('legal_hold_active', 'SELECT'),
+        ('ordinary_access_deadline_at', 'SELECT'),
+        ('version', 'SELECT'),
+        ('id', 'UPDATE')
+      ) AS required_column(column_name, privilege_type)
+    ), authorization_guard_required_columns AS (
+      SELECT * FROM (VALUES
+        ('stores', 'id', 'SELECT'),
+        ('stores', 'status', 'SELECT'),
+        ('members', 'id', 'SELECT'),
+        ('members', 'store_id', 'SELECT'),
+        ('members', 'status', 'SELECT'),
+        ('admin_users', 'id', 'SELECT'),
+        ('admin_users', 'status', 'SELECT'),
+        ('member_sessions', 'id', 'SELECT'),
+        ('member_sessions', 'store_id', 'SELECT'),
+        ('member_sessions', 'member_id', 'SELECT'),
+        ('member_sessions', 'expires_at', 'SELECT'),
+        ('member_sessions', 'revoked_at', 'SELECT'),
+        ('admin_sessions', 'id', 'SELECT'),
+        ('admin_sessions', 'admin_user_id', 'SELECT'),
+        ('admin_sessions', 'expires_at', 'SELECT'),
+        ('admin_sessions', 'revoked_at', 'SELECT'),
+        ('admin_store_roles', 'store_id', 'SELECT'),
+        ('admin_store_roles', 'admin_user_id', 'SELECT'),
+        ('admin_store_roles', 'role_id', 'SELECT'),
+        ('store_role_permissions', 'store_id', 'SELECT'),
+        ('store_role_permissions', 'role_id', 'SELECT'),
+        ('store_role_permissions', 'permission_code', 'SELECT'),
+        ('admin_platform_roles', 'admin_user_id', 'SELECT'),
+        ('admin_platform_roles', 'platform_role_id', 'SELECT'),
+        ('platform_role_permissions', 'platform_role_id', 'SELECT'),
+        ('platform_role_permissions', 'permission_code', 'SELECT'),
+        ('stores', 'id', 'UPDATE'),
+        ('members', 'id', 'UPDATE'),
+        ('admin_users', 'id', 'UPDATE'),
+        ('member_sessions', 'id', 'UPDATE'),
+        ('admin_sessions', 'id', 'UPDATE'),
+        ('admin_store_roles', 'role_id', 'UPDATE'),
+        ('store_role_permissions', 'permission_code', 'UPDATE'),
+        ('admin_platform_roles', 'platform_role_id', 'UPDATE'),
+        ('platform_role_permissions', 'permission_code', 'UPDATE')
+      ) AS required_column(relname, column_name, privilege_type)
+    ), authorization_tables AS (
+      SELECT DISTINCT relname FROM authorization_guard_required_columns
+    ), authorization_global_tables AS (
+      SELECT unnest(ARRAY[
+        'admin_users', 'admin_sessions', 'admin_platform_roles',
+        'platform_role_permissions'
+      ]) AS relname
+    )
+    SELECT
+      (
+        SELECT NOT rolcanlogin AND NOT rolinherit AND NOT rolbypassrls
+          AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication
+        FROM guard_role
+      ) IS TRUE AS guard_role_is_restricted,
+      NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_auth_members AS membership
+        JOIN guard_role ON membership.roleid = guard_role.oid OR membership.member = guard_role.oid
+      ) AS guard_has_no_role_relationships,
+      EXISTS (SELECT 1 FROM legacy_function) AS protected_read_function_exists,
+      (
+        SELECT prosecdef
+        FROM legacy_function
+      ) IS TRUE AS protected_read_function_is_security_definer,
+      (
+        SELECT legacy_function.proowner = guard_role.oid
+        FROM legacy_function CROSS JOIN guard_role
+      ) IS TRUE AS protected_read_function_owner_is_guard,
+      (
+        SELECT
+          'search_path=pg_catalog, public, pg_temp' = ANY(proconfig)
+          AND 'row_security=on' = ANY(proconfig)
+        FROM legacy_function
+      ) IS TRUE AS protected_read_function_has_safe_configuration,
+      NOT EXISTS (
+        SELECT 1
+        FROM legacy_function
+        CROSS JOIN LATERAL aclexplode(
+          COALESCE(legacy_function.proacl, acldefault('f', legacy_function.proowner))
+        ) AS privilege
+        WHERE privilege.grantee = 0 AND privilege.privilege_type = 'EXECUTE'
+      ) AS public_cannot_execute_protected_read_function,
+      (
+        SELECT NOT has_function_privilege('zalo_shop_runtime', legacy_function.oid, 'EXECUTE')
+        FROM legacy_function
+      ) IS TRUE AS legacy_runtime_cannot_execute,
+      EXISTS (SELECT 1 FROM authorization_function) AS authorization_function_exists,
+      (
+        SELECT prosecdef
+        FROM authorization_function
+      ) IS TRUE AS authorization_function_is_security_definer,
+      (
+        SELECT authorization_function.proowner = guard_role.oid
+        FROM authorization_function CROSS JOIN guard_role
+      ) IS TRUE AS authorization_function_owner_is_guard,
+      (
+        SELECT
+          'search_path=pg_catalog, public, pg_temp' = ANY(proconfig)
+          AND 'row_security=on' = ANY(proconfig)
+        FROM authorization_function
+      ) IS TRUE AS authorization_function_has_safe_configuration,
+      (
+        SELECT
+          pg_catalog.strpos(
+            definition,
+            'FROM app_security.lock_m63_b2b_protected_evidence_read('
+          ) > 0
+          AND pg_catalog.strpos(
+            definition,
+            'post_lock_now := pg_catalog.clock_timestamp();'
+          ) > pg_catalog.strpos(
+            definition,
+            'FROM app_security.lock_m63_b2b_protected_evidence_read('
+          )
+          AND pg_catalog.strpos(
+            definition,
+            'post_lock_now >= caller_token_expires_at'
+          ) > pg_catalog.strpos(
+            definition,
+            'FROM app_security.lock_m63_b2b_protected_evidence_read('
+          )
+          AND pg_catalog.strpos(
+            definition,
+            'post_lock_now >= locked_session_expires_at'
+          ) > pg_catalog.strpos(
+            definition,
+            'FROM app_security.lock_m63_b2b_protected_evidence_read('
+          )
+          AND pg_catalog.strpos(
+            definition,
+            'post_lock_now + INTERVAL ''1 second'' >= target_url_expires_at'
+          ) > pg_catalog.strpos(
+            definition,
+            'FROM app_security.lock_m63_b2b_protected_evidence_read('
+          )
+          AND pg_catalog.strpos(
+            definition,
+            'post_lock_now >= locked_evidence_ordinary_access_deadline_at'
+          ) > pg_catalog.strpos(
+            definition,
+            'FROM app_security.lock_m63_b2b_protected_evidence_read('
+          )
+          AND pg_catalog.strpos(
+            definition,
+            'target_url_expires_at > caller_token_expires_at'
+          ) > 0
+          AND pg_catalog.strpos(
+            definition,
+            'target_url_expires_at > locked_session_expires_at'
+          ) > 0
+        FROM authorization_function
+      ) IS TRUE AS authorization_function_has_post_lock_expiry_revalidation,
+      NOT EXISTS (
+        SELECT 1
+        FROM authorization_function
+        CROSS JOIN LATERAL aclexplode(
+          COALESCE(authorization_function.proacl, acldefault('f', authorization_function.proowner))
+        ) AS privilege
+        WHERE privilege.grantee = 0 AND privilege.privilege_type = 'EXECUTE'
+      ) AS authorization_public_cannot_execute,
+      (
+        SELECT has_function_privilege('zalo_shop_runtime', authorization_function.oid, 'EXECUTE')
+        FROM authorization_function
+      ) IS TRUE AS authorization_runtime_can_execute,
+      (
+        SELECT count(*) = 35
+          AND bool_and(
+            has_column_privilege(
+              'zalo_shop_evidence_read_guard',
+              'public.' || required_column.relname,
+              required_column.column_name,
+              required_column.privilege_type
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_class AS class
+            JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = class.relnamespace
+            JOIN pg_catalog.pg_attribute AS attribute ON attribute.attrelid = class.oid
+            WHERE namespace.nspname = 'public'
+              AND class.relname IN (SELECT relname FROM authorization_tables)
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+              AND (
+                has_column_privilege(
+                  'zalo_shop_evidence_read_guard', class.oid, attribute.attname, 'SELECT'
+                )
+                OR has_column_privilege(
+                  'zalo_shop_evidence_read_guard', class.oid, attribute.attname, 'UPDATE'
+                )
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM (VALUES ('SELECT'), ('UPDATE')) AS effective_privilege(privilege_type)
+                WHERE has_column_privilege(
+                  'zalo_shop_evidence_read_guard',
+                  class.oid,
+                  attribute.attname,
+                  effective_privilege.privilege_type
+                )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM authorization_guard_required_columns AS required_column
+                    WHERE required_column.relname = class.relname
+                      AND required_column.column_name = attribute.attname
+                      AND required_column.privilege_type = effective_privilege.privilege_type
+                  )
+              )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM authorization_tables
+            WHERE has_table_privilege(
+              'zalo_shop_evidence_read_guard', 'public.' || authorization_tables.relname, 'SELECT'
+            )
+              OR has_table_privilege(
+                'zalo_shop_evidence_read_guard', 'public.' || authorization_tables.relname, 'UPDATE'
+              )
+          )
+        FROM authorization_guard_required_columns AS required_column
+      ) IS TRUE AS authorization_guard_auth_column_privileges_are_exact,
+      (
+        SELECT count(*) = 9 AND bool_and(class.relrowsecurity AND class.relforcerowsecurity)
+        FROM pg_catalog.pg_class AS class
+        JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = class.relnamespace
+        WHERE namespace.nspname = 'public'
+          AND class.relname IN (SELECT relname FROM authorization_tables)
+      ) IS TRUE AS authorization_auth_tables_are_forced_rls,
+      (
+        SELECT count(*) = 9
+          AND bool_and(
+            policy_definition.polcmd = 'w'
+            AND policy_definition.polroles = ARRAY[guard_role.oid]::oid[]
+            AND NOT policy_definition.polpermissive
+            AND pg_catalog.pg_get_expr(
+              policy_definition.polwithcheck, policy_definition.polrelid
+            ) = 'false'
+          )
+        FROM pg_catalog.pg_policy AS policy_definition
+        CROSS JOIN guard_role
+        JOIN pg_catalog.pg_class AS relation ON relation.oid = policy_definition.polrelid
+        JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'public'
+          AND relation.relname IN (SELECT relname FROM authorization_tables)
+          AND policy_definition.polname = relation.relname || '_m63_d5_guard_no_write'
+      ) IS TRUE AS authorization_guard_write_policies_are_exact,
+      (
+        SELECT count(*) = 4
+          AND bool_and(
+            policy_definition.polcmd = '*'
+            AND policy_definition.polroles = ARRAY[0]::oid[]
+            AND policy_definition.polpermissive
+            AND pg_catalog.pg_get_expr(
+              policy_definition.polqual, policy_definition.polrelid
+            ) = 'true'
+            AND pg_catalog.pg_get_expr(
+              policy_definition.polwithcheck, policy_definition.polrelid
+            ) = 'true'
+          )
+        FROM pg_catalog.pg_policy AS policy_definition
+        JOIN pg_catalog.pg_class AS relation ON relation.oid = policy_definition.polrelid
+        JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'public'
+          AND relation.relname IN (SELECT relname FROM authorization_global_tables)
+          AND policy_definition.polname = relation.relname || '_m63_d5_preserve_access'
+      ) IS TRUE AS authorization_global_preserve_access_policies_are_exact,
+      (
+        SELECT count(*) = 10
+          AND bool_and(
+            has_column_privilege(
+              'zalo_shop_evidence_read_guard',
+              'public.after_sale_evidence_files',
+              required_column.column_name,
+              required_column.privilege_type
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_attribute AS attribute
+            CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES'))
+              AS effective_privilege(privilege_type)
+            WHERE attribute.attrelid = 'public.after_sale_evidence_files'::regclass
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+              AND has_column_privilege(
+                'zalo_shop_evidence_read_guard',
+                attribute.attrelid,
+                attribute.attname,
+                effective_privilege.privilege_type
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM evidence_guard_required_columns AS expected_privilege
+                WHERE expected_privilege.column_name = attribute.attname
+                  AND expected_privilege.privilege_type = effective_privilege.privilege_type
+              )
+          )
+          AND NOT has_table_privilege(
+            'zalo_shop_evidence_read_guard', 'public.after_sale_evidence_files', 'SELECT'
+          )
+          AND NOT has_table_privilege(
+            'zalo_shop_evidence_read_guard', 'public.after_sale_evidence_files', 'INSERT'
+          )
+          AND NOT has_table_privilege(
+            'zalo_shop_evidence_read_guard', 'public.after_sale_evidence_files', 'UPDATE'
+          )
+          AND NOT has_table_privilege(
+            'zalo_shop_evidence_read_guard', 'public.after_sale_evidence_files', 'DELETE'
+          )
+          AND NOT has_table_privilege(
+            'zalo_shop_evidence_read_guard', 'public.after_sale_evidence_files', 'TRUNCATE'
+          )
+          AND NOT has_table_privilege(
+            'zalo_shop_evidence_read_guard', 'public.after_sale_evidence_files', 'REFERENCES'
+          )
+          AND NOT has_table_privilege(
+            'zalo_shop_evidence_read_guard', 'public.after_sale_evidence_files', 'TRIGGER'
+          )
+        FROM evidence_guard_required_columns AS required_column
+      ) IS TRUE AS guard_evidence_column_privileges_are_exact,
+      (
+        SELECT count(*) = 2
+          AND bool_and(
+            policy_definition.polcmd = 'w'
+            AND policy_definition.polroles = ARRAY[guard_role.oid]::oid[]
+            AND pg_catalog.pg_get_expr(
+              policy_definition.polwithcheck, policy_definition.polrelid
+            ) = 'false'
+          )
+          AND bool_or(
+            policy_definition.polname = 'after_sale_evidence_files_protected_read_lock_guard'
+            AND policy_definition.polpermissive
+          )
+          AND bool_or(
+            policy_definition.polname = 'after_sale_evidence_files_protected_read_lock_guard_no_write'
+            AND NOT policy_definition.polpermissive
+          )
+        FROM pg_catalog.pg_policy AS policy_definition
+        CROSS JOIN guard_role
+        JOIN pg_catalog.pg_class AS relation ON relation.oid = policy_definition.polrelid
+        JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'public'
+          AND relation.relname = 'after_sale_evidence_files'
+          AND policy_definition.polname IN (
+            'after_sale_evidence_files_protected_read_lock_guard',
+            'after_sale_evidence_files_protected_read_lock_guard_no_write'
+        )
+      ) IS TRUE AS protected_read_lock_policies_are_exact
+  `;
+  const record = records[0];
+  if (
+    records.length !== 1 ||
+    !record ||
+    !record.guard_role_is_restricted ||
+    !record.guard_has_no_role_relationships ||
+    !record.protected_read_function_exists ||
+    !record.protected_read_function_is_security_definer ||
+    !record.protected_read_function_owner_is_guard ||
+    !record.protected_read_function_has_safe_configuration ||
+    !record.public_cannot_execute_protected_read_function ||
+    !record.legacy_runtime_cannot_execute ||
+    !record.authorization_function_exists ||
+    !record.authorization_function_is_security_definer ||
+    !record.authorization_function_owner_is_guard ||
+    !record.authorization_function_has_safe_configuration ||
+    !record.authorization_function_has_post_lock_expiry_revalidation ||
+    !record.authorization_public_cannot_execute ||
+    !record.authorization_runtime_can_execute ||
+    !record.authorization_guard_auth_column_privileges_are_exact ||
+    !record.authorization_auth_tables_are_forced_rls ||
+    !record.authorization_guard_write_policies_are_exact ||
+    !record.authorization_global_preserve_access_policies_are_exact ||
+    !record.guard_evidence_column_privileges_are_exact ||
+    !record.protected_read_lock_policies_are_exact
+  ) {
+    fail(
+      `M6.3-B2b-D5 protected-read lock metadata differs from the approved boundary: ${JSON.stringify(record ?? null)}`,
+    );
+  }
+}
+
+async function d5SecurityCatalogFingerprint(client: PrismaClientType): Promise<string> {
+  const records = await client.$queryRaw<Array<{ catalog_state: string }>>`
+    WITH guard_role AS (
+      SELECT oid, rolname, rolcanlogin, rolinherit, rolsuper, rolcreatedb, rolcreaterole,
+        rolreplication, rolbypassrls, rolconnlimit, rolvaliduntil, rolconfig
+      FROM pg_catalog.pg_roles
+      WHERE rolname = 'zalo_shop_evidence_read_guard'
+    ), d5_functions AS (
+      SELECT namespace.nspname AS schema_name,
+        function_definition.proname AS function_name,
+        pg_catalog.pg_get_function_identity_arguments(function_definition.oid)
+          AS identity_arguments,
+        owner_role.rolname AS owner_name,
+        function_definition.prosecdef AS security_definer,
+        function_definition.proleakproof AS leakproof,
+        function_definition.provolatile AS volatility,
+        function_definition.proparallel AS parallel_safety,
+        function_definition.proconfig AS configuration,
+        pg_catalog.pg_get_functiondef(function_definition.oid) AS definition
+      FROM pg_catalog.pg_proc AS function_definition
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = function_definition.pronamespace
+      JOIN pg_catalog.pg_roles AS owner_role ON owner_role.oid = function_definition.proowner
+      WHERE namespace.nspname = 'app_security'
+        AND function_definition.proname IN (
+          'lock_m63_b2b_protected_evidence_read',
+          'lock_m63_b2b_protected_evidence_read_authorized'
+        )
+    ), d5_function_acl AS (
+      SELECT namespace.nspname AS schema_name,
+        function_definition.proname AS function_name,
+        pg_catalog.pg_get_function_identity_arguments(function_definition.oid)
+          AS identity_arguments,
+        CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE grantee_role.rolname END AS grantee,
+        grantor_role.rolname AS grantor,
+        privilege.privilege_type,
+        privilege.is_grantable
+      FROM pg_catalog.pg_proc AS function_definition
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = function_definition.pronamespace
+      CROSS JOIN LATERAL pg_catalog.aclexplode(
+        COALESCE(
+          function_definition.proacl,
+          pg_catalog.acldefault('f', function_definition.proowner)
+        )
+      ) AS privilege
+      LEFT JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = privilege.grantee
+      LEFT JOIN pg_catalog.pg_roles AS grantor_role ON grantor_role.oid = privilege.grantor
+      WHERE namespace.nspname = 'app_security'
+        AND function_definition.proname IN (
+          'lock_m63_b2b_protected_evidence_read',
+          'lock_m63_b2b_protected_evidence_read_authorized'
+        )
+    ), relevant_relations AS (
+      SELECT relation.oid, namespace.nspname AS schema_name, relation.relname,
+        relation.relrowsecurity, relation.relforcerowsecurity
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'public'
+        AND relation.relname IN (
+          'after_sale_evidence_files', 'stores', 'members', 'admin_users',
+          'member_sessions', 'admin_sessions', 'admin_store_roles',
+          'store_role_permissions', 'admin_platform_roles', 'platform_role_permissions'
+        )
+    ), relevant_policies AS (
+      SELECT relation.schema_name, relation.relname,
+        policy_definition.polname AS policy_name,
+        policy_definition.polcmd AS command,
+        policy_definition.polpermissive AS permissive,
+        ARRAY(
+          SELECT CASE WHEN policy_role.role_oid = 0 THEN 'PUBLIC' ELSE role.rolname END
+          FROM pg_catalog.unnest(policy_definition.polroles) AS policy_role(role_oid)
+          LEFT JOIN pg_catalog.pg_roles AS role ON role.oid = policy_role.role_oid
+          ORDER BY 1
+        ) AS roles,
+        pg_catalog.pg_get_expr(policy_definition.polqual, policy_definition.polrelid)
+          AS using_expression,
+        pg_catalog.pg_get_expr(policy_definition.polwithcheck, policy_definition.polrelid)
+          AS check_expression
+      FROM pg_catalog.pg_policy AS policy_definition
+      JOIN relevant_relations AS relation ON relation.oid = policy_definition.polrelid
+    ), guard_relation_acl AS (
+      SELECT namespace.nspname AS schema_name, relation.relname, relation.relkind,
+        grantor_role.rolname AS grantor, privilege.privilege_type, privilege.is_grantable
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      CROSS JOIN guard_role
+      CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) AS privilege
+      LEFT JOIN pg_catalog.pg_roles AS grantor_role ON grantor_role.oid = privilege.grantor
+      WHERE privilege.grantee = guard_role.oid
+    ), guard_column_acl AS (
+      SELECT namespace.nspname AS schema_name, relation.relname,
+        attribute.attname AS column_name, grantor_role.rolname AS grantor,
+        privilege.privilege_type, privilege.is_grantable
+      FROM pg_catalog.pg_attribute AS attribute
+      JOIN pg_catalog.pg_class AS relation ON relation.oid = attribute.attrelid
+      JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      CROSS JOIN guard_role
+      CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+      LEFT JOIN pg_catalog.pg_roles AS grantor_role ON grantor_role.oid = privilege.grantor
+      WHERE attribute.attnum > 0
+        AND NOT attribute.attisdropped
+        AND privilege.grantee = guard_role.oid
+    ), guard_schema_acl AS (
+      SELECT namespace.nspname AS schema_name, grantor_role.rolname AS grantor,
+        privilege.privilege_type, privilege.is_grantable
+      FROM pg_catalog.pg_namespace AS namespace
+      CROSS JOIN guard_role
+      CROSS JOIN LATERAL pg_catalog.aclexplode(namespace.nspacl) AS privilege
+      LEFT JOIN pg_catalog.pg_roles AS grantor_role ON grantor_role.oid = privilege.grantor
+      WHERE privilege.grantee = guard_role.oid
+    ), guard_type_acl AS (
+      SELECT namespace.nspname AS schema_name, type_definition.typname AS type_name,
+        grantor_role.rolname AS grantor, privilege.privilege_type, privilege.is_grantable
+      FROM pg_catalog.pg_type AS type_definition
+      JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = type_definition.typnamespace
+      CROSS JOIN guard_role
+      CROSS JOIN LATERAL pg_catalog.aclexplode(type_definition.typacl) AS privilege
+      LEFT JOIN pg_catalog.pg_roles AS grantor_role ON grantor_role.oid = privilege.grantor
+      WHERE privilege.grantee = guard_role.oid
+    ), guard_memberships AS (
+      SELECT granted_role.rolname AS granted_role, member_role.rolname AS member_role,
+        grantor_role.rolname AS grantor, membership.admin_option,
+        membership.inherit_option, membership.set_option
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN pg_catalog.pg_roles AS granted_role ON granted_role.oid = membership.roleid
+      JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = membership.member
+      LEFT JOIN pg_catalog.pg_roles AS grantor_role ON grantor_role.oid = membership.grantor
+      CROSS JOIN guard_role
+      WHERE membership.roleid = guard_role.oid OR membership.member = guard_role.oid
+    )
+    SELECT pg_catalog.jsonb_build_object(
+      'role', COALESCE(
+        (SELECT pg_catalog.to_jsonb(role_record) FROM guard_role AS role_record),
+        'null'::jsonb
+      ),
+      'memberships', COALESCE(
+        (SELECT pg_catalog.jsonb_agg(
+          pg_catalog.to_jsonb(membership_record)
+          ORDER BY membership_record.granted_role, membership_record.member_role
+        ) FROM guard_memberships AS membership_record),
+        '[]'::jsonb
+      ),
+      'functions', COALESCE(
+        (SELECT pg_catalog.jsonb_agg(
+          pg_catalog.to_jsonb(function_record)
+          ORDER BY function_record.schema_name, function_record.function_name,
+            function_record.identity_arguments
+        ) FROM d5_functions AS function_record),
+        '[]'::jsonb
+      ),
+      'function_acl', COALESCE(
+        (SELECT pg_catalog.jsonb_agg(
+          pg_catalog.to_jsonb(acl_record)
+          ORDER BY acl_record.schema_name, acl_record.function_name,
+            acl_record.identity_arguments, acl_record.grantee, acl_record.privilege_type
+        ) FROM d5_function_acl AS acl_record),
+        '[]'::jsonb
+      ),
+      'relation_security', COALESCE(
+        (SELECT pg_catalog.jsonb_agg(
+          pg_catalog.to_jsonb(relation_record)
+          ORDER BY relation_record.schema_name, relation_record.relname
+        ) FROM relevant_relations AS relation_record),
+        '[]'::jsonb
+      ),
+      'policies', COALESCE(
+        (SELECT pg_catalog.jsonb_agg(
+          pg_catalog.to_jsonb(policy_record)
+          ORDER BY policy_record.schema_name, policy_record.relname, policy_record.policy_name
+        ) FROM relevant_policies AS policy_record),
+        '[]'::jsonb
+      ),
+      'guard_relation_acl', COALESCE(
+        (SELECT pg_catalog.jsonb_agg(
+          pg_catalog.to_jsonb(acl_record)
+          ORDER BY acl_record.schema_name, acl_record.relname, acl_record.privilege_type
+        ) FROM guard_relation_acl AS acl_record),
+        '[]'::jsonb
+      ),
+      'guard_column_acl', COALESCE(
+        (SELECT pg_catalog.jsonb_agg(
+          pg_catalog.to_jsonb(acl_record)
+          ORDER BY acl_record.schema_name, acl_record.relname, acl_record.column_name,
+            acl_record.privilege_type
+        ) FROM guard_column_acl AS acl_record),
+        '[]'::jsonb
+      ),
+      'guard_schema_acl', COALESCE(
+        (SELECT pg_catalog.jsonb_agg(
+          pg_catalog.to_jsonb(acl_record)
+          ORDER BY acl_record.schema_name, acl_record.privilege_type
+        ) FROM guard_schema_acl AS acl_record),
+        '[]'::jsonb
+      ),
+      'guard_type_acl', COALESCE(
+        (SELECT pg_catalog.jsonb_agg(
+          pg_catalog.to_jsonb(acl_record)
+          ORDER BY acl_record.schema_name, acl_record.type_name, acl_record.privilege_type
+        ) FROM guard_type_acl AS acl_record),
+        '[]'::jsonb
+      )
+    )::text AS catalog_state
+  `;
+  const state = records[0]?.catalog_state;
+  if (records.length !== 1 || !state) {
+    fail('could not fingerprint the M6.3-B2b-D5 security catalog');
+  }
+  return createHash('sha256').update(state).digest('hex');
+}
+
+async function exerciseD5MigrationAtomicity(
+  client: PrismaClientType,
+  scratchDatabaseUrl: URL,
+  schemaPath: string,
+  tempDirectory: string,
+): Promise<void> {
+  await assertSafeTemporaryDirectory(tempDirectory);
+  const fullyDeployedFingerprint = await d5SecurityCatalogFingerprint(client);
+
+  for (const migrationName of [...D5_MIGRATIONS].reverse()) {
+    runPrisma(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, migrationName, 'down.sql'),
+        '--schema',
+        schemaPath,
+      ],
+      scratchDatabaseUrl,
+    );
+  }
+  const fullyReversedFingerprint = await d5SecurityCatalogFingerprint(client);
+  if (fullyReversedFingerprint === fullyDeployedFingerprint) {
+    fail('M6.3-B2b-D5 reverse exercise did not change the security catalog');
+  }
+
+  await client.$executeRaw`
+    GRANT SELECT (checksum_sha256)
+    ON public.after_sale_evidence_files
+    TO zalo_shop_evidence_read_guard
+  `;
+  const unexpectedGuardPrivilegeFingerprint = await d5SecurityCatalogFingerprint(client);
+  if (unexpectedGuardPrivilegeFingerprint === fullyReversedFingerprint) {
+    fail('M6.3-B2b-D5 guard privilege injection did not change the security catalog');
+  }
+  runPrismaExpectFailure(
+    [
+      'db',
+      'execute',
+      '--file',
+      join(MIGRATIONS_ROOT, D5_MIGRATIONS[0], 'migration.sql'),
+      '--schema',
+      schemaPath,
+    ],
+    scratchDatabaseUrl,
+    'M6.3-B2b-D5 evidence read guard role has unexpected current-database privileges or ownership',
+  );
+  const afterUnexpectedGuardPrivilegeFailureFingerprint =
+    await d5SecurityCatalogFingerprint(client);
+  if (afterUnexpectedGuardPrivilegeFailureFingerprint !== unexpectedGuardPrivilegeFingerprint) {
+    fail('M6.3-B2b-D5 guard privilege fail-fast changed the security catalog');
+  }
+  await client.$executeRaw`
+    REVOKE SELECT (checksum_sha256)
+    ON public.after_sale_evidence_files
+    FROM zalo_shop_evidence_read_guard
+  `;
+  const afterUnexpectedGuardPrivilegeCleanupFingerprint =
+    await d5SecurityCatalogFingerprint(client);
+  if (afterUnexpectedGuardPrivilegeCleanupFingerprint !== fullyReversedFingerprint) {
+    fail('M6.3-B2b-D5 guard privilege fail-fast cleanup did not restore the security catalog');
+  }
+
+  for (const migrationName of D5_MIGRATIONS) {
+    const beforeFailureFingerprint = await d5SecurityCatalogFingerprint(client);
+    const migrationSql = await readFile(
+      join(MIGRATIONS_ROOT, migrationName, 'migration.sql'),
+      'utf8',
+    );
+    const injectedPath = join(tempDirectory, `d5-atomicity-${migrationName}.sql`);
+    assertPathWithin(tempDirectory, injectedPath);
+    await writeFile(injectedPath, injectD5PreCommitFailure(migrationSql, migrationName), {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+    runPrismaExpectFailure(
+      ['db', 'execute', '--file', injectedPath, '--schema', schemaPath],
+      scratchDatabaseUrl,
+      'M6.3-B2b-D5 injected pre-commit failure',
+    );
+    const afterFailureFingerprint = await d5SecurityCatalogFingerprint(client);
+    if (afterFailureFingerprint !== beforeFailureFingerprint) {
+      fail(`M6.3-B2b-D5 failed migration changed the security catalog: ${migrationName}`);
+    }
+    runPrisma(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, migrationName, 'migration.sql'),
+        '--schema',
+        schemaPath,
+      ],
+      scratchDatabaseUrl,
+    );
+  }
+
+  await assertM63B2bD5ProtectedReadLock(client);
+  const restoredFingerprint = await d5SecurityCatalogFingerprint(client);
+  if (restoredFingerprint !== fullyDeployedFingerprint) {
+    fail('M6.3-B2b-D5 down/injected-failure/up exercise did not restore the security catalog');
+  }
+}
+
 async function preflightOwner(client: PrismaClientType): Promise<void> {
   const records = await client.$queryRawUnsafe<OwnerPreflightRecord[]>(`
     SELECT
@@ -519,6 +1323,8 @@ async function preflightOwner(client: PrismaClientType): Promise<void> {
       current_setting('server_version_num')::integer AS server_version_num,
       COALESCE((SELECT rolsuper OR rolcreatedb FROM pg_roles WHERE rolname = current_user), false)
         AS can_create_database,
+      COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false)
+        AS is_superuser,
       EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'zalo_shop_runtime') AS runtime_role_exists
   `);
   const record = records[0];
@@ -529,8 +1335,10 @@ async function preflightOwner(client: PrismaClientType): Promise<void> {
   if (record.server_version_num < 170_000) {
     fail('PostgreSQL 17 or newer is required');
   }
-  if (!record.can_create_database || !record.runtime_role_exists) {
-    fail('local migration owner or runtime role provisioning is incomplete');
+  if (!record.can_create_database || !record.runtime_role_exists || !record.is_superuser) {
+    fail(
+      'local migration owner must be a PostgreSQL superuser because D5 transfers a definer function to an isolated no-membership guard role',
+    );
   }
 }
 
@@ -578,8 +1386,9 @@ async function dropScratchDatabase(client: PrismaClientType, databaseName: strin
 }
 
 async function run(): Promise<void> {
-  const ownerDatabaseUrl = validateOwnerUrl();
   const allMigrationNames = await migrationDirectories();
+  await assertD5MigrationTransactionBoundaries();
+  const ownerDatabaseUrl = validateOwnerUrl();
   if (M2_MIGRATIONS.some((migrationName, index) => allMigrationNames[index] !== migrationName)) {
     fail('the tracked migration prefix no longer matches the approved M2 boundary');
   }
@@ -1064,6 +1873,13 @@ async function run(): Promise<void> {
     await assertM63B1ReadIndexes(scratchClient);
     await assertM63B2ReadIndexes(scratchClient);
     await assertM63B2bD0Indexes(scratchClient);
+    await assertM63B2bD5ProtectedReadLock(scratchClient);
+    await exerciseD5MigrationAtomicity(
+      scratchClient,
+      scratchDatabaseUrl,
+      fullSchemaPath,
+      tempDirectory,
+    );
     const afterRepeatFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterRepeatFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during repeated deployment');
@@ -1073,6 +1889,85 @@ async function run(): Promise<void> {
       ['db', 'execute', '--file', ASSERTIONS_SQL_PATH, '--schema', fullSchemaPath],
       scratchDatabaseUrl,
     );
+
+    const d5RollbackAuditId = randomUUID();
+    const d5RollbackAuditRows = await scratchClient.$executeRaw`
+      INSERT INTO audit_logs (
+        id, store_id, actor_type, actor_id, action, target_type, correlation_id
+      )
+      SELECT
+        ${d5RollbackAuditId}::uuid,
+        store.id,
+        'ADMIN'::"AuditActorType",
+        '00000000-0000-4000-8000-000000000001'::uuid,
+        'after-sale.evidence.protected_read.issued',
+        'migration_rollback_guard',
+        'm63-b2b-d5-rollback-guard'
+      FROM stores AS store
+      ORDER BY store.id
+      LIMIT 1
+    `;
+    if (d5RollbackAuditRows !== 1) {
+      fail('M6.3-B2b-D5 rollback guard fixture could not create an issued-read audit');
+    }
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260731100000_m63_b2b_d5_commit_deadline_revalidation', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'D5 commit deadline revalidation rollback requires no issued protected-read audit facts',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260730105000_m63_b2b_d5_expiry_revalidation', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'D5 expiry revalidation rollback requires no issued protected-read audit facts',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(
+          MIGRATIONS_ROOT,
+          '20260730104000_m63_b2b_d5_member_authorization_grant_fix',
+          'down.sql',
+        ),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'D5 member authorization grant rollback requires no issued protected-read audit facts',
+    );
+    runPrismaExpectFailure(
+      [
+        'db',
+        'execute',
+        '--file',
+        join(MIGRATIONS_ROOT, '20260730103000_m63_b2b_d5_authorization_revalidation', 'down.sql'),
+        '--schema',
+        fullSchemaPath,
+      ],
+      scratchDatabaseUrl,
+      'D5 authorization revalidation rollback requires no issued protected-read audit facts',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM audit_logs WHERE id = ${d5RollbackAuditId}::uuid
+      `;
+    });
 
     for (const migrationName of [...M6_MIGRATIONS].reverse()) {
       runPrisma(
@@ -1213,6 +2108,7 @@ async function run(): Promise<void> {
     await assertM63B1ReadIndexes(scratchClient);
     await assertM63B2ReadIndexes(scratchClient);
     await assertM63B2bD0Indexes(scratchClient);
+    await assertM63B2bD5ProtectedReadLock(scratchClient);
     const afterForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterForwardRepairFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during the M5/M6 forward repair exercise');
@@ -1883,6 +2779,7 @@ async function run(): Promise<void> {
     await assertM63B1ReadIndexes(scratchClient);
     await assertM63B2ReadIndexes(scratchClient);
     await assertM63B2bD0Indexes(scratchClient);
+    await assertM63B2bD5ProtectedReadLock(scratchClient);
 
     console.log(
       `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair and rollback guards`,

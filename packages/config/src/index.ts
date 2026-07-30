@@ -318,6 +318,7 @@ const runtimeConfigSchema = z
     ),
     AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES: optionalInteger(1, 100),
     AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: disabledBooleanFromString,
+    AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED: disabledBooleanFromString,
     AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS: optionalInteger(60, 60 * 60),
     INVENTORY_EXPIRATION_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
     INVENTORY_EXPIRATION_INTERVAL_MS: z.coerce
@@ -618,6 +619,22 @@ const runtimeConfigSchema = z
           code: 'custom',
           message: 'must not be shorter than the signed upload URL TTL',
           path: ['AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS'],
+        });
+      }
+    }
+    if (config.AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED) {
+      if (config.EVIDENCE_STORAGE_PROVIDER !== 's3') {
+        context.addIssue({
+          code: 'custom',
+          message: 'requires configured S3 evidence storage',
+          path: ['AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED'],
+        });
+      }
+      if (!config.AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED) {
+        context.addIssue({
+          code: 'custom',
+          message: 'requires the evidence deletion worker to consume expire/delete events',
+          path: ['AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED'],
         });
       }
     }

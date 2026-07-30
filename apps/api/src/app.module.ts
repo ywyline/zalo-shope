@@ -102,6 +102,10 @@ import { AfterSalesCursor } from './after-sales/after-sales-cursor';
 import { AfterSalesProjector } from './after-sales/after-sales-projector';
 import { AfterSalesRateLimiter } from './after-sales/after-sales-rate-limiter';
 import { AfterSalesService } from './after-sales/after-sales.service';
+import {
+  AfterSalesEvidenceAccessController,
+  AfterSalesEvidenceAdminAccessController,
+} from './after-sales-evidence/after-sales-evidence-access.controller';
 import { AfterSalesEvidenceController } from './after-sales-evidence/after-sales-evidence.controller';
 import { AfterSalesEvidenceService } from './after-sales-evidence/after-sales-evidence.service';
 import { AFTER_SALE_EVIDENCE_STORAGE_PROVIDER } from './after-sales-evidence/after-sales-evidence.tokens';
@@ -195,6 +199,8 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     AfterSalesPolicyController,
     AfterSalesPolicyManagementController,
     AfterSalesEvidenceController,
+    AfterSalesEvidenceAccessController,
+    AfterSalesEvidenceAdminAccessController,
     AfterSalesController,
     AfterSalesAdminController,
   ],

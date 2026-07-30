@@ -800,3 +800,41 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
 - D4 真实 PostgreSQL + MinIO 6/6、完整 integration 34 文件/280 项与 43 段迁移演练通过。该数据边界
   不证明 production versioned bucket 历史版本删除、B3 claim、保护读取/管理员审计、legal hold 管理、
   外部告警或 rollout；完整 B2b/B2/M6.3/M6/P0 继续未完成。
+
+## 16. M6.3-B2b-D5 保护读取与审计数据边界
+
+- D5 不新增业务列、表、索引、约束、枚举或 STORE 权限代码；第 44-48 段迁移只建立受限的数据库授权
+  revalidation 边界。第 44 段 `20260730100000_m63_b2b_d5_protected_read_lock` 提供 evidence locking read；
+  第 45 段 `20260730103000_m63_b2b_d5_authorization_revalidation` 新增授权感知 definer 函数及其最小
+  auth-table grants/RLS；第 46 段 `20260730104000_m63_b2b_d5_member_authorization_grant_fix` 仅授予 guard
+  `members.store_id` 的列级 `SELECT`；第 47 段 `20260730105000_m63_b2b_d5_expiry_revalidation` 在 evidence
+  锁已取得后再复验到期事实；第 48 段 `20260731100000_m63_b2b_d5_commit_deadline_revalidation` 进一步绑定
+  Bearer/session 截止并保留提交余量。D0 的 `after_sale_evidence_files`、header `object_key`、
+  claim/status/ordinary deadline/version 与 deferred ORIGINAL-binding guard 继续是 member/admin 读取的唯一
+  业务授权事实。
+- `zalo_shop_evidence_read_guard` 是集群级而非 runtime login role：必须 `NOLOGIN`、`NOINHERIT`、
+  `NOSUPERUSER`、`NOCREATEDB`、`NOCREATEROLE`、`NOREPLICATION`、`NOBYPASSRLS` 且无任何角色成员关系。
+  迁移在角色不存在时创建它；已存在时严格校验这些属性和关系后复用，任何不安全状态均以 `55000` 停止。
+  `zalo_shop_runtime` 不获得该角色成员资格。第 44、45、47、48 段必须由真正的 PostgreSQL `rolsuper` 通过受控
+  maintenance `DATABASE_URL` 部署，才能将 definer ownership 转给该无关系角色；runtime 角色不能承担该权限。
+- member/admin 事务不读取 `after_sale_evidence_objects`：该 ledger 维持 SYSTEM-only。非 `DELETED` 父行
+  的 header key 由 D0 guard 绑定唯一活动 ORIGINAL，因此 D5 可把其作为签名身份，同时不扩大 ledger
+  SELECT 权限或泄漏 DERIVATIVE/SCAN_TEMPORARY。
+- prepare 使用商城范围事务读取 eligible snapshot；签名完成后 revalidate 在 `READ COMMITTED` 的
+  restricted security-definer 函数中以 `SELECT ... FOR SHARE` 执行。函数使用固定 `search_path` 和
+  `row_security=on`，先锁定并校验 ACTIVE store、当前 member/admin、未撤销未到期 session、Bearer 到期与
+  direct store 或 cross-store platform permission，再锁定 evidence。它只返回最小重验 snapshot，并以数据库
+  `clock_timestamp()` 在取得 evidence 锁后再次校验 signed URL、Bearer/session 和 ordinary-access deadline；
+  同时校验 store/case/member（member）、claim、`READY`、header key 与排他 deadline。状态、key、case、
+  owner、授权或到期漂移拒绝；仅 legal-hold 状态造成的 version 漂移不撤销一个仍在普通读取窗口内的读取。
+  这个锁继续与生命周期写入冲突，但不赋予 member 常规 `UPDATE` 权限。
+- admin 成功读取把 `after-sale.evidence.protected_read.issued` 审计与最终 revalidate 放在同一事务。
+  审计只保存 allowlisted admin/store/case/evidence/version/correlation/access-reason 事实，不能保存 signed
+  URL、object key、checksum、scanner/provider 数据或文件内容；写审计失败则回滚且不返回 URL。
+- 回滚必须先关闭 protected-read capability 并等待在途请求和 URL TTL。仅 local/test 且不存在任何
+  `after-sale.evidence.protected_read.issued` 审计事实时，才允许按 `48 -> 47 -> 46 -> 45 -> 44` 执行
+  `down.sql`；第 48、47 段的逆向脚本只做审计事实 guard，不恢复较弱函数，任一 issued-read audit 均以
+  `55000` fail-fast。逆序回滚仅移除当前数据库的 D5 函数、policies 和 grants，并保留共享 guard role；生产
+  或已有受保护读取审计事实环境只能以审查过的前向修复纠正。D5 repository
+  implementation + local/test validation 已完成；该状态不包含 production 部署或 rollout，完整证据见
+  `docs/reports/m6.3-b2b-d5-protected-evidence-read-completion-report.md`。

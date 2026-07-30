@@ -35,6 +35,8 @@ const NETWORK_IDENTITY_HEADER_PATTERN =
   /^(?:cf-connecting-ip|fastly-client-ip|forwarded|forwarded-for|true-client-ip|x-client-ip|x-cluster-client-ip|x-envoy-external-address|x-forwarded-for|x-real-ip)$/i;
 const CORRELATION_ID_HEADER_PATTERN = /^(?:request-id|x-correlation-id|x-request-id)$/i;
 const SAFE_CORRELATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
+const SENSITIVE_CORRELATION_ID_PATTERN =
+  /^(?:[0-9a-f]{64}|(?:AKIA|ASIA)[A-Z0-9]{16}|eyJ[\w-]+\.[\w-]+\.[\w-]+)$/i;
 const ABSOLUTE_URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s]+/gi;
 const RELATIVE_URL_WITH_QUERY_PATTERN = /\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+[?#][^\s]*/gi;
 const SENSITIVE_ASSIGNMENT_PATTERN =
@@ -48,7 +50,11 @@ function sanitizeLogString(value: string): string {
 }
 
 function isSafeCorrelationId(value: unknown): value is string {
-  return typeof value === 'string' && SAFE_CORRELATION_ID_PATTERN.test(value);
+  return (
+    typeof value === 'string' &&
+    SAFE_CORRELATION_ID_PATTERN.test(value) &&
+    !SENSITIVE_CORRELATION_ID_PATTERN.test(value)
+  );
 }
 
 export function resolveCorrelationId(...values: readonly unknown[]): string {
@@ -202,7 +208,7 @@ function sanitizeHttpHeaders(headers: unknown): unknown {
         return [key, '[REDACTED]'];
       }
       if (CORRELATION_ID_HEADER_PATTERN.test(key)) {
-        return [key, isSafeCorrelationId(value) ? value : '[REDACTED]'];
+        return [key, '[REDACTED]'];
       }
       if (URL_HEADER_PATTERN.test(key)) return [key, sanitizeUrlHeaderValue(value)];
       return [key, redactSensitiveData(value)];

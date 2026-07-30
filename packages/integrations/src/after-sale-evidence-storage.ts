@@ -24,6 +24,7 @@ export type AfterSaleEvidenceStorageMimeType =
   (typeof AFTER_SALE_EVIDENCE_STORAGE_MIME_TYPES)[number];
 
 export type AfterSaleEvidenceStorageErrorCode =
+  | 'ACCESS_EXPIRED'
   | 'CONFIGURATION'
   | 'CONTENT_MISMATCH'
   | 'INVALID_IDENTITY'
@@ -56,6 +57,11 @@ export type AfterSaleEvidenceObjectDeclaration = AfterSaleEvidenceObjectIdentity
     mimeType: AfterSaleEvidenceStorageMimeType;
   }>;
 
+export type AfterSaleEvidenceProtectedReadIdentity = AfterSaleEvidenceObjectIdentity &
+  Readonly<{
+    accessDeadline: Date;
+  }>;
+
 export type ValidatedAfterSaleEvidenceObject = Readonly<{
   byteSize: number;
   checksumSha256: string;
@@ -68,7 +74,7 @@ export interface AfterSaleEvidenceObjectStorageProvider {
     consumer: (bytes: AsyncIterable<Uint8Array>) => Promise<T>,
   ): Promise<Readonly<{ object: ValidatedAfterSaleEvidenceObject; result: T }>>;
   createProtectedReadTarget(
-    identity: AfterSaleEvidenceObjectIdentity,
+    identity: AfterSaleEvidenceProtectedReadIdentity,
   ): Promise<Readonly<{ expiresAt: Date; url: string }>>;
   createUploadTarget(declaration: AfterSaleEvidenceObjectDeclaration): Promise<
     Readonly<{
@@ -188,6 +194,27 @@ function assertOriginalIdentity(identity: AfterSaleEvidenceObjectIdentity): void
     fail('INVALID_IDENTITY');
   }
   assertIdentity({ ...identity, objectRole: 'ORIGINAL' });
+}
+
+function protectedReadExpiry(
+  config: S3AfterSaleEvidenceStorageConfig,
+  accessDeadline: Date,
+): Readonly<{ expiresAt: Date; expiresIn: number; signingDate: Date }> {
+  if (!(accessDeadline instanceof Date) || !Number.isFinite(accessDeadline.getTime())) {
+    return fail('INVALID_IDENTITY');
+  }
+  // Pin the signing clock to a whole second so the provider URL cannot outlive the DB deadline.
+  const signingDate = new Date();
+  signingDate.setMilliseconds(0);
+  const remainingSeconds =
+    Math.ceil((accessDeadline.getTime() - signingDate.getTime()) / 1_000) - 1;
+  const expiresIn = Math.min(config.readUrlTtlSeconds, remainingSeconds);
+  if (!Number.isSafeInteger(expiresIn) || expiresIn < 1) return fail('ACCESS_EXPIRED');
+  return {
+    expiresAt: new Date(signingDate.getTime() + expiresIn * 1_000),
+    expiresIn,
+    signingDate,
+  };
 }
 
 function assertDeclaration(declaration: AfterSaleEvidenceObjectDeclaration): void {
@@ -649,12 +676,13 @@ export class S3AfterSaleEvidenceStorageProvider implements AfterSaleEvidenceObje
     }
   }
 
-  public async createProtectedReadTarget(identity: AfterSaleEvidenceObjectIdentity) {
+  public async createProtectedReadTarget(input: AfterSaleEvidenceProtectedReadIdentity) {
+    const { accessDeadline, ...identity } = input;
     assertOriginalIdentity(identity);
-    const expiresIn = this.config.readUrlTtlSeconds;
+    const { expiresAt, expiresIn, signingDate } = protectedReadExpiry(this.config, accessDeadline);
     try {
       return {
-        expiresAt: new Date(Date.now() + expiresIn * 1_000),
+        expiresAt,
         url: await getSignedUrl(
           this.#readClient,
           new GetObjectCommand({
@@ -663,7 +691,7 @@ export class S3AfterSaleEvidenceStorageProvider implements AfterSaleEvidenceObje
             ResponseCacheControl: 'private, no-store',
             ResponseContentDisposition: 'inline',
           }),
-          { expiresIn },
+          { expiresIn, signingDate },
         ),
       };
     } catch (error) {

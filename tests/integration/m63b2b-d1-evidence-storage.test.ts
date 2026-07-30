@@ -199,7 +199,10 @@ describe('M6.3-B2b-D1 evidence storage against real MinIO', () => {
           mimeType,
         });
 
-        const readTarget = await provider.createProtectedReadTarget(declaration);
+        const readTarget = await provider.createProtectedReadTarget({
+          ...declaration,
+          accessDeadline: new Date(Date.now() + 120_000),
+        });
         const readResponse = await fetch(readTarget.url);
         expect(readResponse.status).toBe(200);
         expect(readResponse.headers.get('cache-control')).toBe('private, no-store');

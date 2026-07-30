@@ -33,7 +33,14 @@ export async function withStoreTransaction<T>(
           set_config('app.store_id', ${context.storeId}, true),
           set_config('app.actor_id', ${context.actor.id}, true),
           set_config('app.actor_type', ${context.actor.type}, true),
-          set_config('app.correlation_id', ${context.correlationId}, true)
+          set_config('app.correlation_id', ${context.correlationId}, true),
+          set_config('app.access_session_id', ${context.accessSessionId ?? ''}, true),
+          set_config('app.access_token_expires_at', ${context.accessTokenExpiresAt ?? ''}, true),
+          set_config(
+            'app.admin_authorization_scope',
+            ${context.adminAuthorizationScope ?? ''},
+            true
+          )
       `;
     return callback(transaction);
   }, options);

@@ -1,19 +1,25 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M6 incremental API contract
-  version: 0.6.3-b2b-d3
+  version: 0.6.3-b2b-d5
   description: >-
     M6 incremental contract combined with the M1-M5 contracts. M6.3-A implements the after-sale
     settings GET/PUT routes, M6.3-B1 implements the member/admin after-sale list and detail GET
     routes, M6.3-B2a implements the seven administrator policy-control operations, and
-    M6.3-B2b-D3 implements member evidence initialization, confirmation and owner status reads.
-    Protected evidence reads, deletion workers and all operations assigned to B3 through B7 remain
-    contract-only. Buyer store ownership comes from the authenticated member and X-Store-Code.
-    Admin routes additionally require the matching store_id query parameter. Every after-sale HTTP
-    response carries the same X-Correlation-Id propagated through its transaction, transitions,
-    audit and logs; error bodies repeat it as correlation_id.
+    M6.3-B2b-D3 implements member evidence initialization, confirmation and owner status reads;
+    M6.3-B2b-D4 deletion worker has repository implementation and local/test validation.
+    M6.3-B2b-D5 has completed default-disabled repository implementation and local/test validation
+    for member and administrator protected evidence reads, including migrations 44-48 and final
+    commit-deadline revalidation. This does not establish production readiness: B3 claim,
+    legal-hold/dead-letter management, external alerting, production IAM/KMS/versioning/Object
+    Lock/lifecycle certification, bearer-URL risk acceptance, deployment and rollout remain
+    incomplete or unauthorized. All operations assigned to B3 through B7 remain contract-only.
+    Buyer store ownership comes from the authenticated member and X-Store-Code. Admin routes
+    additionally require the matching store_id query parameter. D5 protected-read routes generate
+    X-Correlation-Id on the server and do not accept a client correlation identifier; the generated
+    value is propagated through authorization, audit, logs and error bodies.
 x-after-sale-b0-contract:
-  runtime_status: m6_3_a_b1_b2a_and_member_evidence_d3_implemented
+  runtime_status: m6_3_a_b1_b2a_d3_and_d5_implemented
   runtime_operations:
     implemented_m6_3_a: [getAfterSaleSettings, setAfterSalePolicyEnforcement]
     implemented_m6_3_b1:
@@ -34,7 +40,17 @@ x-after-sale-b0-contract:
         confirmAfterSaleEvidenceUpload,
         getAfterSaleEvidenceUpload,
       ]
+    implemented_m6_3_b2b_d5: [getMemberAfterSaleEvidence, getAdminAfterSaleEvidence]
     contract_only_m6_3_b2_to_b7: all_after_sale_operations_not_listed_as_implemented_above
+  protected_evidence_read:
+    status: complete_repository_local_test_default_disabled
+    repository_gates: pass
+    migration_range: '44-48'
+    authorization_deadline: earliest_of_ordinary_access_bearer_token_and_persisted_session
+    commit_revalidation: post_lock_and_post_admin_audit_with_finalization_margin
+    correlation_id: server_generated_client_input_not_accepted
+    admin_audit_source_ip: normalized_trusted_request_peer
+    production_status: not_authorized_not_run
   list_sort:
     member: created_at_desc_then_id_desc
     admin: updated_at_desc_then_id_desc
@@ -55,8 +71,8 @@ x-after-sale-b0-contract:
     admin_read: { limit: 120, scope: 'store_id:admin_id' }
     admin_write: { limit: 30, scope: 'store_id:admin_id' }
     runtime:
-      member_read: implemented_m6_3_b1_and_m6_3_b2b_d3
-      admin_read: implemented_m6_3_b1_and_m6_3_b2a
+      member_read: implemented_m6_3_b1_m6_3_b2b_d3_and_d5
+      admin_read: implemented_m6_3_b1_m6_3_b2a_and_m6_3_b2b_d5
       member_write: implemented_m6_3_b2b_d3
       admin_write: implemented_m6_3_b2a
     read_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
@@ -325,13 +341,18 @@ paths:
   /v1/after-sales/{afterSaleId}/evidence/{evidenceId}:
     get:
       operationId: getMemberAfterSaleEvidence
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b2b_d5_default_disabled
       x-rate-limit-tier: member_read
       summary: Get a short-lived no-store URL for the current member's scanned evidence
       description: >-
-        Access is issued only while the claimed object is READY and before access_expires_at.
-        Expired, failed, quarantined, deletion-pending and deleted objects return the same not-found
-        response. A legal hold can retain bytes but never extends this member access window.
+        Access is issued only while the claimed ORIGINAL object is READY and strictly before its
+        ordinary_access_deadline_at. The URL is no-store/no-referrer, short lived and expires strictly
+        before the earliest of that database deadline, the Bearer token deadline and the persisted
+        session deadline. Final authorization is revalidated after the evidence lock with a commit
+        finalization margin. Expired, unclaimed, failed, quarantined, deletion-pending, deleted and all
+        scope mismatches return the same not-found response. A legal hold can retain bytes but does not
+        revoke a still-live ordinary access window or extend it. X-Correlation-Id is generated by the
+        server for this operation; a client correlation header is not an accepted input.
       security: [{ MemberBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
@@ -347,9 +368,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EvidenceAccess' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /v1/admin/orders/{orderId}/after-sales:
     post:
       operationId: createMerchantAfterSale
@@ -685,18 +708,27 @@ paths:
   /v1/admin/after-sales/{afterSaleId}/evidence/{evidenceId}:
     get:
       operationId: getAdminAfterSaleEvidence
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b2b_d5_default_disabled
       x-rate-limit-tier: admin_read
       summary: Audit and issue short-lived access to one scanned private evidence object
       description: >-
-        Access is issued only for READY evidence before access_expires_at. Expired, failed,
-        quarantined, deletion-pending and deleted objects are not readable through this route.
-        A legal hold retains bytes for the governed compliance process but does not extend ordinary
-        after-sales access; every successful administrator read remains audited.
+        Access is issued only for a claimed READY ORIGINAL object strictly before its
+        ordinary_access_deadline_at. The URL is no-store/no-referrer, short lived and expires strictly
+        before the earliest of that database deadline, the Bearer token deadline and the persisted
+        session deadline. Final authorization is revalidated after the evidence lock and again after
+        the audit, with a commit finalization margin. Expired, unclaimed, failed, quarantined,
+        deletion-pending, deleted and unavailable facts are non-enumerating not-found responses. A
+        legal hold retains bytes but does not revoke a still-live ordinary access window or extend it.
+        Every successful administrator URL response writes one separate allowlisted audit in the final
+        revalidation transaction; the audit never contains the URL, object key, checksum or provider
+        details. It uses a server-generated correlation ID and records the normalized source IP from
+        the trusted request peer. Source IP is not a client operation parameter; production proxy trust
+        must be controlled. Missing or invalid network context fails closed without returning a URL.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/ProtectedEvidenceAccessReason' }
         - { $ref: '#/components/parameters/AfterSaleId' }
         - { $ref: '#/components/parameters/EvidenceId' }
       responses:
@@ -709,10 +741,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EvidenceAccess' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /v1/admin/after-sale-settings:
     get:
       operationId: getAfterSaleSettings
@@ -1343,6 +1377,19 @@ components:
         Optional for a store-assigned administrator; required and audited when a platform
         administrator uses platform.stores.cross_access to enter the target store scope.
       schema: { type: string, minLength: 10, maxLength: 500 }
+    ProtectedEvidenceAccessReason:
+      name: X-Access-Reason
+      in: header
+      required: false
+      description: >-
+        Optional for a store-assigned administrator. A platform cross-store protected-evidence read
+        requires exactly this safe incident reference; free text is rejected before either audit is
+        written, so URLs, object keys, checksums and provider details cannot enter audit records.
+      schema:
+        type: string
+        minLength: 32
+        maxLength: 57
+        pattern: '^Protected evidence incident [A-Z][A-Z0-9]{1,15}-[1-9][0-9]{0,11}$'
     CorrelationIdRequest:
       name: X-Correlation-Id
       in: header
@@ -1442,6 +1489,14 @@ components:
       format: uri
       pattern: '^https?://'
       description: Production configuration requires HTTPS; HTTP is accepted only by local/test storage.
+    EvidenceReadUrl:
+      type: string
+      format: uri
+      pattern: '^https?://'
+      description: >-
+        A short-lived S3-compatible protected-read URL whose expiry is bounded by the ordinary access,
+        Bearer token and persisted session deadlines. Production configuration requires HTTPS; HTTP
+        is accepted only by local/test storage.
     MiniAppPath:
       type: string
       pattern: '^/(?:\?locale=(?:vi|zh|en)|(?:brands|categories|products|promotions|coupons)/[a-z0-9]+(?:-[a-z0-9]+)*\?locale=(?:vi|zh|en))$'
@@ -1566,7 +1621,7 @@ components:
       additionalProperties: false
       required: [url, expires_at]
       properties:
-        url: { $ref: '#/components/schemas/HttpsUrl' }
+        url: { $ref: '#/components/schemas/EvidenceReadUrl' }
         expires_at: { type: string, format: date-time }
     AfterSaleStandardItemInput:
       type: object
@@ -2541,7 +2596,10 @@ components:
   headers:
     CorrelationId:
       required: true
-      description: Same safe identifier propagated through transaction, audit, logs and error body
+      description: >-
+        Same safe identifier propagated through transaction, audit, logs and error body. D5
+        protected-read operations always generate this value on the server and do not accept the
+        CorrelationIdRequest parameter.
       schema:
         type: string
         minLength: 8

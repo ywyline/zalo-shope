@@ -8,6 +8,10 @@ export type ActorType = 'admin' | 'member';
 
 export type StoreContext = Readonly<{
   accessReason?: string;
+  accessSessionExpiresAt?: string;
+  accessSessionId?: string;
+  accessTokenExpiresAt?: string;
+  adminAuthorizationScope?: 'CROSS_STORE' | 'STORE';
   actor: Readonly<{
     id: string;
     type: ActorType;
@@ -20,6 +24,10 @@ export type StoreContext = Readonly<{
 
 export type StoreContextInput = {
   accessReason?: string;
+  accessSessionExpiresAt?: Date;
+  accessSessionId?: string;
+  accessTokenExpiresAt?: Date;
+  adminAuthorizationScope?: 'CROSS_STORE' | 'STORE';
   actor: {
     id: string;
     type: ActorType;
@@ -45,7 +53,42 @@ function requireValue(value: string, field: string): string {
   return normalized;
 }
 
+function normalizeExpiry(value: Date, field: string): string {
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+    throw new InvalidStoreContextError(`${field} must be a valid date`);
+  }
+  return value.toISOString();
+}
+
 export function createStoreContext(input: StoreContextInput): StoreContext {
+  const accessSessionExpiresAt =
+    input.accessSessionExpiresAt === undefined
+      ? undefined
+      : normalizeExpiry(input.accessSessionExpiresAt, 'accessSessionExpiresAt');
+  const accessSessionId =
+    input.accessSessionId === undefined
+      ? undefined
+      : requireValue(input.accessSessionId, 'accessSessionId');
+  const accessTokenExpiresAt =
+    input.accessTokenExpiresAt === undefined
+      ? undefined
+      : normalizeExpiry(input.accessTokenExpiresAt, 'accessTokenExpiresAt');
+  if (
+    accessSessionExpiresAt !== undefined &&
+    (accessSessionId === undefined || accessTokenExpiresAt === undefined)
+  ) {
+    throw new InvalidStoreContextError(
+      'accessSessionExpiresAt requires accessSessionId and accessTokenExpiresAt',
+    );
+  }
+  if ((accessSessionId === undefined) !== (accessTokenExpiresAt === undefined)) {
+    throw new InvalidStoreContextError(
+      'accessSessionId and accessTokenExpiresAt must be provided together',
+    );
+  }
+  if (input.adminAuthorizationScope !== undefined && input.actor.type !== 'admin') {
+    throw new InvalidStoreContextError('adminAuthorizationScope requires an admin actor');
+  }
   const context: StoreContext = {
     actor: Object.freeze({
       id: requireValue(input.actor.id, 'actor.id'),
@@ -55,6 +98,12 @@ export function createStoreContext(input: StoreContextInput): StoreContext {
     locale: input.locale,
     storeCode: requireValue(input.storeCode, 'storeCode'),
     storeId: requireValue(input.storeId, 'storeId'),
+    ...(accessSessionExpiresAt === undefined ? {} : { accessSessionExpiresAt }),
+    ...(accessSessionId === undefined ? {} : { accessSessionId }),
+    ...(accessTokenExpiresAt === undefined ? {} : { accessTokenExpiresAt }),
+    ...(input.adminAuthorizationScope === undefined
+      ? {}
+      : { adminAuthorizationScope: input.adminAuthorizationScope }),
     ...(input.accessReason === undefined
       ? {}
       : { accessReason: requireValue(input.accessReason, 'accessReason') }),

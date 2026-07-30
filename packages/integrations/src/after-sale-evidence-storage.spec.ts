@@ -203,7 +203,10 @@ describe('S3 after-sale evidence storage provider', () => {
 
   it('signs a short no-store protected read target', async () => {
     const input = declaration(fixture('image/png'), 'image/png');
-    await provider.createProtectedReadTarget(input);
+    await provider.createProtectedReadTarget({
+      ...input,
+      accessDeadline: new Date(Date.now() + 120_000),
+    });
 
     const command = getSignedUrl.mock.calls[0]?.[1] as { input?: Record<string, unknown> };
     expect(command.input).toMatchObject({
@@ -212,9 +215,47 @@ describe('S3 after-sale evidence storage provider', () => {
       ResponseCacheControl: 'private, no-store',
       ResponseContentDisposition: 'inline',
     });
-    expect(getSignedUrl).toHaveBeenCalledWith(expect.any(S3Client), expect.anything(), {
-      expiresIn: 60,
-    });
+    expect(getSignedUrl).toHaveBeenCalledWith(
+      expect.any(S3Client),
+      expect.anything(),
+      expect.objectContaining({ expiresIn: 60, signingDate: expect.any(Date) }),
+    );
+  });
+
+  it('strictly truncates a protected URL to the database access deadline', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-30T10:00:00.750Z'));
+    const input = declaration(fixture('image/png'), 'image/png');
+    try {
+      const target = await provider.createProtectedReadTarget({
+        ...input,
+        accessDeadline: new Date('2026-07-30T10:00:30.250Z'),
+      });
+
+      expect(target.expiresAt).toEqual(new Date('2026-07-30T10:00:30.000Z'));
+      expect(target.expiresAt.getTime()).toBeLessThan(
+        new Date('2026-07-30T10:00:30.250Z').getTime(),
+      );
+      expect(getSignedUrl).toHaveBeenCalledWith(
+        expect.any(S3Client),
+        expect.anything(),
+        expect.objectContaining({
+          expiresIn: 30,
+          signingDate: new Date('2026-07-30T10:00:00.000Z'),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses a protected read that cannot remain within its database deadline', async () => {
+    const input = declaration(fixture('image/png'), 'image/png');
+    await expectStorageError(
+      provider.createProtectedReadTarget({ ...input, accessDeadline: new Date(Date.now()) }),
+      'ACCESS_EXPIRED',
+    );
+    expect(getSignedUrl).not.toHaveBeenCalled();
   });
 
   it('recomputes byte length, checksum and magic from a bounded stream', async () => {
@@ -457,11 +498,27 @@ describe('S3 after-sale evidence storage provider', () => {
       objectRole: 'DERIVATIVE' as const,
       storeId,
     };
+    const scanTemporary = {
+      deploymentEnvironment,
+      evidenceId,
+      objectKey: `${deploymentEnvironment}/${storeId}/scan/${evidenceId}/clamav.bin`,
+      objectRole: 'SCAN_TEMPORARY' as const,
+      storeId,
+    };
     send.mockResolvedValueOnce({});
     await expect(provider.removeObject(derivative)).resolves.toBe('DELETED_OR_NOT_FOUND');
     expect(send).toHaveBeenCalledOnce();
-    await expectStorageError(provider.createProtectedReadTarget(derivative), 'INVALID_IDENTITY');
+    for (const identity of [derivative, scanTemporary]) {
+      await expectStorageError(
+        provider.createProtectedReadTarget({
+          ...identity,
+          accessDeadline: new Date(Date.now() + 60_000),
+        }),
+        'INVALID_IDENTITY',
+      );
+    }
     expect(send).toHaveBeenCalledOnce();
+    expect(getSignedUrl).not.toHaveBeenCalled();
   });
 });
 

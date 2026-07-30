@@ -589,6 +589,47 @@ docs/
   保持 43 段。local/test MinIO 证明当前对象无残留，不证明 production versioning/Object Lock 下历史
   版本已物理删除；B3 claim、保护读取/审计、legal hold 管理、外部告警与 rollout 仍需后续授权。
 
+### M6.3-B2b-D5 保护读取与管理员审计边界
+
+- D5 已完成 default-disabled repository implementation 与 local/test 验收，并注册 member/admin evidence
+  URL 路由。成员使用 owner RLS；管理员在既有
+  `AdminService.authorize` 中要求 `store.after-sales.evidence.read`、显式 `store_id`，平台跨商城访问继续
+  要求受审的固定格式 `X-Access-Reason` incident reference，拒绝自由文本以避免 URL、object key 或其他
+  凭证敏感事实进入审计。两者复用 after-sales READ 限流，Redis、配置、storage 或审计不可用时
+  失败关闭并不签发 URL。
+- 读取只从 D0 evidence header 取得兼容 ORIGINAL key，不给 member/admin SELECT system-only ledger。
+  D0 deferred ORIGINAL-binding guard 保证非 `DELETED` 父行 header key 对应唯一活动 ORIGINAL。首读、
+  事务外 S3 签名、随后 `READ COMMITTED`/`FOR SHARE` 最终复验构成授权序列；网络签名不持有数据库事务。
+- D5 的第 44-48 段迁移没有新增业务表、列、枚举或 STORE permission code。第 44 段
+  `20260730100000_m63_b2b_d5_protected_read_lock` 建立最小 evidence lock；第 45 段
+  `20260730103000_m63_b2b_d5_authorization_revalidation` 把 runtime 入口转为授权感知函数，锁定并复验
+  ACTIVE 商城、actor、Bearer/session、member 商城归属及管理员 direct/cross-store RBAC；第 46 段
+  `20260730104000_m63_b2b_d5_member_authorization_grant_fix` 只授予 guard `members.store_id` 列级
+  `SELECT`；第 47 段 `20260730105000_m63_b2b_d5_expiry_revalidation` 在 evidence `FOR SHARE` 已取得后
+  再校验所有 bearer/session/URL/evidence deadline，覆盖等待 lifecycle 写锁造成的过期；第 48 段
+  `20260731100000_m63_b2b_d5_commit_deadline_revalidation` 把 URL 截止绑定到 bearer/session 并保留提交余量。
+- 集群级 `zalo_shop_evidence_read_guard` 必须不可登录、不可继承、非 superuser、不可创建数据库/角色、
+  不可复制、不可绕过 RLS 且无角色成员关系。它拥有固定 `search_path`、`row_security=on` 的受限
+  security-definer 函数；专用 RLS/column grant 只允许该函数取得锁读，仍与生命周期写冲突，却不扩大
+  `zalo_shop_runtime` 或 member `UPDATE` 权限。第 44、45、47、48 段需要受控 migration executor 是 PostgreSQL
+  `rolsuper`，以把 definer ownership 转给无关系的 guard role；runtime 连接不得承担此部署权限。
+- URL expiry 以固定整秒签名时间，从 D1 configured read TTL 与数据库
+  `ordinary_access_deadline_at` 取更短值并保留安全余量，严格早于截止。最终重验同时绑定商城、主体/案例、
+  `READY`、claim、header key、状态/截止和版本；legal-hold-only version 漂移可继续，因为 hold 只阻止
+  物理删除，不能提前撤销仍在普通读取窗口内的访问。
+- admin 在最终复验的同一事务内写一次
+  `after-sale.evidence.protected_read.issued` 审计；仅 allowlist actor/store/case/evidence/version/
+  correlation/access reason，禁止 URL、key、checksum、scanner、provider response 或文件内容。事务未提交
+  不返回 URL。回滚先关闭能力并等待在途请求和 URL TTL；仅 local/test 且没有任何 issued-read audit 时按
+  `48 -> 47 -> 46 -> 45 -> 44` 执行 `down.sql`；第 48、47 段的逆向脚本只做审计事实 guard，不恢复较弱
+  函数，任一 audit 均 fail-fast。逆序回滚只删除当前数据库的函数、policies 和 grants，不删除 cluster-level
+  guard role；生产或已有受保护读取审计事实的环境只允许向前修复。
+- 生产仍须独立验证 S3 read IAM 与 upload/delete 身份隔离、HTTPS、KMS、versioning/Object Lock/lifecycle、
+  legal retention 语义、稳定不存在对象错误和短期 bearer URL 风险接受；local/test MinIO 不是这些证据。
+  D5 的 44-48 迁移回归、定向/完整验证和适用仓库门禁已通过，但该 repository + local/test `COMPLETE`
+  状态不代表生产就绪；完整证据见
+  `docs/reports/m6.3-b2b-d5-protected-evidence-read-completion-report.md`。
+
 ## 7. 身份、安全与隐私
 
 - Mini App 使用 Zalo Token/Header 与服务端会话交换，不依赖普通浏览器 Cookie、LocalStorage 或 SessionStorage 作为认证根。

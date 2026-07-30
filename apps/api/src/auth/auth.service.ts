@@ -37,10 +37,15 @@ import { DATABASE_CLIENT, ZALO_IDENTITY_PROVIDER } from './auth.tokens';
 type ResolvedStore = { code: string; default_locale: 'en' | 'vi' | 'zh'; id: string };
 
 export type AccessClaims = {
+  accessTokenExpiresAt: Date;
   actorType: 'admin' | 'member';
   sessionId: string;
   storeId?: string;
   subjectId: string;
+};
+
+export type AuthenticatedAccessClaims = AccessClaims & {
+  accessSessionExpiresAt: Date;
 };
 
 type SessionResponse = {
@@ -383,6 +388,7 @@ export class AuthService {
       throw new UnauthorizedException('Access token is invalid');
     }
     return {
+      accessTokenExpiresAt: new Date(claims.exp * 1_000),
       actorType: claims.actor_type,
       sessionId: claims.session_id,
       ...(typeof claims.store_id === 'string' ? { storeId: claims.store_id } : {}),
@@ -394,16 +400,21 @@ export class AuthService {
     token: string,
     storeCode?: string,
     correlationId?: string,
-  ): Promise<AccessClaims> {
+  ): Promise<AuthenticatedAccessClaims> {
     const claims = this.verifyAccessToken(token);
     if (claims.actorType === 'admin') {
       const session = await this.database.adminSession.findUnique({
         where: { id: claims.sessionId },
       });
-      if (!session || session.adminUserId !== claims.subjectId || session.revokedAt) {
+      if (
+        !session ||
+        session.adminUserId !== claims.subjectId ||
+        session.revokedAt ||
+        session.expiresAt <= new Date()
+      ) {
         throw new UnauthorizedException('Access session is invalid');
       }
-      return claims;
+      return { ...claims, accessSessionExpiresAt: session.expiresAt };
     }
     if (!claims.storeId || !storeCode) throw new UnauthorizedException('Store context is invalid');
     const store = await this.resolveStore(storeCode);
@@ -415,8 +426,9 @@ export class AuthService {
       storeCode: store.code,
       storeId: store.id,
     });
-    const active = await withStoreTransaction(this.database, context, (transaction) =>
-      transaction.memberSession.count({
+    const session = await withStoreTransaction(this.database, context, (transaction) =>
+      transaction.memberSession.findFirst({
+        select: { expiresAt: true },
         where: {
           expiresAt: { gt: new Date() },
           id: claims.sessionId,
@@ -425,8 +437,8 @@ export class AuthService {
         },
       }),
     );
-    if (active !== 1) throw new UnauthorizedException('Access session is invalid');
-    return claims;
+    if (!session) throw new UnauthorizedException('Access session is invalid');
+    return { ...claims, accessSessionExpiresAt: session.expiresAt };
   }
 
   public async getMemberProfile(input: { memberId: string; storeCode: string; storeId: string }) {

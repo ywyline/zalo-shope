@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   accessReasonSchema,
+  afterSaleEvidenceAccessResponseSchema,
+  afterSaleEvidenceProtectedReadAccessReasonSchema,
   batchDisableProductsSchema,
   batchMoveProductsSchema,
   catalogCodeSchema,
@@ -37,6 +39,38 @@ describe('M1 API contracts', () => {
       'Investigate incident INC-123',
     );
     expect(() => accessReasonSchema.parse('short')).toThrow();
+  });
+
+  it('limits protected evidence cross-store audit reasons to incident references', () => {
+    expect(
+      afterSaleEvidenceProtectedReadAccessReasonSchema.parse('Protected evidence incident D5-1001'),
+    ).toBe('Protected evidence incident D5-1001');
+    expect(() =>
+      afterSaleEvidenceProtectedReadAccessReasonSchema.parse(
+        'Protected evidence incident D5-1001 https://signed.example.test/private-object',
+      ),
+    ).toThrow();
+  });
+
+  it('rejects malformed protected evidence URLs without throwing from safe parsing', () => {
+    expect(() =>
+      afterSaleEvidenceAccessResponseSchema.safeParse({
+        expires_at: '2099-08-01T11:59:00.000Z',
+        url: 'not-a-url',
+      }),
+    ).not.toThrow();
+    expect(
+      afterSaleEvidenceAccessResponseSchema.safeParse({
+        expires_at: '2099-08-01T11:59:00.000Z',
+        url: 'not-a-url',
+      }).success,
+    ).toBe(false);
+    expect(
+      afterSaleEvidenceAccessResponseSchema.safeParse({
+        expires_at: '2099-08-01T11:59:00.000Z',
+        url: 'ftp://evidence.example.test/private',
+      }).success,
+    ).toBe(false);
   });
 
   it('requires an idempotent consent event identifier', () => {
