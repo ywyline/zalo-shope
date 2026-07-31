@@ -241,10 +241,17 @@ M1 已提供身份/RBAC 数据迁移、种子及 API 集成测试。迁移回滚
 ## 13. Git 和代码审查
 
 - 不覆盖或回退用户未授权的现有修改。
+- `main` 是集成分支；业务开发必须从最新 `main` 创建 `feature/<task-id>-<slug>` 或
+  `fix/<task-id>-<slug>` 分支，不得直接在 `main` 上持续开发。分支策略采用已验证的
+  `feature/fix -> main` 集成路径。
 - 提交保持小而聚焦，提交信息说明业务意图。
 - 不提交密钥、生产数据、构建产物、临时文件、调试日志或无关格式化改动。
 - 完成前检查 diff，重点关注跨商城泄漏、权限绕过、金额错误、重复扣库存、状态跳跃和错误信息泄露。
-- 如用户要求发布或创建 PR，再执行提交、推送和 PR 流程；普通开发任务不自动发布外部变更。
+- 任务完成前必须完成本文件第 16.11 节的 End of Development Gate。测试通过后，才允许在任务分支
+  创建完成提交；测试失败只能保留为 `In Progress`/`Blocked`，不得作为完成提交同步。
+- 完成提交后，只有在本次任务测试和适用门禁通过、`TASKS.md` 中没有 `Blocked` 节点且工作区差异已审查时，
+  才能按分支策略同步到本地 `main`（优先 fast-forward 或受审合并）。存在失败测试或任一 `Blocked` 项目时，
+  必须留在任务分支，记录精确原因和恢复输入，不得同步到 `main`；远程推送、PR、部署和发布仍需用户明确授权。
 
 ## 14. 完成定义
 
@@ -267,3 +274,117 @@ M1 已提供身份/RBAC 数据迁移、种子及 API 集成测试。迁移回滚
 - 如果会话中安装并明确要求使用 Superpowers，可使用其规划、TDD、系统化调试和代码审查技能。
 - 插件工作流不得覆盖 `REQUIREMENTS.md`、本文件、已批准计划或用户当前指令。
 - 不因插件要求自动扩大任务范围、创建无关分支或执行外部发布。
+
+## 16. 企业级 AI 持续开发工作流
+
+### 16.1 Single Source of Truth
+
+- `REQUIREMENTS.md` 是产品范围、商业规则和验收要求的唯一权威来源。
+- `TASKS.md` 是任务拆分、优先级、依赖、状态、当前任务、下一任务、阻塞项和项目进度的唯一权威来源。
+- `CHANGELOG.md` 是已完成变更的历史记录，不承担未来计划或当前状态管理。
+- 架构、计划、报告、README、Issue 或会话摘要都是支持材料；它们与 `TASKS.md` 状态冲突时，必须先以代码和证据核实，再在同一次变更中修正相关文档。
+- 除 `REQUIREMENTS.md` 发生经批准的正式范围变更外，禁止重新生成 Task Tree。日常开发只能增量新增、拆分、合并或更新受影响节点，并保留可追溯原因。
+
+### 16.2 Task Tree Workflow
+
+以后每个开发循环必须执行：
+
+`Scan -> Plan -> Execute -> Verify -> Update -> Repeat`
+
+1. **Scan**：读取 `REQUIREMENTS.md`、本文件、`TASKS.md`、`CHANGELOG.md`、当前任务的计划/报告、相关代码与测试、Git 状态/历史，以及适用第三方官方文档。
+2. **Plan**：确认 Current Task 的目标、非目标、依赖、风险、变更面、迁移/回滚和验收方法；第 3.2 节规定的高风险任务必须先有批准计划。
+3. **Execute**：只实施 Current Task 的最小完整纵向切片，不提前开发 Next Task，不覆盖用户修改，不用假数据冒充外部集成。
+4. **Verify**：按风险执行单元、集成、API、E2E、迁移、安全、lint、格式、类型、构建、依赖与敏感信息门禁，并审查最终差异。
+5. **Update**：同步 `TASKS.md`、`CHANGELOG.md` 以及受影响的需求变更记录、契约、迁移、配置、架构、计划和完成报告。
+6. **Repeat**：只有 Current Task 达到完成定义后才选择下一个依赖已满足的任务；Blocked 不得伪装为 Done。
+
+### 16.3 TASKS.md Maintenance Rules
+
+- 每个任务必须有稳定 ID、Description、Priority、Dependencies 和 Status；Status 只允许 `Todo`、`In Progress`、`Done`、`Blocked`。
+- 同一时刻只能有一个明确的 Current Task；Next Task 必须是依赖已满足的最邻近任务。跨多个可并行执行主体的正式团队计划另行批准，但仍需指定唯一整合责任任务。
+- 开始实现前把任务从 `Todo` 更新为 `In Progress`；只有完成定义全部满足后才更新为 `Done`。
+- `Blocked` 只用于缺少外部输入、权限、官方决定、凭据、环境、审批或无法在仓库内消除的前置条件；必须记录精确阻塞原因、所需输入和可继续的替代任务。
+- default-disabled repository/local-test 切片可以按其明确 Description 标记 `Done`，但真实供应商、真机、staging、production、部署或 rollout 必须是独立任务，不能随之自动完成。
+- 项目进度按 `REQUIREMENTS.md` 纵向能力加权估算，不按任务数、代码行、文件数、提交数或测试数计算。改变权重或完成度时必须记录证据与理由。
+- 发现文档与代码不一致时，不重复开发；先恢复真实状态，修正任务节点和证据，再继续执行。
+
+### 16.4 CHANGELOG Maintenance Rules
+
+- 每个任务完成时必须在同一次变更中更新 `CHANGELOG.md`；未更新不得把任务标记为 `Done`。
+- 条目统一包含 `Date`、`Added`、`Changed`、`Fixed`、`Removed`、`Docs`。无内容的类别明确写 `None`，不得省略或伪造变更。
+- 记录用户可见能力、数据/API/配置兼容变化、安全修复、迁移和重要文档；不要复制完整提交日志或记录未完成计划。
+- Git 历史缺失时只能创建明确标注的 recovered baseline；不得猜测发布日期、作者、版本或已完成能力。
+- 回滚或废弃必须新增记录，不得改写已发布历史以隐藏失败、撤销或安全事件。
+
+### 16.5 AI Decision Boundary
+
+AI 可以在 Current Task 和已批准计划内自主决定普通、局部、可逆的实现细节，并可运行仓库内只读检查、本地测试和可恢复的开发命令。以下事项不得自行决定或执行：
+
+- 改变商业模式、需求优先级、商城隔离、核心状态机、金额/库存原则、数据保留、权限或合规范围。
+- 启用 production capability、连接生产数据、创建/购买外部账号或资源、写入真实凭据、改变商户/物流配置。
+- 发布 Mini App、提交平台审核、部署/回滚生产、推送外部通知、执行真实支付/退款/发货或不可逆数据操作。
+- 在官方规范不明确、外部事实不可验证或专业法律/税务结论缺失时凭经验猜测。
+
+需要上述决定时，先记录影响、备选方案和所需授权，将任务标记为 `Blocked` 或保持 `In Progress`，并向用户请求明确决定。
+
+### 16.6 Context Recovery
+
+会话中断、上下文压缩、AI/人员交接或长时间暂停后，恢复工作必须：
+
+1. 重新读取 `REQUIREMENTS.md`、`AGENTS.md`、`TASKS.md`、`CHANGELOG.md`。
+2. 检查 Current Task、Next Task、Blocked Tasks、当前计划/报告、Git HEAD、工作区差异和最近提交。
+3. 从实际代码、迁移、测试和运行结果验证状态；不得仅相信旧会话摘要、README 状态行或计划中的“预计完成”。
+4. 保留未知来源修改；先确认变更意图与当前任务是否重叠，不得自动回退。
+5. 在继续编码前更新过期的 Current Task 或验证证据，避免重复实现或跳过未完成门禁。
+
+### 16.7 Stop Protocol
+
+出现以下任一情况必须停止受影响路径，保持失败关闭并记录状态，不得用猜测继续：
+
+- 当前指令、`AGENTS.md`、`REQUIREMENTS.md`、已批准计划或 `TASKS.md` 之间存在会改变业务/安全结果的冲突。
+- 任务需要生产凭据、真实资金/订单/通知、外部发布、专业签字或用户尚未授权的不可逆操作。
+- 官方文档无法获取、版本/签名/回调语义不明确，或实现只能依赖非官方示例和未验证博客。
+- 迁移预检、跨商城/RBAC、金额、库存、状态机、幂等、安全、敏感信息或回滚门禁失败。
+- 工作区重叠修改使安全合并无法判断。
+
+停止时必须说明：停止点、已完成证据、未完成风险、精确阻塞条件、恢复所需输入，以及可以安全继续的下一个非阻塞任务。若仍有依赖已满足的内部任务，应更新 Task Tree 后继续该任务；不得因一个外部 Blocked 项停止全部项目进展。
+
+### 16.8 Vertical Slice Development
+
+- 默认以可验证的纵向切片交付：契约/领域规则 -> 数据与迁移 -> 服务/API/worker -> 买家或管理体验 -> 测试 -> 文档与运维证据。
+- 高风险基础设施切片可以在批准计划中先于 UI，但必须明确 default-disabled 边界、最终消费者、后续任务和不能宣称完成的产品能力。
+- 不长期堆积只有 schema、只有接口或只有页面的横向半成品；每个切片必须有稳定失败路径、权限/商城边界和可回归证据。
+- 前后端、worker、管理端和外部适配器共享同一冻结契约，不得通过重复业务逻辑各自推断金额、状态或权限。
+
+### 16.9 Task Definition of Done
+
+第 14 节继续是通用完成定义。任务迁移为 `Done` 还必须同时满足：
+
+- Description 中的纵向范围和依赖全部满足，验收证据来自本次实际运行或明确有效的未变更证据。
+- `TASKS.md` 状态、Current Task、Next Task、进度和 Blocked 列表已更新。
+- `CHANGELOG.md` 已记录完成结果；受影响计划/报告、OpenAPI、数据字典、权限矩阵、配置和 README 已同步。
+- 外部验收任务具有精确目标、时间、版本、证据 URI/hash 和必要签字；local/test、test-only provider、空白模板或“代码已存在”不能替代。
+- 最终汇报明确区分 repository complete、local/test validated、staging accepted、production enabled 和 Production Ready。
+
+### 16.11 End of Development Gate
+
+每完成一个 TASKS.md 任务，必须按以下顺序收口：
+
+1. 更新 `TASKS.md`：任务状态、Current Task、Next Task、Blocked Tasks 和项目完成度必须反映实际代码与证据。
+2. 更新 `CHANGELOG.md`：使用统一的 Date/Added/Changed/Fixed/Removed/Docs 格式记录本任务。
+3. 运行受影响模块测试，并运行风险要求的集成、E2E、lint、格式、类型、构建、迁移、安全、依赖和差异门禁。
+4. 只有适用测试和门禁全部通过，才在任务分支创建完成 Git commit；提交信息必须包含任务 ID 和业务意图。
+5. 只有完成提交且 `TASKS.md` 没有任何 `Blocked` 项目时，才按第 13 节分支策略同步到 `main`；同步前重新确认
+   `main` 基线、工作区、提交范围和门禁结果。测试失败或存在 `Blocked` 项目时禁止同步，并在 `TASKS.md` 或完成报告中记录原因。
+6. 提交/同步后再次更新 `Current Task`、`Next Task`、项目完成度和验证证据；不能把“代码已提交”当作“任务已完成”。
+
+文档-only 任务的受影响测试至少包括格式检查、Markdown/YAML 结构检查和 `git diff --check`；不能以没有业务代码变更为由跳过可执行验证。
+
+### 16.10 Zalo Mini App And Official Provider Rules
+
+- Zalo Mini App 页面、权限、Login、Checkout SDK、OA、Share、Deep Link、发布审核和宿主行为必须优先依据实施时可获取的 Zalo 官方文档；实现前记录官方 URL、访问日期、适用产品/版本和关键限制。
+- Zalo SDK/API 的参数、权限、签名、时间戳、重放、回调、域名、宿主兼容和审核规则不得凭记忆实现。官方文档与当前冻结契约冲突时先停止、评估兼容/迁移并更新批准计划。
+- Zalo Login、ZaloPay/Checkout、Zalo OA、Zalo Share，以及 GHN、VNPay 等第三方能力必须优先使用各供应商当前官方开发者文档、官方 SDK/示例、商户协议和状态/错误码定义。非官方文章只能帮助定位，不能作为最终契约依据。
+- 第三方实现必须保留稳定适配器、原始受限流水、商城独立配置、test/staging/production 分离、签名与重放测试、主动查询/补偿和人工复核路径。
+- 无真实账号或凭据时只实现明确标识且 production 失败关闭的适配器/测试环境；不得模拟供应商成功后宣称官方集成或验收完成。
+- 每次供应商接入或升级都要在 `TASKS.md` 记录官方文档依赖和外部门禁，并在完成证据中记录实际 sandbox/真机/审核范围。
