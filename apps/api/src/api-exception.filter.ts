@@ -27,6 +27,7 @@ function errorCode(status: number): string {
   if (status === 403) return 'AUTHORIZATION_DENIED';
   if (status === 404) return 'RESOURCE_NOT_FOUND';
   if (status === 409) return 'CONFLICT';
+  if (status === 422) return 'UNPROCESSABLE_ENTITY';
   if (status === 429) return 'RATE_LIMITED';
   if (status === 503) return 'UPSTREAM_UNAVAILABLE';
   return 'INTERNAL_ERROR';
@@ -46,6 +47,15 @@ const stableConflictReasonCodes = new Set([
   'AFTER_SALE_SETTINGS_IDEMPOTENCY_CONFLICT',
   'AFTER_SALE_SETTINGS_IDEMPOTENCY_INVALID',
   'AFTER_SALE_SETTINGS_VERSION_CONFLICT',
+  'AFTER_SALE_STATE_CONFLICT',
+  'AFTER_SALE_VERSION_CONFLICT',
+  'AFTER_SALE_IDEMPOTENCY_CONFLICT',
+  'AFTER_SALE_QUANTITY_EXCEEDS_AVAILABLE',
+  'AFTER_SALE_POLICY_MISMATCH',
+  'AFTER_SALE_RETURN_WINDOW_CLOSED',
+  'AFTER_SALE_REQUEST_WINDOW_CLOSED',
+  'AFTER_SALE_REFUND_EXCEEDS_APPROVED',
+  'AFTER_SALE_EVIDENCE_STATE_CONFLICT',
   'AVAILABLE_INSUFFICIENT',
   'CART_LINE_CONFLICT',
   'CHECKOUT_CONCURRENT_CONFLICT',
@@ -84,11 +94,31 @@ const stableConflictReasonCodes = new Set([
   'VERSION_CONFLICT',
 ]);
 const stableInputReasonCodes = new Set(['ADDRESS_REGION_INVALID', 'DELIVERY_REGION_INVALID']);
+const stableUnprocessableReasonCodes = new Set([
+  'AFTER_SALE_ORDER_NOT_ELIGIBLE',
+  'AFTER_SALE_PAYMENT_NOT_PROVEN',
+  'AFTER_SALE_DELIVERY_NOT_PROVEN',
+  'AFTER_SALE_REASON_NOT_ALLOWED',
+  'AFTER_SALE_EXCHANGE_NOT_ALLOWED',
+  'AFTER_SALE_POLICY_MISMATCH',
+  'AFTER_SALE_RETURN_WINDOW_CLOSED',
+  'AFTER_SALE_REQUEST_WINDOW_CLOSED',
+  'AFTER_SALE_EVIDENCE_REQUIRED',
+]);
+const stableUnavailableReasonCodes = new Set(['AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE']);
 
 function reasonCode(exception: unknown, status: number): string | undefined {
   if (!(exception instanceof HttpException)) return undefined;
   const allowed =
-    status === 400 ? stableInputReasonCodes : status === 409 ? stableConflictReasonCodes : null;
+    status === 400
+      ? stableInputReasonCodes
+      : status === 409
+        ? stableConflictReasonCodes
+        : status === 422
+          ? stableUnprocessableReasonCodes
+          : status === 503
+            ? stableUnavailableReasonCodes
+            : null;
   if (allowed === null) return undefined;
   const response = exception.getResponse();
   const message =

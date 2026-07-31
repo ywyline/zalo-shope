@@ -4,6 +4,9 @@ import {
   assertAfterSaleEvidenceAccessAllowed,
   assertAfterSaleEvidenceCreationAllowed,
   assertAfterSaleEventActorAllowed,
+  assertAfterSaleOrderPaymentAdmissionAllowed,
+  assertAfterSaleReasonAllowed,
+  assertAfterSaleRequestWindowOpen,
   assertAfterSaleSystemEventAllowed,
   assertAfterSaleApprovalQuantities,
   assertAfterSaleQuantityAvailable,
@@ -12,6 +15,7 @@ import {
   assertEquivalentExchange,
   assertInventoryRestoreAllowed,
   calculateAfterSaleReturnDeadlineEpochMs,
+  calculateAfterSaleRequestDeadlineEpochMs,
   calculateOrderItemRefundAllocationVnd,
   calculateRemainingAfterSaleRefundVnd,
   createAfterSaleEvidenceSystemContext,
@@ -22,6 +26,7 @@ import {
   resolveAuthoritativeOrderItemDelivery,
   resolveLegacyAfterSaleReview,
   summarizeCompleteAfterSaleInspection,
+  submitAfterSale,
   transitionAfterSale,
   transitionAfterSaleAfterInspection,
   transitionAfterSaleCodRefundConfirmed,
@@ -38,6 +43,30 @@ import {
 } from './after-sales';
 
 describe('M6 after-sale state machine', () => {
+  it('records creation only as a real member or admin SUBMIT transition', () => {
+    expect(submitAfterSale('MEMBER')).toEqual({
+      event: 'SUBMIT',
+      fromStatus: null,
+      status: 'PENDING_REVIEW',
+    });
+    expect(submitAfterSale('ADMIN')).toEqual({
+      event: 'SUBMIT',
+      fromStatus: null,
+      status: 'PENDING_REVIEW',
+    });
+    expect(submitAfterSale('MEMBER', true)).toEqual({
+      event: 'SUBMIT',
+      fromStatus: null,
+      status: 'REVIEW_REQUIRED',
+    });
+    expect(() => assertAfterSaleEventActorAllowed('SYSTEM', 'SUBMIT')).toThrow(
+      'AFTER_SALE_ACTOR_NOT_ALLOWED',
+    );
+    expect(() => transitionAfterSale('REFUND_ONLY', 'PENDING_REVIEW', 'SUBMIT')).toThrow(
+      'AFTER_SALE_STATE_CONFLICT',
+    );
+  });
+
   it('keeps refund-only, return-refund and exchange paths distinct', () => {
     expect(transitionAfterSale('REFUND_ONLY', 'PENDING_REVIEW', 'APPROVE')).toBe('APPROVED');
     expect(transitionAfterSale('REFUND_ONLY', 'APPROVED', 'QUEUE_REFUND')).toBe('REFUND_PENDING');
@@ -810,6 +839,69 @@ describe('M6 after-sale policy and evidence admission', () => {
     ).toEqual({ proven: false, reason: 'DELIVERY_TIMESTAMP_UNPROVEN' });
   });
 
+  it('uses an exclusive Ho Chi Minh natural-day request deadline including day zero', () => {
+    const deliveredAtEpochMs = Date.parse('2026-07-31T16:59:59.000Z');
+    const deadline = calculateAfterSaleRequestDeadlineEpochMs({
+      deliveredAtEpochMs,
+      requestWindowDays: 0,
+    });
+    expect(deadline).toBe(Date.parse('2026-07-31T17:00:00.000Z'));
+    expect(() =>
+      assertAfterSaleRequestWindowOpen({
+        nowEpochMs: deadline - 1,
+        requestDeadlineEpochMs: deadline,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAfterSaleRequestWindowOpen({ nowEpochMs: deadline, requestDeadlineEpochMs: deadline }),
+    ).toThrow('AFTER_SALE_REQUEST_WINDOW_CLOSED');
+    expect(
+      calculateAfterSaleRequestDeadlineEpochMs({
+        deliveredAtEpochMs: Date.parse('2026-07-31T17:00:00.000Z'),
+        requestWindowDays: 1,
+      }),
+    ).toBe(Date.parse('2026-08-02T17:00:00.000Z'));
+  });
+
+  it('enforces policy reason and paid delivered-order admission', () => {
+    expect(() =>
+      assertAfterSaleReasonAllowed({
+        allowedReasonCodes: ['damaged-item', 'wrong-item'],
+        reasonCode: 'damaged-item',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAfterSaleReasonAllowed({
+        allowedReasonCodes: ['damaged-item'],
+        reasonCode: 'changed-mind',
+      }),
+    ).toThrow('AFTER_SALE_REASON_NOT_ALLOWED');
+    expect(() =>
+      assertAfterSaleOrderPaymentAdmissionAllowed({
+        confirmedReceiptFact: true,
+        orderStatus: 'DELIVERED',
+        paymentMethod: 'ONLINE',
+        paymentStatus: 'PARTIALLY_REFUNDED',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAfterSaleOrderPaymentAdmissionAllowed({
+        confirmedReceiptFact: false,
+        orderStatus: 'COMPLETED',
+        paymentMethod: 'COD',
+        paymentStatus: 'SUCCEEDED',
+      }),
+    ).toThrow('AFTER_SALE_PAYMENT_NOT_PROVEN');
+    expect(() =>
+      assertAfterSaleOrderPaymentAdmissionAllowed({
+        confirmedReceiptFact: true,
+        orderStatus: 'SHIPPED',
+        paymentMethod: 'ONLINE',
+        paymentStatus: 'SUCCEEDED',
+      }),
+    ).toThrow('AFTER_SALE_ORDER_NOT_ELIGIBLE');
+  });
+
   it('fails evidence-required admission closed until every real capability is available', () => {
     const availableCapabilities = {
       claimAvailable: true,
@@ -852,6 +944,13 @@ describe('M6 after-sale policy and evidence admission', () => {
         readyEvidenceCount: 0,
       }),
     ).not.toThrow();
+    expect(() =>
+      assertAfterSaleEvidenceCreationAllowed({
+        capabilities: { ...availableCapabilities, protectedReadAvailable: false },
+        evidenceRequired: false,
+        readyEvidenceCount: 1,
+      }),
+    ).toThrow('AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE');
   });
 });
 

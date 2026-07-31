@@ -32,6 +32,7 @@ function assignment(input: {
     allowed_types: ['REFUND_ONLY'],
     category_id: input.categoryId ?? null,
     condition_rules: {
+      allowed_reason_codes: ['damaged'],
       evidence_required: true,
       evidence_required_reason_codes: ['damaged'],
       opened_package_exception_reason_codes: [],

@@ -4,6 +4,7 @@ import {
   AFTER_SALE_RATE_LIMIT_POLICY,
   adminAfterSaleListQuerySchema,
   afterSaleCodRefundConfirmRequestSchema,
+  afterSaleCommandAcknowledgementResponseSchema,
   afterSaleCreateRequestSchema,
   afterSaleAdminStoreQuerySchema,
   afterSaleAdminReadQuerySchema,
@@ -46,6 +47,30 @@ const orderItemId = '22222222-2222-4222-8222-222222222222';
 const replacementSkuId = '33333333-3333-4333-8333-333333333333';
 
 describe('M6 strict after-sale DTOs', () => {
+  it('accepts only the stable command acknowledgement reconstructed from the operation result', () => {
+    const acknowledgement = {
+      id: orderId,
+      public_number: 'ASC-01J9Z6Y4T8K2M7NQ',
+      status: 'PENDING_REVIEW',
+      version: 1,
+    };
+    expect(afterSaleCommandAcknowledgementResponseSchema.parse(acknowledgement)).toEqual(
+      acknowledgement,
+    );
+    expect(() =>
+      afterSaleCommandAcknowledgementResponseSchema.parse({
+        ...acknowledgement,
+        order_id: orderId,
+      }),
+    ).toThrow();
+    expect(() =>
+      afterSaleCommandAcknowledgementResponseSchema.parse({
+        ...acknowledgement,
+        status: 'APPROVED',
+      }),
+    ).toThrow();
+  });
+
   it('accepts buyer facts but rejects client-owned amount, state and store fields', () => {
     expect(
       afterSaleCreateRequestSchema.parse({
@@ -319,6 +344,12 @@ describe('M6 strict after-sale DTOs', () => {
     expect(afterSalePublicConflictCodeSchema.parse('AFTER_SALE_POLICY_MISMATCH')).toBe(
       'AFTER_SALE_POLICY_MISMATCH',
     );
+    expect(afterSalePublicConflictCodeSchema.parse('AFTER_SALE_PAYMENT_NOT_PROVEN')).toBe(
+      'AFTER_SALE_PAYMENT_NOT_PROVEN',
+    );
+    expect(afterSalePublicConflictCodeSchema.parse('AFTER_SALE_REQUEST_WINDOW_CLOSED')).toBe(
+      'AFTER_SALE_REQUEST_WINDOW_CLOSED',
+    );
     expect(() =>
       afterSalePublicConflictCodeSchema.parse('AFTER_SALE_INTERNAL_SQL_ERROR'),
     ).toThrow();
@@ -367,6 +398,10 @@ describe('M6 strict after-sale DTOs', () => {
       public_number: 'ASC-01J9Z6Y4T8K2M7NQ',
       reason_code: 'defective-item',
       reason_detail: 'The delivered item has a verified defect.',
+      requested_item_vnd: 110_000,
+      requested_other_vnd: 0,
+      requested_shipping_vnd: 10_000,
+      requested_total_vnd: 120_000,
       return_deadline_at: '2026-08-04T12:00:00.000Z',
       return_shipments: [
         {
@@ -389,6 +424,11 @@ describe('M6 strict after-sale DTOs', () => {
       ],
       status: 'RETURN_IN_TRANSIT',
       timeline: [
+        {
+          created_at: '2026-07-27T12:00:00.000Z',
+          event: 'SUBMIT',
+          status: 'PENDING_REVIEW',
+        },
         {
           created_at: '2026-07-28T12:00:00.000Z',
           event: 'APPROVE',
@@ -459,6 +499,10 @@ describe('M6 strict after-sale DTOs', () => {
       public_number: 'ASC-01J9Z6Y4T8K2M7NQ',
       reason_code: 'legacy-review',
       reason_detail: null,
+      requested_item_vnd: 0,
+      requested_other_vnd: 0,
+      requested_shipping_vnd: 0,
+      requested_total_vnd: 0,
       return_deadline_at: null,
       return_shipments: [],
       settlements: [],
@@ -489,6 +533,7 @@ describe('M6 strict after-sale DTOs', () => {
       allowed_types: ['RETURN_REFUND', 'EXCHANGE'],
       category_id: null,
       condition_rules: {
+        allowed_reason_codes: ['damaged-item', 'defective-item'],
         evidence_required: true,
         evidence_required_reason_codes: ['damaged-item'],
         opened_package_exception_reason_codes: ['defective-item'],
@@ -521,9 +566,19 @@ describe('M6 strict after-sale DTOs', () => {
     ).toThrow();
     expect(() =>
       afterSalePolicyDraftSchema.parse({
+        ...validDraft,
+        condition_rules: {
+          ...validDraft.condition_rules,
+          evidence_required_reason_codes: ['not-allowed'],
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      afterSalePolicyDraftSchema.parse({
         allowed_types: ['EXCHANGE'],
         category_id: null,
         condition_rules: {
+          allowed_reason_codes: ['defective-item'],
           evidence_required: false,
           evidence_required_reason_codes: [],
           opened_package_exception_reason_codes: [],
@@ -573,6 +628,7 @@ describe('M6 strict after-sale DTOs', () => {
       allowed_types: ['RETURN_REFUND'] as const,
       category_id: null,
       condition_rules: {
+        allowed_reason_codes: ['damaged-item', 'defective-item'],
         evidence_required: true,
         evidence_required_reason_codes: ['damaged-item'],
         opened_package_exception_reason_codes: ['defective-item'],

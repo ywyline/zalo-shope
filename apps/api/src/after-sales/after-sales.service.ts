@@ -1,24 +1,52 @@
-import { Inject, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+  UnauthorizedException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
+import type { RuntimeConfig } from '@zalo-shop/config';
 import type {
   AdminAfterSaleListQuery,
   AfterSaleAdminReadQuery,
+  AfterSaleAdminStoreQuery,
+  AfterSaleCancelRequest,
+  AfterSaleCommandAcknowledgementResponse,
+  AfterSaleCreateRequest,
   AfterSaleListQuery,
   AfterSalePageResponse,
   AfterSaleResponse,
+  MerchantAfterSaleCreateRequest,
 } from '@zalo-shop/contracts';
-import { afterSalePageResponseSchema } from '@zalo-shop/contracts';
 import {
+  afterSaleCommandAcknowledgementResponseSchema,
+  afterSalePageResponseSchema,
+} from '@zalo-shop/contracts';
+import {
+  AfterSaleCommandDatabaseError,
   Prisma,
+  cancelMemberAfterSaleCommand,
+  createMemberAfterSaleCommand,
+  createMerchantRefundAfterSaleCommand,
+  type AfterSaleCommandResult,
   type PrismaClient,
   type StoreTransaction,
   withStoreTransaction,
 } from '@zalo-shop/database';
 import { createStoreContext, type StoreContext } from '@zalo-shop/domain';
 import { resolveCorrelationId } from '@zalo-shop/logger';
+import { encryptSensitive } from '@zalo-shop/security';
 
 import { AdminService, type AdminHeaders } from '../admin/admin.service';
 import { AuthService } from '../auth/auth.service';
 import { DATABASE_CLIENT } from '../auth/auth.tokens';
+import { RUNTIME_CONFIG } from '../health.controller';
 import { AfterSalesCursor, hashAfterSaleCursorFilters } from './after-sales-cursor';
 import {
   AfterSalesProjector,
@@ -31,6 +59,14 @@ import { AfterSalesRateLimiter } from './after-sales-rate-limiter';
 type ResolvedStore = { code: string; default_locale: AfterSaleLocale; id: string };
 type PageKey = { id: string; sort_key: string };
 type DecodedPageKey = { sortId: string; sortKey: string };
+type AfterSaleCommandExecution = {
+  body: AfterSaleCommandAcknowledgementResponse;
+  replayed: boolean;
+};
+
+function sensitiveReasonDigest(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
 
 class AfterSaleReadIntegrityError extends Error {
   public constructor() {
@@ -48,7 +84,128 @@ export class AfterSalesService {
     @Inject(AfterSalesCursor) private readonly cursors: AfterSalesCursor,
     @Inject(AfterSalesProjector) private readonly projector: AfterSalesProjector,
     @Inject(AfterSalesRateLimiter) private readonly rateLimiter: AfterSalesRateLimiter,
+    @Inject(RUNTIME_CONFIG) private readonly config: RuntimeConfig,
   ) {}
+
+  public async memberCreate(input: {
+    authorization?: string;
+    body: AfterSaleCreateRequest;
+    correlationId: string;
+    idempotencyKey: string;
+    sourceIp: string;
+    storeCode: string;
+  }): Promise<AfterSaleCommandExecution> {
+    const context = await this.memberContext(input);
+    await this.consumeWriteLimit(context, 'MEMBER');
+    this.assertCommandsEnabled();
+    const evidenceConfig = this.evidenceCommandConfig();
+    let command: Awaited<ReturnType<typeof createMemberAfterSaleCommand>>;
+    try {
+      command = await createMemberAfterSaleCommand(this.database, context, {
+        evidenceCapabilities: evidenceConfig.evidenceCapabilities,
+        evidenceIds: input.body.evidence_ids,
+        idempotencyKey: input.idempotencyKey,
+        items: input.body.items.map((item) => ({
+          orderItemId: item.order_item_id,
+          quantity: item.quantity,
+          ...('replacement_sku_id' in item ? { replacementSkuId: item.replacement_sku_id } : {}),
+        })),
+        orderId: input.body.order_id,
+        ...(evidenceConfig.ordinaryAccessTtlSeconds === undefined
+          ? {}
+          : { ordinaryAccessTtlSeconds: evidenceConfig.ordinaryAccessTtlSeconds }),
+        reasonCode: input.body.reason_code,
+        reasonDetailCiphertext: encryptSensitive(
+          input.body.description,
+          this.config.PII_ENCRYPTION_KEY,
+        ),
+        reasonDetailHash: sensitiveReasonDigest(input.body.description),
+        ...(evidenceConfig.retentionTtlSeconds === undefined
+          ? {}
+          : { retentionTtlSeconds: evidenceConfig.retentionTtlSeconds }),
+        sourceIp: input.sourceIp,
+        type: input.body.type,
+      });
+    } catch (error) {
+      this.throwCommandError(error, 'member');
+    }
+    return {
+      body: this.acknowledgeCommand(command),
+      replayed: command.replayed,
+    };
+  }
+
+  public async memberCancel(input: {
+    afterSaleId: string;
+    authorization?: string;
+    body: AfterSaleCancelRequest;
+    correlationId: string;
+    idempotencyKey: string;
+    sourceIp: string;
+    storeCode: string;
+  }): Promise<AfterSaleCommandExecution> {
+    const context = await this.memberContext(input);
+    await this.consumeWriteLimit(context, 'MEMBER');
+    this.assertCommandsEnabled();
+    let command: Awaited<ReturnType<typeof cancelMemberAfterSaleCommand>>;
+    try {
+      command = await cancelMemberAfterSaleCommand(this.database, context, {
+        afterSaleId: input.afterSaleId,
+        expectedVersion: input.body.expected_version,
+        idempotencyKey: input.idempotencyKey,
+        reason: input.body.reason,
+        sourceIp: input.sourceIp,
+      });
+    } catch (error) {
+      this.throwCommandError(error, 'member');
+    }
+    return {
+      body: this.acknowledgeCommand(command),
+      replayed: command.replayed,
+    };
+  }
+
+  public async adminCreateMerchantRefund(input: {
+    body: MerchantAfterSaleCreateRequest;
+    headers: AdminHeaders;
+    idempotencyKey: string;
+    orderId: string;
+    query: AfterSaleAdminStoreQuery;
+  }): Promise<AfterSaleCommandExecution> {
+    const context = await this.admin.authorizeSensitive(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.review',
+    );
+    this.assertB3MerchantRefundAuthorization(context);
+    await this.consumeWriteLimit(context, 'ADMIN');
+    this.assertCommandsEnabled();
+    let command: Awaited<ReturnType<typeof createMerchantRefundAfterSaleCommand>>;
+    try {
+      command = await createMerchantRefundAfterSaleCommand(this.database, context, {
+        idempotencyKey: input.idempotencyKey,
+        items: input.body.items.map((item) => ({
+          orderItemId: item.order_item_id,
+          quantity: item.quantity,
+        })),
+        orderId: input.orderId,
+        reasonCode: input.body.reason_code,
+        reasonDetailCiphertext: encryptSensitive(
+          input.body.description,
+          this.config.PII_ENCRYPTION_KEY,
+        ),
+        reasonDetailHash: sensitiveReasonDigest(input.body.description),
+        ...(input.headers.sourceIp === undefined ? {} : { sourceIp: input.headers.sourceIp }),
+        type: 'MERCHANT_REFUND',
+      });
+    } catch (error) {
+      this.throwCommandError(error, 'admin');
+    }
+    return {
+      body: this.acknowledgeCommand(command),
+      replayed: command.replayed,
+    };
+  }
 
   public async memberList(input: {
     authorization?: string;
@@ -231,6 +388,128 @@ export class AfterSalesService {
     );
   }
 
+  private async consumeWriteLimit(
+    context: StoreContext,
+    actorType: 'ADMIN' | 'MEMBER',
+  ): Promise<void> {
+    await this.rateLimiter.consume({
+      access: 'WRITE',
+      actorId: context.actor.id,
+      actorType,
+      storeId: context.storeId,
+    });
+  }
+
+  private assertB3MerchantRefundAuthorization(context: StoreContext): void {
+    // Generic platform cross-store access is an audited scope entry, not a substitute for the
+    // target store's high-risk after-sale review permission. AdminService returns STORE only after
+    // resolving that concrete store permission; keep this stricter boundary local to B3 so other
+    // existing admin routes retain their frozen authorization contract.
+    if (context.adminAuthorizationScope !== 'STORE') {
+      throw new ForbiddenException('Target store after-sale review permission is required');
+    }
+  }
+
+  private assertCommandsEnabled(): void {
+    if (!this.config.AFTER_SALE_COMMANDS_ENABLED || this.config.NODE_ENV === 'production') {
+      throw new ServiceUnavailableException('After-sale commands are unavailable');
+    }
+  }
+
+  private evidenceCommandConfig(): {
+    evidenceCapabilities: {
+      claimAvailable: boolean;
+      deletionCompensationAvailable: boolean;
+      malwareScanningAvailable: boolean;
+      protectedReadAvailable: boolean;
+      uploadValidationAvailable: boolean;
+    };
+    ordinaryAccessTtlSeconds?: number;
+    retentionTtlSeconds?: number;
+  } {
+    const ordinaryAccessTtlSeconds = this.config.AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS;
+    const retentionTtlSeconds = this.config.AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS;
+    const ttlAvailable =
+      ordinaryAccessTtlSeconds !== undefined &&
+      retentionTtlSeconds !== undefined &&
+      ordinaryAccessTtlSeconds < retentionTtlSeconds;
+    const storageAvailable = this.config.EVIDENCE_STORAGE_PROVIDER === 's3';
+    const deletionCompensationAvailable =
+      storageAvailable && this.config.AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED;
+    const malwareScanningAvailable =
+      deletionCompensationAvailable && this.config.EVIDENCE_SCANNER_PROVIDER === 'clamav';
+    return {
+      evidenceCapabilities: {
+        claimAvailable: ttlAvailable,
+        deletionCompensationAvailable,
+        malwareScanningAvailable,
+        protectedReadAvailable:
+          deletionCompensationAvailable && this.config.AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED,
+        uploadValidationAvailable:
+          malwareScanningAvailable && this.config.AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED,
+      },
+      ...(ttlAvailable ? { ordinaryAccessTtlSeconds, retentionTtlSeconds } : {}),
+    };
+  }
+
+  private acknowledgeCommand(
+    command: AfterSaleCommandResult,
+  ): AfterSaleCommandAcknowledgementResponse {
+    return afterSaleCommandAcknowledgementResponseSchema.parse({
+      id: command.afterSaleId,
+      public_number: command.publicCaseNumber,
+      status: command.status,
+      version: command.version,
+    });
+  }
+
+  private throwCommandError(error: unknown, actorType: 'admin' | 'member'): never {
+    if (!(error instanceof AfterSaleCommandDatabaseError)) throw error;
+    switch (error.code) {
+      case 'AFTER_SALE_INPUT_INVALID':
+        throw new BadRequestException('Input is invalid');
+      case 'AFTER_SALE_NOT_FOUND':
+        throw new NotFoundException('Resource not found');
+      case 'AFTER_SALE_AUTHORIZATION_DENIED':
+        if (actorType === 'member') {
+          throw new UnauthorizedException('Authentication is no longer valid');
+        }
+        throw new ForbiddenException('Authorization is no longer valid');
+      case 'AFTER_SALE_IDEMPOTENCY_CONFLICT':
+        throw new ConflictException('AFTER_SALE_IDEMPOTENCY_CONFLICT');
+      case 'AFTER_SALE_STATE_CONFLICT':
+        throw new ConflictException('AFTER_SALE_STATE_CONFLICT');
+      case 'AFTER_SALE_VERSION_CONFLICT':
+        throw new ConflictException('AFTER_SALE_VERSION_CONFLICT');
+      case 'AFTER_SALE_QUANTITY_EXCEEDS_AVAILABLE':
+        throw new ConflictException('AFTER_SALE_QUANTITY_EXCEEDS_AVAILABLE');
+      case 'AFTER_SALE_EVIDENCE_STATE_CONFLICT':
+        throw new ConflictException('AFTER_SALE_EVIDENCE_STATE_CONFLICT');
+      case 'AFTER_SALE_ORDER_NOT_ELIGIBLE':
+        throw new UnprocessableEntityException('AFTER_SALE_ORDER_NOT_ELIGIBLE');
+      case 'AFTER_SALE_PAYMENT_NOT_PROVEN':
+        throw new UnprocessableEntityException('AFTER_SALE_PAYMENT_NOT_PROVEN');
+      case 'AFTER_SALE_DELIVERY_NOT_PROVEN':
+        throw new UnprocessableEntityException('AFTER_SALE_DELIVERY_NOT_PROVEN');
+      case 'AFTER_SALE_REASON_NOT_ALLOWED':
+        throw new UnprocessableEntityException('AFTER_SALE_REASON_NOT_ALLOWED');
+      case 'AFTER_SALE_EXCHANGE_NOT_ALLOWED':
+        throw new UnprocessableEntityException('AFTER_SALE_EXCHANGE_NOT_ALLOWED');
+      case 'AFTER_SALE_POLICY_MISMATCH':
+        throw new UnprocessableEntityException('AFTER_SALE_POLICY_MISMATCH');
+      case 'AFTER_SALE_RETURN_WINDOW_CLOSED':
+        throw new UnprocessableEntityException('AFTER_SALE_RETURN_WINDOW_CLOSED');
+      case 'AFTER_SALE_REQUEST_WINDOW_CLOSED':
+        throw new UnprocessableEntityException('AFTER_SALE_REQUEST_WINDOW_CLOSED');
+      case 'AFTER_SALE_EVIDENCE_REQUIRED':
+        throw new UnprocessableEntityException('AFTER_SALE_EVIDENCE_REQUIRED');
+      case 'AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE':
+        throw new ServiceUnavailableException('AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE');
+      default:
+        throw error;
+    }
+  }
+
   private async page(
     transaction: StoreTransaction,
     input: {
@@ -411,6 +690,9 @@ export class AfterSalesService {
       throw new UnauthorizedException('Store context is invalid');
     }
     return createStoreContext({
+      accessSessionExpiresAt: principal.accessSessionExpiresAt,
+      accessSessionId: principal.sessionId,
+      accessTokenExpiresAt: principal.accessTokenExpiresAt,
       actor: { id: principal.subjectId, type: 'member' },
       correlationId,
       locale: store.default_locale,

@@ -96,6 +96,7 @@ import { AfterSalesPolicyManagementController } from './after-sales-policy/after
 import { AfterSalesPolicyManagementService } from './after-sales-policy/after-sales-policy-management.service';
 import {
   AfterSalesAdminController,
+  AfterSalesAdminOrderController,
   AfterSalesController,
 } from './after-sales/after-sales.controller';
 import { AfterSalesCursor } from './after-sales/after-sales-cursor';
@@ -203,6 +204,7 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     AfterSalesEvidenceAdminAccessController,
     AfterSalesController,
     AfterSalesAdminController,
+    AfterSalesAdminOrderController,
   ],
   providers: [
     AdminService,

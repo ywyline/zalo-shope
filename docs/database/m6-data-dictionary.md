@@ -4,10 +4,12 @@
 > B2b-D1 repository + local/test storage validation、B2b-D2 repository implementation +
 > local/test scanner worker validation、B2b-D3 repository implementation + local/test member
 > evidence HTTP validation 与 B2b-D4 repository implementation + local/test deletion worker validation
-> 已完成且适用仓库门禁通过；B2/B2b、B3-B7、M6.3、UI 与
-> 生产 rollout 未完成或未授权并保持失败关闭
+> 以及 B2b-D5 default-disabled repository implementation + local/test protected-read validation 已完成；
+> B3 default-disabled repository implementation + local/test validation 也已 `COMPLETE`。B2/B2b、
+> B4-B7、M6.3 与 UI 未完成；生产策略、TTL、对象存储、真实供应商、部署和 rollout 为
+> `NOT_AUTHORIZED / NOT_RUN` 并保持失败关闭
 >
-> 日期：2026-07-30
+> 日期：2026-07-31
 
 M6.2 实施使用 `20260727110000_m62_after_sales_member_share_foundation`、
 `20260727111000_m62_permission_catalog`、`20260727112000_m62_integrity_and_snapshot_guards`、
@@ -53,7 +55,8 @@ M6.3-B2a 在现有政策表上实现 policy heads 列表/详情、草稿 `PUT`�
 不增加业务列、不改写 RLS、不变更任何政策、settings、活动投影、快照或售后事实。保留既有 tenant RLS 是为了让 B1 会员
 继续读取售后已绑定的停用/被替换历史版本；不采用会破坏历史读且仍不能提供列级草稿隔离的 ACTIVE-only RLS 改写。仓库已增加
 只读 B2a 兼容性预检，在本地测试库通过且证明 `policies=0, versions=0`；适用仓库门禁均已完成，B2a 仓库实施标记 `COMPLETE`。
-任何目标库 rollout 前仍要逐库重新执行并留证；B2/B2b、B3-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权。
+任何目标库 rollout 前仍要逐库重新执行并留证；B2a 收口时 B2/B2b、B3-B7、M6.3、UI、生产政策与
+启用/部署仍未完成或未授权，后续 B3 局部完成不改写该历史范围。
 
 M6.3-B2b-D0 追加 `20260729120000_m63_b2b_d0_evidence_lifecycle`。该迁移补齐 evidence
 上传/确认/扫描/普通访问/删除耗尽字段，新建规范对象 ledger `after_sale_evidence_objects`，为 evidence
@@ -86,6 +89,19 @@ M6.3-B2b-D4 不修改数据库形状，而是把 D0 已冻结的 expire/delete�
 未过期 lease、evidence version/status/legal hold 与完整活动 ledger；成功和失败投影都不能绕过这些
 条件。M2→current 仍为 43 段。该局部只标记 repository implementation + local/test deletion worker
 validation `COMPLETE`；生产 versioned storage、legal hold 管理、保护读取/审计与外部告警不在结论内。
+
+M6.3-B2b-D5 以第 44-48 段迁移建立默认关闭的 member/admin 保护读取、锁后授权/到期重验和管理员逐次
+审计边界；其 repository implementation + local/test validation 已完成，生产 provider/IAM/KMS/lifecycle/
+retention 与 rollout 不在该结论内。该历史完成边界见第 16 节。
+
+M6.3-B3 追加第 49 段 `20260731110000_m63_b3_after_sale_commands`，为
+`after_sale_transitions` 增加可空 `operation_id`，以复合 FK 绑定同商城、同售后单 operation，并增加每个
+case 唯一 `SUBMIT`、创建/取消原子性、提交完整性、授权重验和窄 definer 边界。该段在任何 DDL 前只读
+校验四类历史 policy payload 的 reason allowlist 合约，不兼容时以 `55000` 停止且不猜测回填；审批准备
+写还通过共享 per-order advisory lock 与 B3 创建串行化。仓库已注册会员创建、
+会员取消与管理员商家主动退款三条默认关闭路由；完整 repository/local-test 门禁已通过，状态为
+`COMPLETE`，证据见 `docs/reports/m6.3-b3-after-sale-commands-completion-report.md`。
+生产策略、TTL、对象存储、真实供应商、部署与 rollout 为 `NOT_AUTHORIZED / NOT_RUN`。
 
 ## 1. 统一约定
 
@@ -326,7 +342,7 @@ status 时复用 `(store_id, status, updated_at, id)`，无 status 时使用
 
 ### 4.3 `after_sale_transitions`
 
-只追加保存 `from_status/to_status/event/actor_type/actor_id/reason/correlation_id/created_at`，复合
+只追加保存 `operation_id/from_status/to_status/event/actor_type/actor_id/reason/correlation_id/created_at`，复合
 引用售后单。人工复核恢复/早期拒绝分别记录 `RESUME_REVIEW/REJECT_REVIEW`，legacy 一次性决定记录
 `LEGACY_APPROVE/LEGACY_REJECT`，不能复用初次审核事件掩盖状态修正。状态修正只能追加受审转换；
 终态不得更新或删除。转换写入锁定售后聚合、校验当前 actor、from/to/event、类型图和所需权威事实，
@@ -340,10 +356,20 @@ B0 增加独立 `SYSTEM` 分支，但不把普通 StoreContext 或固定伪管�
 解决及其他人工动作均禁止。`COMPLETE` 只允许 `REFUNDED -> COMPLETED`，不创建 settlement、退款、
 库存或其他资金副作用，用于退款事实已确定后的确定性收口。
 
+B3 的创建事件固定为 `SUBMIT`，形状只能是 `NULL -> PENDING_REVIEW` 或 legacy 的
+`NULL -> REVIEW_REQUIRED`，不会把 header 自投影一次；每个 case 最多一条且必须通过
+`operation_id` 关联其 `MEMBER_CREATE` 或 `MERCHANT_REFUND_CREATE`。会员取消仍为
+`PENDING_REVIEW -> CANCELLED/CANCEL`，但同样必须关联 `MEMBER_CANCEL` operation；普通 runtime 不能
+直接插入对应 operation 或借 transition 伪造命令完成。
+
 ### 4.4 `after_sale_operations`
 
 保存商城、售后单、operation、幂等键 hash、请求 hash、状态、版本、结果摘要和时间。
 `UNIQUE(store_id, operation, idempotency_key_hash)`；不保存原始幂等键、证据正文或敏感账户。
+B3 另增加 `UNIQUE(store_id,id,after_sale_id)` 供 transition 复合引用。三项 operation 固定为
+`MEMBER_CREATE`、`MERCHANT_REFUND_CREATE` 和 `MEMBER_CANCEL`；`result_summary` 保存命令提交时的
+case 公开号、状态和版本，幂等重放读取该不可变结果而不是后续 header 状态。三条写 API 由该摘要构造
+`id/public_number/status/version` acknowledgement；当前可变聚合只通过 GET 查询。
 
 ### 4.5 `after_sale_inspections` 与 `after_sale_inspection_allocations`
 
@@ -374,9 +400,11 @@ B0 增加独立 `SYSTEM` 分支，但不把普通 StoreContext 或固定伪管�
 - D0 新增 `confirmed_at/scan_requested_at/scan_completed_at/scan_generation`、
   `scanner_engine/scanner_engine_version/scanner_signature_version`、
   `ordinary_access_deadline_at` 与 `delete_exhausted_at`。确认只在上传截止前递增 generation 并与 scan
-  outbox 同事务提交。D0 当时没有对象存储适配器；D1 后续虽已提供独立 adapter 和 local/test 真实
-  bytes 校验，但尚无 HTTP/worker 调用方把它接入该原语。因此 confirm 事务仍不读取 provider 对象，
-  不能表述为已实现的真实上传确认能力。
+  outbox 同事务提交。D0 当时没有对象存储适配器；D1 收口时虽已提供独立 adapter 和 local/test 真实
+  bytes 校验，但尚无 HTTP/worker 调用方把它接入该原语，因此当时的 confirm 事务不读取 provider 对象，
+  D1 本身不能表述为已实现的真实上传确认能力。后续 D3 已在默认关闭的会员确认路径中先于数据库事务
+  验证真实 provider 对象 bytes，再由事务在锁后复验并与 D2 scan 排队原子提交；数据库 confirm primitive
+  本身不跨网络读取 provider。
 - 受信 scanner 的规范结果只有精确 `CLEAN` 可把当前 generation 的 `PENDING` 推进为
   `READY_UNCLAIMED`；恶意进入 `QUARANTINED`，超时、不可用或不确定进入 `FAILED`。D0 测试直接调用
   scan 结果投影原语，只证明 generation/version 竞争和状态约束。D2 当前实现用同一 ClamAV
@@ -386,8 +414,8 @@ B0 增加独立 `SYSTEM` 分支，但不把普通 StoreContext 或固定伪管�
 - 创建售后事务按 evidence IDs 锁行，验证同商城/同会员、认领窗口未过期、扫描通过且从未 claim，
   再一次性写入 `(store_id, after_sale_id, member_id)`；同一凭证不能复用到第二个售后。D0 已提供
   transaction-scoped claim 原语并同时冻结 `claimed_at/ordinary_access_deadline_at/
-retention_deadline_at`，但没有 B3 调用方或 HTTP 路由，不能单独 claim 真实业务凭证。claim 后对象
-  访问始终通过数据库授权，不依赖可猜对象路径。
+retention_deadline_at`；后续 B3 已在默认关闭的会员创建事务内调用该原语，但没有独立 claim HTTP
+  路由。claim 后对象访问始终通过数据库授权，不依赖可猜对象路径。
 - 保存 MIME、byte size、SHA-256、原文件名、扫描结果和
   `PENDING/READY_UNCLAIMED/READY/FAILED/QUARANTINED/DELETION_PENDING/DELETED/DELETE_FAILED`。
   `PENDING` 使用 upload 截止，未 claim 的 scan 结果使用 claim/显式失败保留截止，已 claim `READY`
@@ -653,8 +681,8 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   `X-Correlation-Id`，错误体 correlation 与事务、授权、审计（如发生）和日志保持一致。
 - B1 读取的稳定语义为严格输入/游标 `400`、认证失败 `401`、目标商城/权限 `403`、当前主体范围内
   不存在 `404` 和限流 `429`。B1 本身不注册写路由；B2a 只为政策草稿/发布/停用和 settings PUT 启用管理员写
-  30 次每 60 秒档位。会员写 10 次档位与其他管理员写只在 B2b/B3-B7 另行授权后生效，当前不能据此声称申请、取消、审核、
-  证据访问、返件、退款或 COD 结算可用。
+  30 次每 60 秒档位。后续 B3 已把会员写 10 次与管理员写 30 次档位接入三条默认关闭命令；这不改变
+  B1 当时的只读结论，也不能据此声称生产申请/取消、审核、返件、退款或 COD 结算可用。
 
 ## 10. M6.3-B2a 政策控制面运行时
 
@@ -662,7 +690,8 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   `GET/PUT /v1/admin/after-sale-policies/{policyCode}`、
   `GET /v1/admin/after-sale-policies/{policyCode}/versions`、
   `GET /v1/admin/after-sale-policies/{policyCode}/versions/{versionNumber}`、`POST .../publish` 和 `POST .../disable`。
-  B2b 凭证和 B3-B7 路由仍为 contract-only 或失败关闭。
+  B2b 其余能力和 B4-B7 路由仍为 contract-only 或失败关闭；B3 三条路由已在 repository/local-test
+  默认关闭条件下实现，当前边界见第 17 节。
 - head 列表固定 `(updated_at DESC,id DESC)`，version 列表固定 `(published_at DESC,id DESC)`。两者先读 `limit + 1` 个微秒 page key，
   再对白名单 ID 投影；游标绑定管理员、商城、资源、筛选及 policy code，不能跨资源/跨 policy 重放。
 - 草稿创建仅允许 `expected_version=0`；更新、发布和停用要求精确正版本。写命令的幂等 key 只保存 SHA-256，范围为
@@ -690,9 +719,10 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   必须携带 scanner engine/version/signature identity；恶意或不确定使用稳定 allowlist code 并失败关闭。
   stale/乱序结果返回 no-op，当前状态不被覆盖。该入口是未来 scanner worker 的数据库投影边界，不是
   scanner adapter。
-- `claimAfterSaleEvidenceInTransaction` 只供未来 B3 在其现有商城会员事务中调用：锁 quota、售后聚合和
+- `claimAfterSaleEvidenceInTransaction` 只供售后创建在其现有商城会员事务中调用：锁 quota、售后聚合和
   排序后的 1–6 个 evidence，要求全部为 owner 的未过期 `READY_UNCLAIMED`，一次性写售后归属、普通
-  访问与 retention 截止并排队 retention expire。D0 未注册 B3，因此不存在独立可调用的 claim API。
+  访问与 retention 截止并排队 retention expire。D0 本身未注册路由；后续 B3 只在默认关闭的
+  `POST /v1/after-sales` 事务内调用，因此仍不存在独立可调用的 claim API。
 - `begin/list/complete/record...Deletion` 原语只在专用 SYSTEM scope 操作权威行和 ledger；每次都复核
   expected version、截止点、hold 和精确活动对象集合。`complete` 只记录未来 provider 已成功删除或
   已确认不存在后的数据库事实；D0 本身不会调用 provider。失败固定第 5 次告警、第 8 次耗尽，退避
@@ -838,3 +868,52 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   或已有受保护读取审计事实环境只能以审查过的前向修复纠正。D5 repository
   implementation + local/test validation 已完成；该状态不包含 production 部署或 rollout，完整证据见
   `docs/reports/m6.3-b2b-d5-protected-evidence-read-completion-report.md`。
+
+## 17. M6.3-B3 售后申请与取消数据边界
+
+- B3 不新建平行售后聚合，也不增加政策业务列。严格政策 payload 现要求
+  `condition_rules.allowed_reason_codes`，并要求 `evidence_required_reason_codes` 与
+  `opened_package_exception_reason_codes` 均为其子集；旧 payload 无法证明兼容时写入失败关闭。申请窗口按
+  `Asia/Ho_Chi_Minh` 自然日和权威 `ORDER_OUTBOUND` 交付事实计算，排他截止点到达即拒绝。
+- `POST /v1/after-sales` 只允许会员创建 `REFUND_ONLY/RETURN_REFUND/EXCHANGE`；
+  `POST /v1/after-sales/{afterSaleId}/cancel` 只取消本人非 legacy、仍为 `PENDING_REVIEW` 且没有审核/
+  返件/settlement/库存/换货副作用的 case；`POST /v1/admin/orders/{orderId}/after-sales` 只创建
+  `MERCHANT_REFUND + PENDING_REVIEW`。三条路由受 `AFTER_SALE_COMMANDS_ENABLED` 默认关闭，production
+  配置和服务层均拒绝启用。
+- 创建原语在单个 `Serializable` 商城事务中读取并锁定订单、逐行商品/政策/交付/支付/容量事实。仅
+  VND、已交付或已完成、具有唯一可证明 ONLINE 成功收款事实的订单可进入当前写路径；merchant refund
+  不接受 legacy。当前没有可锁定并复验的 COD 已确认收款事实，因此 COD 失败关闭。服务端按剩余数量和
+  剩余 VND 计算逐行申请额，覆盖全部剩余数量时取得全部余数；
+  merchant-paid `RETURN_REFUND/EXCHANGE` 的实际已付运费每订单最多占用一次，其他类型/承担方为 0。
+- exchange replacement 必须为当前商城 ACTIVE、同商品 SPU、不同 SKU、等价价格；订单快照的
+  attribute definition UUID 先映射到稳定业务 code，仅政策指定 `exchange_attribute_code` 可以变化，
+  其他 option 必须完全一致。非 exchange 行携带 replacement SKU 一律拒绝。
+- 证据要求或请求携带非空 evidence id 时，上传校验、恶意扫描、claim、protected read、删除补偿和显式
+  `ordinary < retention` TTL 必须全部可用。D0 `claimAfterSaleEvidenceInTransaction` 与 header/items/
+  operation/transition/audit 在同一事务提交；取消保留 claim 和原 ordinary/retention deadline。
+- 第 49 段 migration 通过 `after_sale_transitions.operation_id`、复合 FK、唯一 `SUBMIT`、operation 完成
+  guard、deferred runtime case commit guard 和两项 runtime 可执行窄函数，把 header/items、
+  `MEMBER_CREATE/MERCHANT_REFUND_CREATE/MEMBER_CANCEL`、transition 与 allowlist audit 绑定。创建使用
+  `SUBMIT`，取消使用 `CANCEL`；普通 runtime 的 operation INSERT 与 member cancel transition policy 已
+  撤销，内部 validator 对 PUBLIC/runtime 均不可执行。
+- 第 49 段的第一条语句对 `after_sale_policies.draft_payload`、`after_sale_policy_versions.payload`、
+  `order_item_after_sale_policy_snapshots.payload` 和非空 `after_sales.policy_snapshot` 做只读 preflight。
+  `allowed_reason_codes` 必须是 1–64 个合法且不重复的 code；evidence/opened-package 两个 reason 数组也
+  必须有界、合法、不重复并为 allowlist 子集。任一事实不能证明兼容即以 `55000` 停止，迁移目录状态和
+  数据不变；不得猜测、删除或回填历史 policy。
+- 审批 item/header/allocation 与 legacy approve 的首个准备写使用同一
+  `m62-refund:{store_id}:{order_id}` advisory lock。由于 PostgreSQL 在进入 row trigger 前已持目标行锁，
+  与并发 B3 创建冲突时 early guard 以可重试 `40001` 原子回滚，避免 row↔advisory 反向等待；transition
+  lock trigger 名称排在 B0 contract guard 前，transition-only 审批则先取得 order lock。后续 B4 调用方
+  仍须把 `40001` 当作整笔审批事务重试，不能局部续写。
+- 命令 finalizer 在持锁事务内复验 ACTIVE 商城、当前 actor、Bearer/session 截止、会员归属；管理员还
+  复验近期 MFA 和目标商城直接 `store.after-sales.review`；仅有 platform cross-access 固定失败，
+  `X-Access-Reason` 不能替代目标商城权限。规范 request hash 绑定商城、actor、operation、path、
+  order/case、规范 body 与幂等键 hash；同键同请求从原 `result_summary` 重建创建/取消时的不可变
+  acknowledgement，同键异参稳定冲突；当前聚合必须通过 GET 查询。
+- create/cancel 只对 Prisma `P2034` 或 PostgreSQL `40001` 执行最多三次 Serializable 事务尝试；
+  `expected_version` 冲突不重试并稳定映射版本冲突。随机公开号碰撞使用独立三次上限。
+- B3 `down.sql` 仅限 local/test；存在 `SUBMIT`、三项 B3 operation、三类 B3 audit 或预留的 B3 outbox
+  事实时以 SQLSTATE `55000` fail-fast。生产或已有命令事实的数据库只能向前修复。B3 default-disabled
+  repository implementation + local/test validation 已 `COMPLETE`；production policy/TTL/storage/provider/
+  deployment/rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。

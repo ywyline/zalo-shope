@@ -916,8 +916,11 @@ describe.sequential('M6.3-B2b-D0 evidence lifecycle database primitives', () => 
         storeId: storeAId,
       },
     });
+    // D0 predates the B3 command aggregate. Keep this synthetic case creation
+    // owner-only; the member RLS claim and lifecycle assertions below still run
+    // through the runtime role.
     await withStoreTransaction(
-      runtime,
+      owner,
       ownerMemberContext,
       (transaction) =>
         transaction.$executeRaw`

@@ -6,6 +6,7 @@ import {
   type PrismaClient,
   type StoreTransaction,
 } from '@zalo-shop/database';
+import type { StoreContext } from '@zalo-shop/domain';
 import { describe, expect, it } from 'vitest';
 
 import type { AdminService } from '../admin/admin.service';
@@ -23,6 +24,7 @@ function policyContent(): AfterSalePolicyContent {
     allowed_types: ['RETURN_REFUND'],
     category_id: null,
     condition_rules: {
+      allowed_reason_codes: ['damaged-item', 'wrong-item'],
       evidence_required: true,
       evidence_required_reason_codes: ['damaged-item'],
       opened_package_exception_reason_codes: ['wrong-item'],
@@ -112,9 +114,9 @@ function versionRecord(content = policyContent()) {
   };
 }
 
-function service() {
+function service(database = {} as PrismaClient) {
   return new AfterSalesPolicyManagementService(
-    {} as PrismaClient,
+    database,
     {} as AdminService,
     {} as AfterSalesCursor,
     {} as AfterSalesRateLimiter,
@@ -122,6 +124,17 @@ function service() {
 }
 
 type ManagementInternals = {
+  command<T>(
+    context: StoreContext,
+    input: {
+      code: string;
+      execute: (transaction: StoreTransaction, now: Date) => Promise<T>;
+      idempotencyKey: string;
+      operation: string;
+      parseStored: (value: unknown) => T;
+      request: unknown;
+    },
+  ): Promise<{ body: T; replayed: boolean }>;
   mapCommandError(error: unknown): unknown;
   policyDetail(transaction: StoreTransaction, storeId: string, code: string): Promise<unknown>;
   version(code: string, input: ReturnType<typeof versionRecord>): unknown;
@@ -132,6 +145,105 @@ function internals(): ManagementInternals {
 }
 
 describe('AfterSalesPolicyManagementService integrity boundaries', () => {
+  it('reads a committed idempotency winner after a unique race without rerunning the command', async () => {
+    const context: StoreContext = {
+      actor: { id: '50000000-0000-4000-8000-000000000001', type: 'admin' },
+      correlationId: 'm63b2-policy-unique-retry',
+      locale: 'vi',
+      storeCode: 'beauty',
+      storeId: STORE_ID,
+    };
+    const clock = new Date('2026-07-31T00:00:00.000Z');
+    const uniqueError = (meta?: unknown) =>
+      Object.assign(new Error('Test unique constraint conflict'), {
+        code: 'P2002',
+        ...(meta === undefined ? {} : { meta }),
+      });
+    let businessExecutions = 0;
+    let requestHash: string | undefined;
+    const commandTransaction = {
+      $executeRaw: () => Promise.resolve(1),
+      $queryRaw: () => Promise.resolve([{ current_time: clock }]),
+      idempotencyRecord: {
+        create: (input: { data: { requestHash: string } }) => {
+          requestHash = input.data.requestHash;
+          return Promise.reject(uniqueError());
+        },
+        deleteMany: () => Promise.resolve({ count: 0 }),
+        findUnique: () => Promise.resolve(null),
+      },
+    } as unknown as StoreTransaction;
+    const replayTransaction = {
+      $executeRaw: () => Promise.resolve(1),
+      $queryRaw: () => Promise.resolve([{ current_time: clock }]),
+      idempotencyRecord: {
+        findUnique: () =>
+          Promise.resolve({
+            expiresAt: new Date(clock.getTime() + 60_000),
+            requestHash,
+            response: { id: POLICY_ID },
+          }),
+      },
+    } as unknown as StoreTransaction;
+    const input = {
+      code: 'default-policy',
+      execute: () => {
+        businessExecutions += 1;
+        return Promise.resolve({ id: POLICY_ID });
+      },
+      idempotencyKey: 'm63b2-policy-unique-retry-0001',
+      operation: 'after-sale.policy.draft.put',
+      parseStored: (value: unknown) => value as { id: string },
+      request: { expected_version: 0 },
+    };
+
+    let transactions = 0;
+    const database = {
+      $transaction: async (callback: (value: StoreTransaction) => Promise<unknown>) => {
+        transactions += 1;
+        return callback(transactions === 1 ? commandTransaction : replayTransaction);
+      },
+    } as unknown as PrismaClient;
+    await expect(
+      (service(database) as unknown as ManagementInternals).command(context, input),
+    ).resolves.toEqual({ body: { id: POLICY_ID }, replayed: true });
+    expect(transactions).toBe(2);
+    expect(businessExecutions).toBe(1);
+
+    transactions = 0;
+    businessExecutions = 0;
+    const missingWinnerTransaction = {
+      ...replayTransaction,
+      idempotencyRecord: { findUnique: () => Promise.resolve(null) },
+    } as unknown as StoreTransaction;
+    const missingWinnerDatabase = {
+      $transaction: async (callback: (value: StoreTransaction) => Promise<unknown>) => {
+        transactions += 1;
+        if (transactions === 1) {
+          return callback({
+            ...commandTransaction,
+            idempotencyRecord: {
+              ...commandTransaction.idempotencyRecord,
+              create: () =>
+                Promise.reject(
+                  uniqueError({
+                    modelName: 'AfterSaleActivePolicyAssignment',
+                    target: ['store_id'],
+                  }),
+                ),
+            },
+          } as unknown as StoreTransaction);
+        }
+        return callback(missingWinnerTransaction);
+      },
+    } as unknown as PrismaClient;
+    await expect(
+      (service(missingWinnerDatabase) as unknown as ManagementInternals).command(context, input),
+    ).rejects.toMatchObject({ message: 'AFTER_SALE_POLICY_TARGET_CONFLICT' });
+    expect(transactions).toBe(2);
+    expect(businessExecutions).toBe(1);
+  });
+
   it('maps only active target unique constraints to the stable target conflict', () => {
     const subject = internals();
     for (const meta of [

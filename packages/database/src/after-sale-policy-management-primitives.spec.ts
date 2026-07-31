@@ -18,6 +18,7 @@ function policyContent(overrides: Partial<AfterSalePolicyContent> = {}): AfterSa
     allowed_types: ['EXCHANGE', 'REFUND_ONLY'],
     category_id: null,
     condition_rules: {
+      allowed_reason_codes: ['wrong-item', 'damaged', 'defect'],
       evidence_required: true,
       evidence_required_reason_codes: ['wrong-item', 'damaged'],
       opened_package_exception_reason_codes: ['wrong-item', 'defect'],
@@ -74,6 +75,11 @@ describe('after-sale policy management primitives', () => {
       'damaged',
       'wrong-item',
     ]);
+    expect(canonical.condition_rules.allowed_reason_codes).toEqual([
+      'damaged',
+      'defect',
+      'wrong-item',
+    ]);
     expect(canonical.condition_rules.opened_package_exception_reason_codes).toEqual([
       'defect',
       'wrong-item',
@@ -85,6 +91,7 @@ describe('after-sale policy management primitives', () => {
           allowed_types: ['REFUND_ONLY', 'EXCHANGE'],
           category_id: CATEGORY_ID.toLowerCase(),
           condition_rules: {
+            allowed_reason_codes: ['damaged', 'defect', 'wrong-item'],
             evidence_required: true,
             evidence_required_reason_codes: ['damaged', 'wrong-item'],
             opened_package_exception_reason_codes: ['defect', 'wrong-item'],

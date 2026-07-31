@@ -121,6 +121,7 @@ export * from './inventory-primitives';
 export * from './after-sale-policy-primitives';
 export * from './after-sale-policy-management-primitives';
 export * from './after-sale-evidence-primitives';
+export * from './after-sale-command-primitives';
 export * from './order-primitives';
 export * from './payment-primitives';
 export * from './payment-callback-primitives';

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M6 incremental API contract
-  version: 0.6.3-b2b-d5
+  version: 0.6.3-b3
   description: >-
     M6 incremental contract combined with the M1-M5 contracts. M6.3-A implements the after-sale
     settings GET/PUT routes, M6.3-B1 implements the member/admin after-sale list and detail GET
@@ -10,16 +10,18 @@ info:
     M6.3-B2b-D4 deletion worker has repository implementation and local/test validation.
     M6.3-B2b-D5 has completed default-disabled repository implementation and local/test validation
     for member and administrator protected evidence reads, including migrations 44-48 and final
-    commit-deadline revalidation. This does not establish production readiness: B3 claim,
-    legal-hold/dead-letter management, external alerting, production IAM/KMS/versioning/Object
+    commit-deadline revalidation. M6.3-B3 implements the three after-sale create/cancel commands
+    behind an explicit repository/local-test-only, default-disabled capability gate. This does not
+    establish production readiness: legal-hold/dead-letter management, external alerting,
+    production TTL policy, IAM/KMS/versioning/Object
     Lock/lifecycle certification, bearer-URL risk acceptance, deployment and rollout remain
-    incomplete or unauthorized. All operations assigned to B3 through B7 remain contract-only.
+    NOT_AUTHORIZED / NOT_RUN. Operations assigned to B4 through B7 remain contract-only.
     Buyer store ownership comes from the authenticated member and X-Store-Code. Admin routes
     additionally require the matching store_id query parameter. D5 protected-read routes generate
     X-Correlation-Id on the server and do not accept a client correlation identifier; the generated
     value is propagated through authorization, audit, logs and error bodies.
 x-after-sale-b0-contract:
-  runtime_status: m6_3_a_b1_b2a_d3_and_d5_implemented
+  runtime_status: m6_3_a_b1_b2a_d3_d5_and_b3_repository_local_test_implemented
   runtime_operations:
     implemented_m6_3_a: [getAfterSaleSettings, setAfterSalePolicyEnforcement]
     implemented_m6_3_b1:
@@ -41,6 +43,7 @@ x-after-sale-b0-contract:
         getAfterSaleEvidenceUpload,
       ]
     implemented_m6_3_b2b_d5: [getMemberAfterSaleEvidence, getAdminAfterSaleEvidence]
+    implemented_m6_3_b3: [createAfterSale, cancelMemberAfterSale, createMerchantAfterSale]
     contract_only_m6_3_b2_to_b7: all_after_sale_operations_not_listed_as_implemented_above
   protected_evidence_read:
     status: complete_repository_local_test_default_disabled
@@ -73,10 +76,20 @@ x-after-sale-b0-contract:
     runtime:
       member_read: implemented_m6_3_b1_m6_3_b2b_d3_and_d5
       admin_read: implemented_m6_3_b1_m6_3_b2a_and_m6_3_b2b_d5
-      member_write: implemented_m6_3_b2b_d3
-      admin_write: implemented_m6_3_b2a
+      member_write: implemented_m6_3_b2b_d3_and_b3
+      admin_write: implemented_m6_3_b2a_and_b3
     read_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
     write_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
+  b3_commands:
+    status: complete_repository_local_test_default_disabled
+    repository_gates: pass
+    production_status: not_authorized_not_run_and_rejected_by_runtime_configuration
+    admin_authorization: direct_target_store_review_only_cross_access_only_forbidden
+    cod_admission: fail_closed_no_repository_confirmed_receipt_fact
+    command_response: immutable_operation_acknowledgement_get_reads_current_aggregate
+    serialization_attempts: maximum_three_expected_version_conflict_not_retried
+    creation_transition: SUBMIT_null_to_pending_review_or_legacy_review_required
+    evidence_ttl_baseline: local_test_30_day_ordinary_90_day_retention
   system_principal:
     scope: after-sale-transition
     events:
@@ -213,7 +226,7 @@ paths:
         '503': { $ref: '#/components/responses/AfterSaleReadLimiterUnavailable' }
     post:
       operationId: createAfterSale
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b3_repository_local_test_default_disabled
       x-rate-limit-tier: member_write
       summary: Submit a refund-only, return-refund, or equivalent exchange request
       description: >-
@@ -222,9 +235,12 @@ paths:
         shipment_items; conflicting or unprovable legacy delivery facts enter audited manual review
         and are never inferred from current time or order timestamps. All lines in one non-legacy
         case must resolve to the same policy id, version and canonical payload hash; different
-        policies require separate cases. If that policy/reason requires evidence, creation fails
-        closed unless real magic-byte/type/size/count upload validation, malware scanning, READY
-        evidence claim, protected retrieval and deletion compensation capabilities are all available.
+        policies require separate cases. If that policy/reason requires evidence or the request
+        carries a non-empty evidence_ids array, creation fails closed unless real
+        magic-byte/type/size/count upload
+        validation, malware scanning, READY evidence claim, protected retrieval and deletion
+        compensation capabilities are all available. The current repository has no authoritative COD
+        confirmed-receipt fact, so COD creation fails closed.
       security: [{ MemberBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
@@ -236,18 +252,23 @@ paths:
             schema: { $ref: '#/components/schemas/AfterSaleCreateRequest' }
       responses:
         '201':
-          description: Submitted case
+          description: >-
+            Stable command acknowledgement. An idempotent replay returns the original operation
+            result even if the case aggregate has since changed; use GET for the current projection.
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AfterSale' }
+              schema: { $ref: '#/components/schemas/AfterSaleCommandAcknowledgement' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/RateLimited' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/after-sales/{afterSaleId}:
     get:
       operationId: getMemberAfterSale
@@ -277,7 +298,7 @@ paths:
   /v1/after-sales/{afterSaleId}/cancel:
     post:
       operationId: cancelMemberAfterSale
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b3_repository_local_test_default_disabled
       x-rate-limit-tier: member_write
       summary: Cancel a case that is still pending review
       security: [{ MemberBearer: [] }]
@@ -292,16 +313,23 @@ paths:
             schema: { $ref: '#/components/schemas/VersionedReasonRequest' }
       responses:
         '200':
-          description: Current case; an idempotent replay returns the same fact
+          description: >-
+            Stable cancellation acknowledgement. An idempotent replay returns the original
+            cancellation result; use GET for the current case projection.
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AfterSale' }
+              schema: { $ref: '#/components/schemas/AfterSaleCommandAcknowledgement' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/after-sales/{afterSaleId}/return-shipment:
     post:
       operationId: submitAfterSaleReturnShipment
@@ -376,14 +404,21 @@ paths:
   /v1/admin/orders/{orderId}/after-sales:
     post:
       operationId: createMerchantAfterSale
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b3_repository_local_test_default_disabled
       x-rate-limit-tier: admin_write
       summary: Create an audited merchant-initiated refund case for one order
-      description: The server calculates all refundable amounts and resolves the member and store.
+      description: >-
+        The server calculates all refundable amounts and resolves the member and store. The current
+        B3 repository/local-test boundary requires a direct target-store
+        store.after-sales.review assignment; X-Access-Reason is accepted as a standard admin
+        header but platform cross-store scope remains fail-closed and cannot substitute for that
+        target-store permission. Only a uniquely proven ONLINE receipt is admitted; COD fails closed
+        because the repository has no authoritative confirmed-receipt fact.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
         - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/AccessReason' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -393,18 +428,24 @@ paths:
             schema: { $ref: '#/components/schemas/MerchantAfterSaleCreateRequest' }
       responses:
         '201':
-          description: Merchant-initiated case; no refund has yet been claimed successful
+          description: >-
+            Stable merchant command acknowledgement; no refund has yet been claimed successful.
+            An idempotent replay returns the original operation result; use GET for current state.
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AfterSale' }
+              schema: { $ref: '#/components/schemas/AfterSaleCommandAcknowledgement' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/admin/after-sales:
     get:
       operationId: listAdminAfterSales
@@ -1623,6 +1664,18 @@ components:
       properties:
         url: { $ref: '#/components/schemas/EvidenceReadUrl' }
         expires_at: { type: string, format: date-time }
+    AfterSaleCommandAcknowledgement:
+      type: object
+      additionalProperties: false
+      description: >-
+        Immutable acknowledgement reconstructed only from the completed operation result_summary.
+        It intentionally does not project the mutable after-sale aggregate.
+      required: [id, public_number, status, version]
+      properties:
+        id: { type: string, format: uuid }
+        public_number: { type: string, pattern: '^ASC-[A-Z0-9]{16,32}$' }
+        status: { type: string, enum: [PENDING_REVIEW, REVIEW_REQUIRED, CANCELLED] }
+        version: { type: integer, minimum: 1 }
     AfterSaleStandardItemInput:
       type: object
       additionalProperties: false
@@ -1889,6 +1942,7 @@ components:
           type: string
           enum:
             [
+              SUBMIT,
               APPROVE,
               REJECT,
               CANCEL,
@@ -2003,6 +2057,10 @@ components:
           status,
           currency,
           approved_refund_vnd,
+          requested_item_vnd,
+          requested_shipping_vnd,
+          requested_other_vnd,
+          requested_total_vnd,
           items,
           evidence,
           policy_snapshot,
@@ -2031,6 +2089,14 @@ components:
         status: { $ref: '#/components/schemas/AfterSaleStatus' }
         currency: { type: string, const: VND }
         approved_refund_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        requested_item_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        requested_shipping_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        requested_other_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        requested_total_vnd:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+          description: Exact sum of requested_item_vnd, requested_shipping_vnd and requested_other_vnd.
         items: { type: array, items: { $ref: '#/components/schemas/AfterSaleItem' } }
         evidence: { type: array, maxItems: 6, items: { $ref: '#/components/schemas/EvidenceView' } }
         policy_snapshot: { $ref: '#/components/schemas/AfterSalePolicySnapshotView' }
@@ -2092,18 +2158,31 @@ components:
       type: object
       additionalProperties: false
       required:
-        [evidence_required, evidence_required_reason_codes, opened_package_exception_reason_codes]
+        [
+          allowed_reason_codes,
+          evidence_required,
+          evidence_required_reason_codes,
+          opened_package_exception_reason_codes,
+        ]
       properties:
+        allowed_reason_codes:
+          type: array
+          minItems: 1
+          maxItems: 64
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/PublicCode' }
         evidence_required: { type: boolean }
         evidence_required_reason_codes:
           type: array
           maxItems: 64
           uniqueItems: true
+          description: Every value must also occur in allowed_reason_codes.
           items: { $ref: '#/components/schemas/PublicCode' }
         opened_package_exception_reason_codes:
           type: array
           maxItems: 64
           uniqueItems: true
+          description: Every value must also occur in allowed_reason_codes.
           items: { $ref: '#/components/schemas/PublicCode' }
     AfterSalePolicyDraft:
       type: object
@@ -2548,7 +2627,16 @@ components:
           AFTER_SALE_QUANTITY_EXCEEDS_AVAILABLE,
           AFTER_SALE_POLICY_MISMATCH,
           AFTER_SALE_RETURN_WINDOW_CLOSED,
+          AFTER_SALE_REQUEST_WINDOW_CLOSED,
           AFTER_SALE_REFUND_EXCEEDS_APPROVED,
+          AFTER_SALE_ORDER_NOT_ELIGIBLE,
+          AFTER_SALE_PAYMENT_NOT_PROVEN,
+          AFTER_SALE_DELIVERY_NOT_PROVEN,
+          AFTER_SALE_REASON_NOT_ALLOWED,
+          AFTER_SALE_EXCHANGE_NOT_ALLOWED,
+          AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE,
+          AFTER_SALE_EVIDENCE_REQUIRED,
+          AFTER_SALE_EVIDENCE_STATE_CONFLICT,
           AFTER_SALE_POLICY_NOT_READY,
           AFTER_SALE_POLICY_SNAPSHOT_INVALID,
           AFTER_SALE_POLICY_CONCURRENT_CONFLICT,
@@ -2578,6 +2666,7 @@ components:
               RESOURCE_NOT_FOUND,
               STORE_CONTEXT_INVALID,
               CONFLICT,
+              UNPROCESSABLE_ENTITY,
               RATE_LIMITED,
               UPSTREAM_UNAVAILABLE,
               INTERNAL_ERROR,
@@ -2661,6 +2750,15 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
+    UnprocessableEntity:
+      description: >-
+        The authenticated, scoped command is structurally valid but authoritative order, payment,
+        delivery, policy, reason, window or evidence facts do not permit the requested operation.
+      headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
     RateLimited:
       description: >-
         Request rate exceeded for the frozen store+actor tier. The response does not disclose
@@ -2686,10 +2784,10 @@ components:
           schema: { $ref: '#/components/schemas/ApiError' }
     AfterSaleWriteLimiterUnavailable:
       description: >-
-        The required Redis-backed after-sale write limiter is unavailable. The command fails closed
-        before mutating policy state and ApiError.code is UPSTREAM_UNAVAILABLE. No Retry-After header
-        is promised because recovery depends on infrastructure health rather than a known rate-limit
-        window.
+        The Redis-backed write limiter or a required default-disabled after-sale command capability
+        is unavailable. The command fails closed before mutating state and ApiError.code is
+        UPSTREAM_UNAVAILABLE. No Retry-After header is promised because recovery depends on
+        configuration or infrastructure health rather than a known rate-limit window.
       headers:
         X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
       content:

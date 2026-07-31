@@ -49,6 +49,15 @@ export const afterSaleCursorScopeSchema = z
 export const afterSalePublicNumberSchema = z.string().regex(/^ASC-[A-Z0-9]{16,32}$/);
 export const afterSaleReasonDetailResponseSchema = z.string().min(10).max(2_000).nullable();
 
+export const afterSaleCommandAcknowledgementResponseSchema = z
+  .object({
+    id: uuidSchema,
+    public_number: afterSalePublicNumberSchema,
+    status: z.enum(['PENDING_REVIEW', 'REVIEW_REQUIRED', 'CANCELLED']),
+    version: z.number().int().positive(),
+  })
+  .strict();
+
 export const AFTER_SALE_PUBLIC_CONFLICT_CODES = [
   'AFTER_SALE_STATE_CONFLICT',
   'AFTER_SALE_VERSION_CONFLICT',
@@ -56,7 +65,16 @@ export const AFTER_SALE_PUBLIC_CONFLICT_CODES = [
   'AFTER_SALE_QUANTITY_EXCEEDS_AVAILABLE',
   'AFTER_SALE_POLICY_MISMATCH',
   'AFTER_SALE_RETURN_WINDOW_CLOSED',
+  'AFTER_SALE_REQUEST_WINDOW_CLOSED',
   'AFTER_SALE_REFUND_EXCEEDS_APPROVED',
+  'AFTER_SALE_ORDER_NOT_ELIGIBLE',
+  'AFTER_SALE_PAYMENT_NOT_PROVEN',
+  'AFTER_SALE_DELIVERY_NOT_PROVEN',
+  'AFTER_SALE_REASON_NOT_ALLOWED',
+  'AFTER_SALE_EXCHANGE_NOT_ALLOWED',
+  'AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE',
+  'AFTER_SALE_EVIDENCE_REQUIRED',
+  'AFTER_SALE_EVIDENCE_STATE_CONFLICT',
 ] as const;
 export const afterSalePublicConflictCodeSchema = z.enum(AFTER_SALE_PUBLIC_CONFLICT_CODES);
 
@@ -73,6 +91,7 @@ export const afterSalePolicyStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'DISABLED'
 const afterSaleWireDateTimeSchema = z.string().datetime({ offset: true });
 const afterSaleMoneyVndSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const afterSaleTimelineEventSchema = z.enum([
+  'SUBMIT',
   'APPROVE',
   'REJECT',
   'CANCEL',
@@ -262,6 +281,10 @@ export const afterSaleResponseSchema = z
     public_number: afterSalePublicNumberSchema,
     reason_code: codeSchema,
     reason_detail: afterSaleReasonDetailResponseSchema,
+    requested_item_vnd: afterSaleMoneyVndSchema,
+    requested_other_vnd: afterSaleMoneyVndSchema,
+    requested_shipping_vnd: afterSaleMoneyVndSchema,
+    requested_total_vnd: afterSaleMoneyVndSchema,
     return_deadline_at: afterSaleWireDateTimeSchema.nullable(),
     return_shipments: z.array(afterSaleReturnShipmentResponseSchema),
     settlements: z.array(afterSaleSettlementResponseSchema),
@@ -285,6 +308,16 @@ export const afterSaleResponseSchema = z
         code: 'custom',
         message: 'Evidence count must match the projected evidence',
         path: ['evidence_count'],
+      });
+    }
+    if (
+      input.requested_total_vnd !==
+      input.requested_item_vnd + input.requested_shipping_vnd + input.requested_other_vnd
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Requested total must equal its item, shipping and other components',
+        path: ['requested_total_vnd'],
       });
     }
   });
@@ -590,6 +623,7 @@ const policyLocalizationSchema = z
 
 const policyConditionRulesSchema = z
   .object({
+    allowed_reason_codes: z.array(codeSchema).min(1).max(64),
     evidence_required: z.boolean(),
     evidence_required_reason_codes: z.array(codeSchema).max(64),
     opened_package_exception_reason_codes: z.array(codeSchema).max(64),
@@ -597,11 +631,28 @@ const policyConditionRulesSchema = z
   .strict()
   .superRefine((input, context) => {
     for (const field of [
+      'allowed_reason_codes',
       'evidence_required_reason_codes',
       'opened_package_exception_reason_codes',
     ] as const) {
       if (new Set(input[field]).size !== input[field].length) {
         context.addIssue({ code: 'custom', message: `${field} must be unique`, path: [field] });
+      }
+    }
+    const allowedReasons = new Set(input.allowed_reason_codes);
+    for (const field of [
+      'evidence_required_reason_codes',
+      'opened_package_exception_reason_codes',
+    ] as const) {
+      for (const reasonCode of input[field]) {
+        if (!allowedReasons.has(reasonCode)) {
+          context.addIssue({
+            code: 'custom',
+            message: `${field} must be a subset of allowed_reason_codes`,
+            path: [field],
+          });
+          break;
+        }
       }
     }
   });
@@ -785,9 +836,15 @@ export const afterSaleSettingsEnforcementSchema = z
   );
 
 export type AfterSaleCreateRequest = z.infer<typeof afterSaleCreateRequestSchema>;
+export type MerchantAfterSaleCreateRequest = z.infer<typeof merchantAfterSaleCreateRequestSchema>;
+export type AfterSaleCancelRequest = z.infer<typeof afterSaleCancelRequestSchema>;
+export type AfterSaleCommandAcknowledgementResponse = z.infer<
+  typeof afterSaleCommandAcknowledgementResponseSchema
+>;
 export type AfterSaleListQuery = z.infer<typeof afterSaleListQuerySchema>;
 export type AdminAfterSaleListQuery = z.infer<typeof adminAfterSaleListQuerySchema>;
 export type AfterSaleAdminReadQuery = z.infer<typeof afterSaleAdminReadQuerySchema>;
+export type AfterSaleAdminStoreQuery = z.infer<typeof afterSaleAdminStoreQuerySchema>;
 export type AfterSaleCursorScope = z.infer<typeof afterSaleCursorScopeSchema>;
 export type AfterSaleResponse = z.infer<typeof afterSaleResponseSchema>;
 export type AfterSalePageResponse = z.infer<typeof afterSalePageResponseSchema>;

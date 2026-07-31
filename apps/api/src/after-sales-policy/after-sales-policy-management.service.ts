@@ -576,6 +576,34 @@ export class AfterSalesPolicyManagementService {
   ): Promise<PolicyCommandResult<T>> {
     const keyHash = hash(input.idempotencyKey);
     const requestHash = hash({ policy_code: input.code, request: input.request });
+    const replayCommittedWinner = () =>
+      withStoreTransaction(
+        this.database,
+        context,
+        async (transaction) => {
+          const clock = (
+            await transaction.$queryRaw<Array<{ current_time: Date }>>`
+              SELECT CURRENT_TIMESTAMP AS current_time
+            `
+          )[0];
+          if (!clock) throw new AfterSalePolicyProjectionError();
+          const existing = await transaction.idempotencyRecord.findUnique({
+            where: {
+              storeId_operation_idempotencyKey: {
+                idempotencyKey: keyHash,
+                operation: input.operation,
+                storeId: context.storeId,
+              },
+            },
+          });
+          if (existing === null || existing.expiresAt <= clock.current_time) return null;
+          if (existing.requestHash !== requestHash) {
+            throw new ConflictException('AFTER_SALE_POLICY_IDEMPOTENCY_CONFLICT');
+          }
+          return { body: input.parseStored(existing.response), replayed: true };
+        },
+        { isolationLevel: 'ReadCommitted', timeout: 15_000 },
+      );
     const execute = () =>
       withStoreTransaction(
         this.database,
@@ -634,6 +662,10 @@ export class AfterSalesPolicyManagementService {
         return await execute();
       } catch (error) {
         if (isRetryableTransactionConflict(error) && attempt === 0) continue;
+        if (isUniqueConstraintConflict(error)) {
+          const replay = await replayCommittedWinner();
+          if (replay !== null) return replay;
+        }
         throw this.mapCommandError(error);
       }
     }

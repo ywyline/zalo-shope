@@ -212,6 +212,7 @@ const runtimeConfigSchema = z
         'must contain one to three unique comma-separated base64url keys of at least 32 bytes',
       ),
     AFTER_SALE_CURSOR_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
+    AFTER_SALE_COMMANDS_ENABLED: disabledBooleanFromString,
     AUTH_JWT_AUDIENCE: z.string().min(3),
     AUTH_JWT_ISSUER: z.string().min(3),
     AUTH_JWT_SECRET: z.string().min(32),
@@ -319,6 +320,8 @@ const runtimeConfigSchema = z
     AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES: optionalInteger(1, 100),
     AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: disabledBooleanFromString,
     AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED: disabledBooleanFromString,
+    AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS: optionalInteger(60, 10 * 365 * 24 * 60 * 60),
+    AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS: optionalInteger(60, 10 * 365 * 24 * 60 * 60),
     AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS: optionalInteger(60, 60 * 60),
     INVENTORY_EXPIRATION_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
     INVENTORY_EXPIRATION_INTERVAL_MS: z.coerce
@@ -637,6 +640,27 @@ const runtimeConfigSchema = z
           path: ['AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED'],
         });
       }
+    }
+    if (config.AFTER_SALE_COMMANDS_ENABLED) {
+      if (config.NODE_ENV === 'production') {
+        context.addIssue({
+          code: 'custom',
+          message: 'is not authorized in production',
+          path: ['AFTER_SALE_COMMANDS_ENABLED'],
+        });
+      }
+    }
+    if (
+      config.AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS !== undefined &&
+      config.AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS !== undefined &&
+      config.AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS >=
+        config.AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'must be greater than the ordinary access TTL',
+        path: ['AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS'],
+      });
     }
     if (config.OUTBOX_WORKER_RETRY_MAX_DELAY_MS < config.OUTBOX_WORKER_RETRY_BASE_DELAY_MS) {
       context.addIssue({

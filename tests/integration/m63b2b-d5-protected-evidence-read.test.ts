@@ -251,8 +251,11 @@ describe.sequential('M6.3-B2b-D5 protected evidence read API', () => {
         storeId: context.storeId,
       },
     });
+    // D5 needs a pre-existing case to exercise protected reads. B3 intentionally
+    // forbids runtime callers from committing a bare case without command facts,
+    // so keep this historical fixture on the owner-only test path.
     await withStoreTransaction(
-      runtime,
+      owner,
       context,
       (transaction) =>
         transaction.$executeRaw`
