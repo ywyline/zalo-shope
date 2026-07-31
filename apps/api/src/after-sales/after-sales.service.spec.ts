@@ -16,6 +16,8 @@ const commandMocks = vi.hoisted(() => ({
   cancel: vi.fn(),
   createMember: vi.fn(),
   createMerchant: vi.fn(),
+  resolveReview: vi.fn(),
+  review: vi.fn(),
   withStoreTransaction: vi.fn(),
 }));
 
@@ -26,6 +28,8 @@ vi.mock('@zalo-shop/database', async () => {
     cancelMemberAfterSaleCommand: commandMocks.cancel,
     createMemberAfterSaleCommand: commandMocks.createMember,
     createMerchantRefundAfterSaleCommand: commandMocks.createMerchant,
+    resolveAfterSaleReviewCommand: commandMocks.resolveReview,
+    reviewAfterSaleCommand: commandMocks.review,
     withStoreTransaction: commandMocks.withStoreTransaction,
   };
 });
@@ -49,7 +53,7 @@ function digest(value: string): string {
 }
 
 function acknowledgement(
-  status: 'CANCELLED' | 'PENDING_REVIEW' | 'REVIEW_REQUIRED',
+  status: 'APPROVED' | 'CANCELLED' | 'PENDING_REVIEW' | 'REJECTED' | 'REVIEW_REQUIRED',
   version: number,
 ) {
   return {
@@ -61,7 +65,7 @@ function acknowledgement(
 }
 
 function commandResult(
-  status: 'CANCELLED' | 'PENDING_REVIEW' | 'REVIEW_REQUIRED',
+  status: 'APPROVED' | 'CANCELLED' | 'PENDING_REVIEW' | 'REJECTED' | 'REVIEW_REQUIRED',
   version: number,
   replayed = false,
 ) {
@@ -78,6 +82,7 @@ function commandResult(
 function enabledConfig(): RuntimeConfig {
   return {
     AFTER_SALE_COMMANDS_ENABLED: true,
+    AFTER_SALE_REVIEW_COMMANDS_ENABLED: true,
     AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: true,
     AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: true,
     AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS: 30 * 24 * 60 * 60,
@@ -93,6 +98,7 @@ function enabledConfig(): RuntimeConfig {
 function commandOnlyConfig(): RuntimeConfig {
   return {
     AFTER_SALE_COMMANDS_ENABLED: true,
+    AFTER_SALE_REVIEW_COMMANDS_ENABLED: true,
     AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: false,
     AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: false,
     AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED: false,
@@ -150,6 +156,8 @@ describe('AfterSalesService B3 commands', () => {
     commandMocks.cancel.mockResolvedValue(commandResult('CANCELLED', 2));
     commandMocks.createMember.mockResolvedValue(commandResult('PENDING_REVIEW', 1));
     commandMocks.createMerchant.mockResolvedValue(commandResult('PENDING_REVIEW', 1));
+    commandMocks.resolveReview.mockResolvedValue(commandResult('APPROVED', 3));
+    commandMocks.review.mockResolvedValue(commandResult('APPROVED', 2));
   });
 
   it('creates a member case with stable detail digest, encrypted detail and all capabilities', async () => {
@@ -466,5 +474,101 @@ describe('AfterSalesService B3 commands', () => {
       message: 'AFTER_SALE_PAYMENT_NOT_PROVEN',
       status: 422,
     });
+  });
+
+  it('authorizes and acknowledges a direct target-store review command', async () => {
+    const { authorizeSensitive, consume, service } = harness(commandOnlyConfig());
+    const body = {
+      confirmation_code: 'APPROVE_AFTER_SALE' as const,
+      decision: 'APPROVE' as const,
+      expected_version: 1,
+      items: [{ approved_quantity: 1, order_item_id: ORDER_ITEM_ID }],
+      reason: 'Approve the verified request after completing administrator review.',
+    };
+    await expect(
+      service.adminReview({
+        afterSaleId: AFTER_SALE_ID,
+        body,
+        headers: {
+          accessToken: 'admin-token',
+          correlationId: 'admin-review-correlation',
+          sourceIp: '127.0.0.1',
+          storeCode: 'beauty-local',
+        },
+        idempotencyKey: 'admin-review-idempotency-key',
+        query: { store_id: STORE_ID },
+      }),
+    ).resolves.toEqual({ body: acknowledgement('APPROVED', 2), replayed: false });
+    expect(authorizeSensitive).toHaveBeenCalledWith(
+      expect.anything(),
+      STORE_ID,
+      'store.after-sales.review',
+    );
+    expect(consume).toHaveBeenCalledWith({
+      access: 'WRITE',
+      actorId: ADMIN_ID,
+      actorType: 'ADMIN',
+      storeId: STORE_ID,
+    });
+    expect(commandMocks.review).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ adminAuthorizationScope: 'STORE' }),
+      expect.objectContaining({ afterSaleId: AFTER_SALE_ID, body, sourceIp: '127.0.0.1' }),
+    );
+  });
+
+  it('encrypts legacy policy basis while hashing the normalized plaintext', async () => {
+    const { service } = harness(commandOnlyConfig());
+    const policyBasis = 'Legacy policy evidence retained for this specific order.';
+    await expect(
+      service.adminResolveReview({
+        afterSaleId: AFTER_SALE_ID,
+        body: {
+          confirmation_code: 'RESOLVE_AFTER_SALE_REVIEW',
+          decision: 'LEGACY_APPROVE',
+          expected_version: 2,
+          policy_basis: policyBasis,
+          reason: 'Approve after validating the immutable legacy policy evidence.',
+          return_shipping_payer: null,
+          return_window_days: null,
+        },
+        headers: {
+          accessToken: 'admin-token',
+          correlationId: 'legacy-review-correlation',
+          storeCode: 'beauty-local',
+        },
+        idempotencyKey: 'legacy-review-idempotency-key',
+        query: { store_id: STORE_ID },
+      }),
+    ).resolves.toEqual({ body: acknowledgement('APPROVED', 3), replayed: false });
+    const command = commandMocks.resolveReview.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(command).toMatchObject({ policyBasisHash: digest(policyBasis) });
+    expect(command.policyBasisCiphertext).not.toBe(policyBasis);
+    expect(String(command.policyBasisCiphertext)).not.toContain(policyBasis);
+  });
+
+  it('fails closed before review primitives when the independent switch is disabled', async () => {
+    const config = commandOnlyConfig();
+    config.AFTER_SALE_REVIEW_COMMANDS_ENABLED = false;
+    const { service } = harness(config);
+    await expect(
+      service.adminReview({
+        afterSaleId: AFTER_SALE_ID,
+        body: {
+          confirmation_code: 'REJECT_AFTER_SALE',
+          decision: 'REJECT',
+          expected_version: 1,
+          reason: 'Reject after completing the required administrator review.',
+        },
+        headers: {
+          accessToken: 'admin-token',
+          correlationId: 'disabled-review-correlation',
+          storeCode: 'beauty-local',
+        },
+        idempotencyKey: 'disabled-review-idempotency-key',
+        query: { store_id: STORE_ID },
+      }),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(commandMocks.review).not.toHaveBeenCalled();
   });
 });

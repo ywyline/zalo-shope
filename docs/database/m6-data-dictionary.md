@@ -5,8 +5,8 @@
 > local/test scanner worker validation、B2b-D3 repository implementation + local/test member
 > evidence HTTP validation 与 B2b-D4 repository implementation + local/test deletion worker validation
 > 以及 B2b-D5 default-disabled repository implementation + local/test protected-read validation 已完成；
-> B3 default-disabled repository implementation + local/test validation 也已 `COMPLETE`。B2/B2b、
-> B4-B7、M6.3 与 UI 未完成；生产策略、TTL、对象存储、真实供应商、部署和 rollout 为
+> B3 与 B4 default-disabled repository implementation + local/test validation 也已 `COMPLETE`。
+> B2/B2b、B5-B7、M6.3 与 UI 未完成；生产策略、TTL、对象存储、真实供应商、部署和 rollout 为
 > `NOT_AUTHORIZED / NOT_RUN` 并保持失败关闭
 >
 > 日期：2026-07-31
@@ -690,8 +690,8 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   `GET/PUT /v1/admin/after-sale-policies/{policyCode}`、
   `GET /v1/admin/after-sale-policies/{policyCode}/versions`、
   `GET /v1/admin/after-sale-policies/{policyCode}/versions/{versionNumber}`、`POST .../publish` 和 `POST .../disable`。
-  B2b 其余能力和 B4-B7 路由仍为 contract-only 或失败关闭；B3 三条路由已在 repository/local-test
-  默认关闭条件下实现，当前边界见第 17 节。
+  B2b 其余能力和 B5-B7 路由仍为 contract-only 或失败关闭；B3 三条路由和 B4 两条管理员审核路由已在
+  repository/local-test 默认关闭条件下实现，当前边界见第 17-18 节。
 - head 列表固定 `(updated_at DESC,id DESC)`，version 列表固定 `(published_at DESC,id DESC)`。两者先读 `limit + 1` 个微秒 page key，
   再对白名单 ID 投影；游标绑定管理员、商城、资源、筛选及 policy code，不能跨资源/跨 policy 重放。
 - 草稿创建仅允许 `expected_version=0`；更新、发布和停用要求精确正版本。写命令的幂等 key 只保存 SHA-256，范围为
@@ -917,3 +917,25 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   事实时以 SQLSTATE `55000` fail-fast。生产或已有命令事实的数据库只能向前修复。B3 default-disabled
   repository implementation + local/test validation 已 `COMPLETE`；production policy/TTL/storage/provider/
   deployment/rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。
+
+## 18. M6.3-B4 审核、复核与寄回到期数据边界
+
+- 第 50 段 `20260731130000_m63_b4_after_sale_review_expiration` 增加到期索引及三个窄
+  security-definer 入口：普通初审、manual/legacy review 解决和商城范围到期批次。第 51 段
+  `20260731131000_m63_b4_atomicity_name_fix` 只前向修复 deferred atomicity guard 的 PL/pgSQL 列名
+  歧义，不改写业务事实。
+- `ADMIN_REVIEW` 只处理非 legacy `PENDING_REVIEW`。批准输入必须唯一且完整覆盖请求行，至少一行数量
+  为正；服务端按请求行 VND 金额和批准数量向下取整，批准全部请求数量时取得完整余数。客户端金额永不
+  进入持久事实。退货/换货截止按冻结 policy snapshot 和 `Asia/Ho_Chi_Minh` 自然日计算。
+- `ADMIN_RESOLVE_REVIEW` 对 legacy case 只允许一次 `LEGACY_APPROVE/LEGACY_REJECT`，保存加密
+  `policy_basis`、摘要 payload/hash、管理员和原因，不伪造历史 policy/version。legacy 批准按既有请求
+  行和 header 金额全量批准，不从当前政策补回运费。普通 `RESUME/REJECT` 只能使用数据库冻结的
+  `review_resume_status`；存在 settlement、返件、验收、库存或换货副作用时早期拒绝失败关闭。
+- 两条命令使用 `Serializable`、订单级 advisory lock、expected version、最多三次可序列化冲突尝试和
+  operation request hash；operation、唯一 transition 与 allowlist audit 由 deferred guard 强制同事务
+  提交，同键重放只返回原 `result_summary` acknowledgement。
+- 到期批次只接受 `after-sale-transition` SYSTEM scope，逐商城锁定已到期且仍为 `APPROVED` 的
+  `RETURN_REFUND/EXCHANGE`，以 `SKIP LOCKED` 追加 `RETURN_EXPIRED -> REJECTED` 与 SYSTEM audit；
+  既有 B0 guard 在返件、settlement、验收、库存或换货事实存在时拒绝到期。
+- 两段 `down.sql` 仅用于 local/test 无 B4 operation/review/expiration audit 事实的环境；存在事实以
+  `55000` 停止。B4 不创建退款、COD、返件物流、验收、库存恢复或换货履约事实。

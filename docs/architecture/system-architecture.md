@@ -418,8 +418,8 @@ docs/
   `(store_id, updated_at DESC, id DESC)` 前向索引；Prisma 仅补记数据库原有
   `after_sale_refunds(store_id, settlement_id)` 唯一约束以修复 schema drift，不重复创建索引。
 - B1 本身不开放申请、取消、审核、凭证访问、返件、退款、COD 结算或任何写路径，也不交付 UI、worker、生产政策/启用或外部调用。
-  随后增加并完成下节 B2a 政策控制面，并在独立授权下完成默认关闭的 B3 repository/local-test 写命令；
-  这不改变 B1 的历史只读结论。完整 B2b、B4-B7、返件验收与库存恢复 M6.4、生产 rollout、
+  随后增加并完成下节 B2a 政策控制面，并在独立授权下完成默认关闭的 B3/B4 repository/local-test 写命令
+  与到期 worker；这不改变 B1 的历史只读结论。完整 B2b、B5-B7、返件验收与库存恢复 M6.4、生产 rollout、
   部署和发布仍需独立授权。
   B1 可读不代表整个 M6.3、M6、M5 或 P0 完成。
 
@@ -447,8 +447,8 @@ docs/
   这一历史读，又无法隐藏 ACTIVE head 行内草稿列；管理操作由应用层独立 RBAC 和显式 store scope 叠加 FORCE RLS 保护。
 - 旧数据库允许下划线 code 与非严格 object payload，新 API 不接受这些事实。仓库的只读分批预检已在本地测试库通过
   （`policies=0, versions=0`）；适用仓库门禁均已通过，B2a 仓库实施为 `COMPLETE`。每个目标库在 rollout 前仍必须重新执行并留证；
-  B2/B2b、B4-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭；B3 的局部完成不构成
-  M6.3 或生产启用。
+  B2/B2b、B5-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭；B3/B4 的局部完成
+  不构成 M6.3 或生产启用。
 
 ### M6.3-B2b-D0 凭证数据库生命周期与可靠排队边界
 
@@ -677,7 +677,22 @@ docs/
   `expected_version` 冲突显式排除在重试之外并稳定返回版本冲突，避免旧前置条件在重试中被接受。
 - B3 default-disabled repository implementation + local/test validation 已完成，适用仓库门禁证据见
   `docs/reports/m6.3-b3-after-sale-commands-completion-report.md`。生产策略、TTL、对象存储、真实支付/
-  物流供应商、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`；B4-B7、M6.3、M6 与 P0 继续未完成。
+  物流供应商、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`；后续 B4 局部完成不改写 B3 历史范围。
+
+### M6.3-B4 默认关闭的审核、复核与寄回到期仓库边界
+
+- 两条管理员路由分别处理非 legacy 初审和 `REVIEW_REQUIRED` 的 ordinary/legacy 解决；两者复用 B3
+  订单锁、最终授权复验、稳定 request hash、operation acknowledgement 和最多三次 Serializable 尝试。
+  普通批准金额只由冻结请求行按整数 VND 重算，legacy 不回填当前政策。商家主动退款采用不同管理员
+  maker-checker。
+- B4 复用 M6.2/B0 append-only transition 投影。`ADMIN_REVIEW/ADMIN_RESOLVE_REVIEW` operation、恰一条
+  transition 与审计必须同事务提交；第 51 段前向修复消除了 deferred guard 的局部变量/列名歧义。
+- 独立 worker 逐 ACTIVE 商城调用 `after-sale-transition` SYSTEM 原语，只对已到期且无冲突副作用的
+  `APPROVED RETURN_REFUND/EXCHANGE` 追加 `RETURN_EXPIRED`。`SKIP LOCKED` 使并发批次不重复处理，状态
+  trigger 保证返件与到期至多一个成功。
+- `AFTER_SALE_REVIEW_COMMANDS_ENABLED` 与 `AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED` 默认关闭，
+  production 拒绝启用。B4 不调用退款/COD/物流 provider，不创建返件、验收、库存恢复、换货履约或 UI；
+  B5-B7、M6.3、M6、P0 和 production rollout 继续未完成。
 
 ## 7. 身份、安全与隐私
 

@@ -186,12 +186,89 @@ describe('AfterSalesAdminOrderController B3 command', () => {
   });
 });
 
+describe('AfterSalesAdminController B4 commands', () => {
+  it('strictly binds review and resolve commands with server-owned correlation', async () => {
+    const adminReview = vi.fn().mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'APPROVED', version: 2 },
+      replayed: false,
+    });
+    const adminResolveReview = vi.fn().mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'REJECTED', version: 3 },
+      replayed: true,
+    });
+    const controller = new AfterSalesAdminController({
+      adminResolveReview,
+      adminReview,
+    } as unknown as AfterSalesService);
+    const reviewResponse = response();
+    const reviewRequest = { id: 'client-correlation', ip: '::ffff:127.0.0.1' };
+    await expect(
+      controller.review(
+        'Bearer admin-token',
+        IDEMPOTENCY_KEY,
+        'beauty-store',
+        'Review submitted evidence for case ASC-1',
+        { afterSaleId: AFTER_SALE_ID },
+        {
+          confirmation_code: 'APPROVE_AFTER_SALE',
+          decision: 'APPROVE',
+          expected_version: 1,
+          items: [{ approved_quantity: 1, order_item_id: ORDER_ITEM_ID }],
+          reason: 'Approve after completing the required administrator review.',
+        },
+        { store_id: STORE_ID },
+        reviewRequest,
+        reviewResponse,
+      ),
+    ).resolves.toMatchObject({ status: 'APPROVED', version: 2 });
+    expect(adminReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        afterSaleId: AFTER_SALE_ID,
+        headers: expect.objectContaining({
+          accessReason: 'Review submitted evidence for case ASC-1',
+          correlationId: reviewRequest.id,
+          sourceIp: '127.0.0.1',
+        }),
+        query: { store_id: STORE_ID },
+      }),
+    );
+    expect(reviewResponse.setHeader).toHaveBeenCalledWith('Idempotency-Replayed', 'false');
+
+    const resolveResponse = response();
+    await controller.resolveReview(
+      'Bearer admin-token',
+      `${IDEMPOTENCY_KEY}-resolve`,
+      'beauty-store',
+      undefined,
+      { afterSaleId: AFTER_SALE_ID },
+      {
+        confirmation_code: 'RESOLVE_AFTER_SALE_REVIEW',
+        decision: 'REJECT',
+        expected_version: 2,
+        reason: 'Reject after completing the required manual review.',
+      },
+      { store_id: STORE_ID },
+      { id: 'client-correlation', ip: '::1' },
+      resolveResponse,
+    );
+    expect(adminResolveReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        afterSaleId: AFTER_SALE_ID,
+        idempotencyKey: `${IDEMPOTENCY_KEY}-resolve`,
+      }),
+    );
+    expect(resolveResponse.setHeader).toHaveBeenCalledWith('Idempotency-Replayed', 'true');
+  });
+});
+
 describe('B3 command HTTP routes', () => {
   let app: INestApplication;
   const service = {
     adminCreateMerchantRefund: vi.fn(),
     adminDetail: vi.fn(),
     adminList: vi.fn(),
+    adminResolveReview: vi.fn(),
+    adminReview: vi.fn(),
     memberCancel: vi.fn(),
     memberCreate: vi.fn(),
     memberDetail: vi.fn(),
@@ -207,6 +284,14 @@ describe('B3 command HTTP routes', () => {
     service.adminCreateMerchantRefund.mockResolvedValue({
       body: ACKNOWLEDGEMENT,
       replayed: false,
+    });
+    service.adminReview.mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'APPROVED', version: 2 },
+      replayed: false,
+    });
+    service.adminResolveReview.mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'REJECTED', version: 3 },
+      replayed: true,
     });
     const module = await Test.createTestingModule({
       controllers: [
@@ -296,5 +381,60 @@ describe('B3 command HTTP routes', () => {
       });
     expect(invalid.status).toBe(400);
     expect(invalid.body).toMatchObject({ code: 'INPUT_INVALID' });
+  });
+
+  it('registers review routes and rejects client-supplied amounts', async () => {
+    const review = await api()
+      .post(`/v1/admin/after-sales/${AFTER_SALE_ID}/review?store_id=${STORE_ID}`)
+      .set({
+        Authorization: 'Bearer admin-token',
+        'Idempotency-Key': `${IDEMPOTENCY_KEY}-review`,
+        'X-Store-Code': 'beauty-store',
+      })
+      .send({
+        confirmation_code: 'APPROVE_AFTER_SALE',
+        decision: 'APPROVE',
+        expected_version: 1,
+        items: [{ approved_quantity: 1, order_item_id: ORDER_ITEM_ID }],
+        reason: 'Approve after completing the required administrator review.',
+      });
+    expect(review.status).toBe(200);
+    expect(review.headers['idempotency-replayed']).toBe('false');
+    expect(review.body).toMatchObject({ status: 'APPROVED', version: 2 });
+
+    const invalid = await api()
+      .post(`/v1/admin/after-sales/${AFTER_SALE_ID}/review?store_id=${STORE_ID}`)
+      .set({
+        Authorization: 'Bearer admin-token',
+        'Idempotency-Key': `${IDEMPOTENCY_KEY}-review-invalid`,
+        'X-Store-Code': 'beauty-store',
+      })
+      .send({
+        approved_total_vnd: 1,
+        confirmation_code: 'APPROVE_AFTER_SALE',
+        decision: 'APPROVE',
+        expected_version: 1,
+        items: [{ approved_quantity: 1, order_item_id: ORDER_ITEM_ID }],
+        reason: 'Approve after completing the required administrator review.',
+      });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body).toMatchObject({ code: 'INPUT_INVALID' });
+
+    const resolve = await api()
+      .post(`/v1/admin/after-sales/${AFTER_SALE_ID}/resolve-review?store_id=${STORE_ID}`)
+      .set({
+        Authorization: 'Bearer admin-token',
+        'Idempotency-Key': `${IDEMPOTENCY_KEY}-resolve-review`,
+        'X-Store-Code': 'beauty-store',
+      })
+      .send({
+        confirmation_code: 'RESOLVE_AFTER_SALE_REVIEW',
+        decision: 'REJECT',
+        expected_version: 2,
+        reason: 'Reject after completing the required manual review.',
+      });
+    expect(resolve.status).toBe(200);
+    expect(resolve.headers['idempotency-replayed']).toBe('true');
+    expect(resolve.body).toMatchObject({ status: 'REJECTED', version: 3 });
   });
 });

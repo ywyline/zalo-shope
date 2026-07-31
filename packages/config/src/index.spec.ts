@@ -119,6 +119,10 @@ describe('parseRuntimeConfig', () => {
     expect(config.NODE_ENV).toBe('development');
     expect(config.AFTER_SALE_CURSOR_TTL_SECONDS).toBe(900);
     expect(config.AFTER_SALE_COMMANDS_ENABLED).toBe(false);
+    expect(config.AFTER_SALE_REVIEW_COMMANDS_ENABLED).toBe(false);
+    expect(config.AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED).toBe(false);
+    expect(config.AFTER_SALE_RETURN_EXPIRATION_BATCH_SIZE).toBe(100);
+    expect(config.AFTER_SALE_RETURN_EXPIRATION_INTERVAL_MS).toBe(5_000);
     expect(config.API_PORT).toBe(3000);
     expect(config.WORKER_PORT).toBe(3001);
     expect(config.INVENTORY_EXPIRATION_INTERVAL_MS).toBe(5_000);
@@ -162,6 +166,32 @@ describe('parseRuntimeConfig', () => {
     expect(config.S3_FORCE_PATH_STYLE).toBe(true);
     expect(config.S3_SESSION_TOKEN).toBeUndefined();
     expect(config.CONTENT_EXTERNAL_TARGET_HOSTS).toEqual([]);
+  });
+
+  it('keeps B4 review and return expiration capabilities local/test only', () => {
+    expect(
+      parseRuntimeConfig({
+        ...validEnvironment,
+        AFTER_SALE_REVIEW_COMMANDS_ENABLED: 'true',
+        AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED: 'true',
+        NODE_ENV: 'test',
+      }),
+    ).toMatchObject({
+      AFTER_SALE_REVIEW_COMMANDS_ENABLED: true,
+      AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED: true,
+    });
+    expect(() =>
+      parseRuntimeConfig({
+        ...validProductionEnvironment,
+        AFTER_SALE_REVIEW_COMMANDS_ENABLED: 'true',
+      }),
+    ).toThrow(InvalidEnvironmentError);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validProductionEnvironment,
+        AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED: 'true',
+      }),
+    ).toThrow(InvalidEnvironmentError);
   });
 
   it('enables evidence storage only with separate bucket and role credentials', () => {

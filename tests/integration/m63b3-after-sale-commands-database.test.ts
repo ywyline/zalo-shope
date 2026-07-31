@@ -17,13 +17,18 @@ import {
   createMemberAfterSaleCommand,
   createMerchantRefundAfterSaleCommand,
   createRuntimePrismaClient,
+  expireDueAfterSales,
   initializeAfterSaleEvidenceUpload,
+  resolveAfterSaleReviewCommand,
+  reviewAfterSaleCommand,
   type Prisma,
   PrismaClient,
+  withAfterSaleSystemTransaction,
   withStoreTransaction,
 } from '@zalo-shop/database';
 import {
   createAfterSaleEvidenceSystemContext,
+  createAfterSaleSystemContext,
   createStoreContext,
   type StoreContext,
 } from '@zalo-shop/domain';
@@ -2415,5 +2420,390 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
         ),
       'AFTER_SALE_NOT_FOUND',
     );
+  });
+
+  it('reviews requested lines with server-calculated integer VND and immutable replay', async () => {
+    const order = await createOrder({ payableVnd: 100_001, quantity: 3, tag: 'b4-partial' });
+    const created = await createMemberAfterSaleCommand(
+      requiredRuntime(),
+      memberContext(),
+      memberCreateInput(order, 'b4-partial', 3),
+    );
+    const idempotencyKey = `m63b4-review-partial-${suffix}`;
+    const body = {
+      confirmation_code: 'APPROVE_AFTER_SALE' as const,
+      decision: 'APPROVE' as const,
+      expected_version: 1,
+      items: [{ approved_quantity: 2, order_item_id: order.itemId }],
+      reason: 'Approve two verified units after reviewing the submitted request.',
+    };
+    const approved = await reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+      afterSaleId: created.afterSaleId,
+      body,
+      idempotencyKey,
+      sourceIp: '127.0.0.1',
+    });
+    expect(approved).toMatchObject({ replayed: false, status: 'APPROVED', version: 2 });
+
+    const persisted = await requiredOwner().afterSale.findUniqueOrThrow({
+      include: {
+        items: true,
+        operations: true,
+        transitions: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+      },
+      where: { id: created.afterSaleId },
+    });
+    expect(persisted).toMatchObject({
+      approvedItemVnd: 66_667n,
+      approvedTotalVnd: 66_667n,
+      reviewedBy: fixture.adminId,
+      status: 'APPROVED',
+      version: 2,
+    });
+    expect(persisted.items).toEqual([
+      expect.objectContaining({ approvedItemVnd: 66_667n, approvedQuantity: 2 }),
+    ]);
+    expect(persisted.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          attemptCount: 1,
+          operation: 'ADMIN_REVIEW',
+          status: 'COMPLETED',
+        }),
+      ]),
+    );
+    expect(persisted.transitions.map(({ event }) => event)).toEqual(['SUBMIT', 'APPROVE']);
+
+    await expect(
+      reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+        afterSaleId: created.afterSaleId,
+        body,
+        idempotencyKey,
+        sourceIp: '127.0.0.1',
+      }),
+    ).resolves.toEqual({ ...approved, replayed: true });
+    await expectCommandFailure(
+      () =>
+        reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+          afterSaleId: created.afterSaleId,
+          body: { ...body, reason: 'A different valid reason must conflict for the same key.' },
+          idempotencyKey,
+        }),
+      'AFTER_SALE_IDEMPOTENCY_CONFLICT',
+    );
+    await expectCommandFailure(
+      () =>
+        reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+          afterSaleId: created.afterSaleId,
+          body: { ...body, expected_version: 1 },
+          idempotencyKey: `m63b4-review-stale-${suffix}`,
+        }),
+      'AFTER_SALE_VERSION_CONFLICT',
+    );
+  });
+
+  it('rejects incomplete, duplicate, all-zero and excessive approval decisions atomically', async () => {
+    const order = await createOrder({ quantity: 2, tag: 'b4-invalid-lines' });
+    const created = await createMemberAfterSaleCommand(
+      requiredRuntime(),
+      memberContext(),
+      memberCreateInput(order, 'b4-invalid-lines', 2),
+    );
+    const invalidItems = [
+      [],
+      [
+        { approved_quantity: 1, order_item_id: order.itemId },
+        { approved_quantity: 1, order_item_id: order.itemId },
+      ],
+      [{ approved_quantity: 0, order_item_id: order.itemId }],
+      [{ approved_quantity: 3, order_item_id: order.itemId }],
+    ];
+    for (const [index, items] of invalidItems.entries()) {
+      await expectCommandFailure(
+        () =>
+          reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+            afterSaleId: created.afterSaleId,
+            body: {
+              confirmation_code: 'APPROVE_AFTER_SALE',
+              decision: 'APPROVE',
+              expected_version: 1,
+              items,
+              reason: 'This invalid line decision must leave the aggregate unchanged.',
+            } as never,
+            idempotencyKey: `m63b4-invalid-lines-${index}-${suffix}`,
+          }),
+        'AFTER_SALE_STATE_CONFLICT',
+      );
+    }
+    expect(
+      await requiredOwner().afterSale.findUniqueOrThrow({
+        select: { approvedTotalVnd: true, status: true, version: true },
+        where: { id: created.afterSaleId },
+      }),
+    ).toEqual({ approvedTotalVnd: 0n, status: 'PENDING_REVIEW', version: 1 });
+  });
+
+  it('enforces merchant-refund maker-checker and permits a separate store reviewer', async () => {
+    const order = await createOrder({ tag: 'b4-maker-checker' });
+    const merchant = await createMerchantRefundAfterSaleCommand(requiredRuntime(), adminContext(), {
+      idempotencyKey: `m63b4-maker-create-${suffix}`,
+      items: [{ orderItemId: order.itemId, quantity: 1 }],
+      orderId: order.id,
+      reasonCode: 'damaged-item',
+      reasonDetailCiphertext: 'm63b4-maker-checker-ciphertext',
+      reasonDetailHash: digest('m63b4-maker-checker'),
+      type: 'MERCHANT_REFUND',
+    });
+    const body = {
+      confirmation_code: 'APPROVE_AFTER_SALE' as const,
+      decision: 'APPROVE' as const,
+      expected_version: 1,
+      items: [{ approved_quantity: 1, order_item_id: order.itemId }],
+      reason: 'A separate reviewer approves the merchant initiated refund request.',
+    };
+    await expectCommandFailure(
+      () =>
+        reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+          afterSaleId: merchant.afterSaleId,
+          body,
+          idempotencyKey: `m63b4-maker-self-${suffix}`,
+        }),
+      'AFTER_SALE_AUTHORIZATION_DENIED',
+    );
+    await expect(
+      reviewAfterSaleCommand(requiredRuntime(), adminContext(fixture.otherAdminId), {
+        afterSaleId: merchant.afterSaleId,
+        body,
+        idempotencyKey: `m63b4-maker-other-${suffix}`,
+      }),
+    ).resolves.toMatchObject({ status: 'APPROVED', version: 2 });
+  });
+
+  it('resolves legacy review once with explicit return terms and frozen amounts', async () => {
+    const order = await createOrder({
+      itemPayableVnd: 120_000,
+      payableVnd: 130_000,
+      quantity: 1,
+      shippingFeeVnd: 10_000,
+      tag: 'b4-legacy-return',
+      withPolicy: false,
+    });
+    const created = await createMemberAfterSaleCommand(
+      requiredRuntime(),
+      memberContext(),
+      memberCreateInput(order, 'b4-legacy-return', 1, { type: 'RETURN_REFUND' }),
+    );
+    expect(created).toMatchObject({ status: 'REVIEW_REQUIRED', version: 1 });
+    const policyBasis = 'Legacy receipt and store policy evidence reviewed by an administrator.';
+    const body = {
+      confirmation_code: 'RESOLVE_AFTER_SALE_REVIEW' as const,
+      decision: 'LEGACY_APPROVE' as const,
+      expected_version: 1,
+      policy_basis: policyBasis,
+      reason: 'Approve the legacy return after reviewing the preserved policy evidence.',
+      return_shipping_payer: 'MERCHANT' as const,
+      return_window_days: 7,
+    };
+    const input = {
+      afterSaleId: created.afterSaleId,
+      body,
+      idempotencyKey: `m63b4-legacy-approve-${suffix}`,
+      policyBasisCiphertext: 'encrypted-legacy-policy-basis',
+      policyBasisHash: digest(policyBasis),
+    };
+    const approved = await resolveAfterSaleReviewCommand(requiredRuntime(), adminContext(), input);
+    expect(approved).toMatchObject({ replayed: false, status: 'APPROVED', version: 2 });
+    await expect(
+      resolveAfterSaleReviewCommand(requiredRuntime(), adminContext(), input),
+    ).resolves.toEqual({ ...approved, replayed: true });
+
+    const persisted = await requiredOwner().afterSale.findUniqueOrThrow({
+      include: { legacyDecision: true, orderAllocations: true },
+      where: { id: created.afterSaleId },
+    });
+    expect(persisted).toMatchObject({
+      approvedItemVnd: 120_000n,
+      approvedShippingVnd: 0n,
+      approvedTotalVnd: 120_000n,
+      status: 'APPROVED',
+    });
+    expect(persisted.orderAllocations).toEqual([]);
+    expect(persisted.legacyDecision).toMatchObject({
+      adminId: fixture.adminId,
+      decision: 'APPROVE',
+      policyBasisCiphertext: 'encrypted-legacy-policy-basis',
+    });
+    expect(JSON.stringify(persisted.legacyDecision)).not.toContain(policyBasis);
+    await expectCommandFailure(
+      () =>
+        resolveAfterSaleReviewCommand(requiredRuntime(), adminContext(), {
+          ...input,
+          body: { ...body, expected_version: 2 },
+          idempotencyKey: `m63b4-legacy-second-${suffix}`,
+        }),
+      'AFTER_SALE_STATE_CONFLICT',
+    );
+  });
+
+  it('resumes only the frozen review status and blocks early rejection after side effects', async () => {
+    const systemContext = createAfterSaleSystemContext({
+      actorId: '00000000-0000-4000-8000-000000000007',
+      correlationId: `m63b4-review-system-${suffix}`,
+      storeId: BEAUTY_STORE_ID,
+    });
+    const createReviewRequired = async (tag: string) => {
+      const order = await createOrder({ tag });
+      const created = await createMemberAfterSaleCommand(
+        requiredRuntime(),
+        memberContext(),
+        memberCreateInput(order, tag),
+      );
+      const approved = await reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+        afterSaleId: created.afterSaleId,
+        body: {
+          confirmation_code: 'APPROVE_AFTER_SALE',
+          decision: 'APPROVE',
+          expected_version: 1,
+          items: [{ approved_quantity: 1, order_item_id: order.itemId }],
+          reason: 'Approve this request before exercising the manual review path.',
+        },
+        idempotencyKey: `m63b4-${tag}-approve-${suffix}`,
+      });
+      await withAfterSaleSystemTransaction(
+        requiredRuntime(),
+        systemContext,
+        (transaction) => transaction.$executeRaw`
+          INSERT INTO after_sale_transitions
+            (store_id, after_sale_id, from_status, to_status, event,
+              actor_type, actor_id, reason, correlation_id)
+          VALUES (${BEAUTY_STORE_ID}::uuid, ${created.afterSaleId}::uuid,
+            'APPROVED', 'REVIEW_REQUIRED', 'REQUIRE_REVIEW', 'SYSTEM',
+            ${systemContext.actor.id}::uuid, NULL, ${systemContext.correlationId})
+        `,
+      );
+      return { afterSaleId: created.afterSaleId, order, version: approved.version + 1 };
+    };
+
+    const resumable = await createReviewRequired('b4-resume');
+    await expect(
+      resolveAfterSaleReviewCommand(requiredRuntime(), adminContext(), {
+        afterSaleId: resumable.afterSaleId,
+        body: {
+          confirmation_code: 'RESOLVE_AFTER_SALE_REVIEW',
+          decision: 'RESUME',
+          expected_version: resumable.version,
+          reason: 'Resume the exact status frozen when the manual review was requested.',
+        },
+        idempotencyKey: `m63b4-resume-${suffix}`,
+      }),
+    ).resolves.toMatchObject({ status: 'APPROVED', version: resumable.version + 1 });
+
+    const guarded = await createReviewRequired('b4-review-side-effect');
+    await requiredOwner().$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.afterSaleSettlement.create({
+        data: {
+          afterSaleId: guarded.afterSaleId,
+          amountVnd: 60_000,
+          idempotencyKeyHash: digest(`m63b4-side-effect-key-${suffix}`),
+          method: 'NO_PAYOUT',
+          orderId: guarded.order.id,
+          publicSettlementNumber: `AST-${randomUUID().replaceAll('-', '').toUpperCase()}`,
+          requestHash: digest(`m63b4-side-effect-request-${suffix}`),
+          requestedBy: fixture.adminId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectCommandFailure(
+      () =>
+        resolveAfterSaleReviewCommand(requiredRuntime(), adminContext(), {
+          afterSaleId: guarded.afterSaleId,
+          body: {
+            confirmation_code: 'RESOLVE_AFTER_SALE_REVIEW',
+            decision: 'REJECT',
+            expected_version: guarded.version,
+            reason: 'Rejecting after a settlement fact exists must fail closed.',
+          },
+          idempotencyKey: `m63b4-guarded-reject-${suffix}`,
+        }),
+      'AFTER_SALE_STATE_CONFLICT',
+    );
+  });
+
+  it('expires due returns once per store and skips locked or future cases', async () => {
+    const createApprovedReturn = async (tag: string) => {
+      const order = await createOrder({ quantity: 1, tag });
+      const created = await createMemberAfterSaleCommand(
+        requiredRuntime(),
+        memberContext(),
+        memberCreateInput(order, tag, 1, { type: 'RETURN_REFUND' }),
+      );
+      await reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+        afterSaleId: created.afterSaleId,
+        body: {
+          confirmation_code: 'APPROVE_AFTER_SALE',
+          decision: 'APPROVE',
+          expected_version: 1,
+          items: [{ approved_quantity: 1, order_item_id: order.itemId }],
+          reason: 'Approve the return request before testing its frozen deadline.',
+        },
+        idempotencyKey: `m63b4-${tag}-approve-${suffix}`,
+      });
+      return created.afterSaleId;
+    };
+    const dueId = await createApprovedReturn('b4-expire-due');
+    const futureId = await createApprovedReturn('b4-expire-future');
+    await requiredOwner().$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.afterSale.update({
+        data: { returnDeadlineAt: new Date(Date.now() - 60_000) },
+        where: { id: dueId },
+      });
+      await transaction.afterSale.update({
+        data: { returnDeadlineAt: new Date(Date.now() + 60_000) },
+        where: { id: futureId },
+      });
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    const systemContext = createAfterSaleSystemContext({
+      actorId: '00000000-0000-4000-8000-000000000007',
+      correlationId: `m63b4-expiration-${suffix}`,
+      storeId: BEAUTY_STORE_ID,
+    });
+    await expect(expireDueAfterSales(requiredRuntime(), systemContext, 100)).resolves.toEqual({
+      expired: 1,
+      scanned: 1,
+      skipped: 0,
+    });
+    await expect(expireDueAfterSales(requiredRuntime(), systemContext, 100)).resolves.toEqual({
+      expired: 0,
+      scanned: 0,
+      skipped: 0,
+    });
+    expect(
+      await requiredOwner().afterSale.findMany({
+        orderBy: { id: 'asc' },
+        select: { id: true, status: true },
+        where: { id: { in: [dueId, futureId] } },
+      }),
+    ).toEqual(
+      [
+        { id: dueId, status: 'REJECTED' },
+        { id: futureId, status: 'APPROVED' },
+      ].sort((left, right) => left.id.localeCompare(right.id)),
+    );
+    await expect(
+      expireDueAfterSales(
+        requiredRuntime(),
+        createAfterSaleSystemContext({
+          actorId: systemContext.actor.id,
+          correlationId: `m63b4-expiration-fashion-${suffix}`,
+          storeId: FASHION_STORE_ID,
+        }),
+        100,
+      ),
+    ).resolves.toEqual({ expired: 0, scanned: 0, skipped: 0 });
   });
 });

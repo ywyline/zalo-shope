@@ -1606,6 +1606,7 @@ model AfterSale {
   @@index([storeId, memberId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([storeId, updatedAt(sort: Desc), id(sort: Desc)], map: "after_sales_store_id_updated_at_id_idx")
   @@index([storeId, status, updatedAt, id])
+  @@index([storeId, status, returnDeadlineAt, id], map: "after_sales_return_expiration_idx")
   @@index([storeId, policyId, policyVersionId], map: "after_sales_policy_identity_idx")
   @@map("after_sales")
 }

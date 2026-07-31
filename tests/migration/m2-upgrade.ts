@@ -64,6 +64,11 @@ const D5_MIGRATIONS = [
 
 const B3_MIGRATION_NAME = '20260731110000_m63_b3_after_sale_commands' as const;
 
+const B4_MIGRATIONS = [
+  '20260731130000_m63_b4_after_sale_review_expiration',
+  '20260731131000_m63_b4_atomicity_name_fix',
+] as const;
+
 const M6_MIGRATIONS = [
   '20260727110000_m62_after_sales_member_share_foundation',
   '20260727111000_m62_permission_catalog',
@@ -86,6 +91,7 @@ const M6_MIGRATIONS = [
   '20260729120000_m63_b2b_d0_evidence_lifecycle',
   ...D5_MIGRATIONS,
   B3_MIGRATION_NAME,
+  ...B4_MIGRATIONS,
 ] as const;
 
 type MigrationRecord = {
@@ -1099,6 +1105,238 @@ async function assertM63B3DownBoundary(client: PrismaClientType): Promise<void> 
   }
 }
 
+type B4FunctionCatalogRecord = B3FunctionCatalogRecord & { definition: string };
+
+async function assertM63B4ReviewBoundary(client: PrismaClientType): Promise<string> {
+  const functionRows = await client.$queryRaw<B4FunctionCatalogRecord[]>`
+    SELECT
+      function_definition.proname AS function_name,
+      pg_catalog.oidvectortypes(function_definition.proargtypes) AS identity_arguments,
+      pg_catalog.pg_get_functiondef(function_definition.oid) AS definition,
+      EXISTS (
+        SELECT 1
+        FROM pg_catalog.aclexplode(
+          COALESCE(
+            function_definition.proacl,
+            pg_catalog.acldefault('f', function_definition.proowner)
+          )
+        ) AS privilege
+        WHERE privilege.grantee = 0 AND privilege.privilege_type = 'EXECUTE'
+      ) AS public_can_execute,
+      pg_catalog.has_function_privilege(
+        'zalo_shop_runtime', function_definition.oid, 'EXECUTE'
+      ) AS runtime_can_execute,
+      function_definition.prosecdef AS security_definer,
+      'search_path=pg_catalog, public, pg_temp' = ANY(function_definition.proconfig)
+        AS safe_search_path,
+      'row_security=on' = ANY(function_definition.proconfig) AS row_security_on
+    FROM pg_catalog.pg_proc AS function_definition
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = function_definition.pronamespace
+    WHERE namespace.nspname = 'app_security'
+      AND function_definition.proname IN (
+        'validate_m63_b4_operation_completion',
+        'validate_m63_b4_command_atomicity',
+        'review_m63_b4_after_sale',
+        'resolve_m63_b4_after_sale_review',
+        'expire_m63_b4_due_after_sales'
+      )
+    ORDER BY function_definition.proname, identity_arguments
+  `;
+  const expectedFunctions = new Map<
+    string,
+    { runtimeCanExecute: boolean; securityDefiner: boolean }
+  >([
+    [
+      'validate_m63_b4_operation_completion()',
+      { runtimeCanExecute: false, securityDefiner: false },
+    ],
+    ['validate_m63_b4_command_atomicity()', { runtimeCanExecute: false, securityDefiner: true }],
+    [
+      'review_m63_b4_after_sale(uuid, uuid, text, text, integer, text, jsonb, text, inet)',
+      { runtimeCanExecute: true, securityDefiner: true },
+    ],
+    [
+      'resolve_m63_b4_after_sale_review(uuid, uuid, text, text, integer, text, text, text, text, integer, text, inet)',
+      { runtimeCanExecute: true, securityDefiner: true },
+    ],
+    ['expire_m63_b4_due_after_sales(integer)', { runtimeCanExecute: true, securityDefiner: true }],
+  ]);
+  if (functionRows.length !== expectedFunctions.size) {
+    fail(`M6.3-B4 function catalog is incomplete: ${JSON.stringify(functionRows)}`);
+  }
+  for (const row of functionRows) {
+    const key = `${row.function_name}(${row.identity_arguments})`;
+    const expected = expectedFunctions.get(key);
+    if (
+      !expected ||
+      row.public_can_execute ||
+      row.runtime_can_execute !== expected.runtimeCanExecute ||
+      row.security_definer !== expected.securityDefiner ||
+      !row.safe_search_path ||
+      row.row_security_on
+    ) {
+      fail(`M6.3-B4 function grants or configuration differ: ${JSON.stringify(row)}`);
+    }
+  }
+  const atomicityFunction = functionRows.find(
+    (row) => row.function_name === 'validate_m63_b4_command_atomicity',
+  );
+  if (
+    !atomicityFunction?.definition.includes('target_operation_id') ||
+    !atomicityFunction.definition.includes('target_after_sale_id') ||
+    atomicityFunction.definition.includes('DECLARE after_sale_id uuid')
+  ) {
+    fail('M6.3-B4 atomicity function does not include the approved forward ambiguity fix');
+  }
+
+  const triggerRows = await client.$queryRaw<B3TriggerCatalogRecord[]>`
+    SELECT
+      relation.relname AS table_name,
+      trigger_definition.tgname AS trigger_name,
+      function_definition.proname AS function_name,
+      pg_catalog.oidvectortypes(function_definition.proargtypes)
+        AS function_identity_arguments,
+      trigger_definition.tgconstraint <> 0 AS is_constraint,
+      trigger_definition.tgdeferrable AS is_deferrable,
+      trigger_definition.tginitdeferred AS is_initially_deferred,
+      trigger_definition.tgenabled = 'O' AS is_enabled
+    FROM pg_catalog.pg_trigger AS trigger_definition
+    JOIN pg_catalog.pg_class AS relation
+      ON relation.oid = trigger_definition.tgrelid
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    JOIN pg_catalog.pg_proc AS function_definition
+      ON function_definition.oid = trigger_definition.tgfoid
+    WHERE NOT trigger_definition.tgisinternal
+      AND namespace.nspname = 'public'
+      AND trigger_definition.tgname IN (
+        'after_sale_operations_b4_completion_guard',
+        'after_sale_operations_b4_atomic_guard',
+        'after_sale_transitions_b4_atomic_guard'
+      )
+    ORDER BY relation.relname, trigger_definition.tgname
+  `;
+  const expectedTriggers = new Map<
+    string,
+    {
+      functionName: string;
+      isConstraint: boolean;
+      isDeferrable: boolean;
+      isInitiallyDeferred: boolean;
+    }
+  >([
+    [
+      'after_sale_operations:after_sale_operations_b4_completion_guard',
+      {
+        functionName: 'validate_m63_b4_operation_completion',
+        isConstraint: false,
+        isDeferrable: false,
+        isInitiallyDeferred: false,
+      },
+    ],
+    [
+      'after_sale_operations:after_sale_operations_b4_atomic_guard',
+      {
+        functionName: 'validate_m63_b4_command_atomicity',
+        isConstraint: true,
+        isDeferrable: true,
+        isInitiallyDeferred: true,
+      },
+    ],
+    [
+      'after_sale_transitions:after_sale_transitions_b4_atomic_guard',
+      {
+        functionName: 'validate_m63_b4_command_atomicity',
+        isConstraint: true,
+        isDeferrable: true,
+        isInitiallyDeferred: true,
+      },
+    ],
+  ]);
+  if (triggerRows.length !== expectedTriggers.size) {
+    fail(`M6.3-B4 trigger catalog is incomplete: ${JSON.stringify(triggerRows)}`);
+  }
+  for (const row of triggerRows) {
+    const expected = expectedTriggers.get(`${row.table_name}:${row.trigger_name}`);
+    if (
+      !expected ||
+      row.function_name !== expected.functionName ||
+      row.function_identity_arguments !== '' ||
+      row.is_constraint !== expected.isConstraint ||
+      row.is_deferrable !== expected.isDeferrable ||
+      row.is_initially_deferred !== expected.isInitiallyDeferred ||
+      !row.is_enabled
+    ) {
+      fail(`M6.3-B4 trigger shape differs: ${JSON.stringify(row)}`);
+    }
+  }
+
+  await assertIndexShape(client, {
+    expectedKeys: ['store_id', 'status', 'return_deadline_at', 'id'],
+    expectedUnique: false,
+    indexName: 'after_sales_return_expiration_idx',
+    tableName: 'after_sales',
+  });
+
+  const [operationLinkFunction] = await client.$queryRaw<Array<{ definition: string }>>`
+    SELECT pg_catalog.pg_get_functiondef(function_definition.oid) AS definition
+    FROM pg_catalog.pg_proc AS function_definition
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = function_definition.pronamespace
+    WHERE namespace.nspname = 'app_security'
+      AND function_definition.proname = 'validate_m63_b3_operation_link'
+      AND function_definition.proargtypes = ''::oidvector
+  `;
+  if (
+    !operationLinkFunction?.definition.includes('ADMIN_REVIEW') ||
+    !operationLinkFunction.definition.includes('ADMIN_RESOLVE_REVIEW')
+  ) {
+    fail('M6.3-B4 did not extend the operation-link guard to the approved review commands');
+  }
+
+  return createHash('sha256')
+    .update(JSON.stringify({ functionRows, triggerRows, operationLinkFunction }))
+    .digest('hex');
+}
+
+async function assertM63B4DownBoundary(client: PrismaClientType): Promise<void> {
+  const [catalogState] = await client.$queryRaw<
+    Array<{ b4_functions: bigint; b4_indexes: bigint; b4_triggers: bigint }>
+  >`
+    SELECT
+      (SELECT count(*)
+       FROM pg_catalog.pg_proc function_definition
+       JOIN pg_catalog.pg_namespace namespace
+         ON namespace.oid = function_definition.pronamespace
+       WHERE namespace.nspname = 'app_security'
+         AND function_definition.proname LIKE '%m63_b4%') AS b4_functions,
+      (SELECT count(*)
+       FROM pg_catalog.pg_class index_relation
+       JOIN pg_catalog.pg_namespace namespace
+         ON namespace.oid = index_relation.relnamespace
+       WHERE namespace.nspname = 'public'
+         AND index_relation.relname = 'after_sales_return_expiration_idx') AS b4_indexes,
+      (SELECT count(*)
+       FROM pg_catalog.pg_trigger trigger_definition
+       WHERE NOT trigger_definition.tgisinternal
+         AND trigger_definition.tgname LIKE '%b4%') AS b4_triggers
+  `;
+  if (
+    catalogState?.b4_functions !== 0n ||
+    catalogState.b4_indexes !== 0n ||
+    catalogState.b4_triggers !== 0n
+  ) {
+    fail(
+      `M6.3-B4 down.sql did not restore the pre-B4 catalog: ${JSON.stringify({
+        b4_functions: String(catalogState?.b4_functions),
+        b4_indexes: String(catalogState?.b4_indexes),
+        b4_triggers: String(catalogState?.b4_triggers),
+      })}`,
+    );
+  }
+}
+
 type B3HistoricalPolicyFixtureIds = Readonly<{
   afterSaleId: string;
   orderItemId: string;
@@ -2079,8 +2317,8 @@ async function run(): Promise<void> {
   if (M2_MIGRATIONS.some((migrationName, index) => allMigrationNames[index] !== migrationName)) {
     fail('the tracked migration prefix no longer matches the approved M2 boundary');
   }
-  if (allMigrationNames.at(-1) !== B3_MIGRATION_NAME) {
-    fail('the approved M6.3-B3 command migration must be the current migration tail');
+  if (allMigrationNames.at(-1) !== B4_MIGRATIONS.at(-1)) {
+    fail('the approved M6.3-B4 forward fix must be the current migration tail');
   }
   const m5BoundaryIndex = allMigrationNames.indexOf(M5_MIGRATIONS.at(-1) ?? '');
   if (m5BoundaryIndex < 0) fail('the approved M5 boundary migration was not found');
@@ -2094,9 +2332,17 @@ async function run(): Promise<void> {
     fail('the approved M6.3-B2a to B2b-D0 migration boundary was not found');
   }
   const m63B2aBoundaryMigrationNames = allMigrationNames.slice(0, d0BoundaryIndex);
-  const b3BoundaryMigrationNames = allMigrationNames.slice(0, -1);
+  const b3MigrationIndex = allMigrationNames.indexOf(B3_MIGRATION_NAME);
+  const b3BoundaryMigrationNames = allMigrationNames.slice(0, b3MigrationIndex);
   if (b3BoundaryMigrationNames.at(-1) !== D5_MIGRATIONS.at(-1)) {
     fail('the approved M6.3-B2b-D5 to B3 migration boundary was not found');
+  }
+  if (
+    b3MigrationIndex < 0 ||
+    allMigrationNames[b3MigrationIndex + 1] !== B4_MIGRATIONS[0] ||
+    allMigrationNames[b3MigrationIndex + 2] !== B4_MIGRATIONS[1]
+  ) {
+    fail('the approved M6.3-B3 to B4 migration boundary was not found');
   }
 
   const adminDatabaseUrl = new URL(ownerDatabaseUrl);
@@ -2302,10 +2548,12 @@ async function run(): Promise<void> {
     const d0DownPath = join(MIGRATIONS_ROOT, d0MigrationName, 'down.sql');
     const b3MigrationPath = join(MIGRATIONS_ROOT, B3_MIGRATION_NAME, 'migration.sql');
     const b3DownPath = join(MIGRATIONS_ROOT, B3_MIGRATION_NAME, 'down.sql');
-    const [d0MigrationSql, d0DownSql, b3DownSql] = await Promise.all([
+    const b4DownPath = join(MIGRATIONS_ROOT, B4_MIGRATIONS[0], 'down.sql');
+    const [d0MigrationSql, d0DownSql, b3DownSql, b4DownSql] = await Promise.all([
       readFile(d0MigrationPath, 'utf8'),
       readFile(d0DownPath, 'utf8'),
       readFile(b3DownPath, 'utf8'),
+      readFile(b4DownPath, 'utf8'),
     ]);
     const d0ForwardGuardStart = d0MigrationSql.indexOf('DO $$');
     const d0ForwardGuardEnd = d0MigrationSql.indexOf(
@@ -2331,6 +2579,12 @@ async function run(): Promise<void> {
       fail('the M6.3-B3 down migration guard boundaries could not be isolated');
     }
     const b3DownGuardSql = b3DownSql.slice(b3DownGuardStart, b3DownGuardEnd).trim();
+    const b4DownGuardStart = b4DownSql.indexOf('DO $$');
+    const b4DownGuardEnd = b4DownSql.indexOf('DROP TRIGGER');
+    if (b4DownGuardStart < 0 || b4DownGuardEnd <= b4DownGuardStart) {
+      fail('the M6.3-B4 down migration guard boundaries could not be isolated');
+    }
+    const b4DownGuardSql = b4DownSql.slice(b4DownGuardStart, b4DownGuardEnd).trim();
     const d0EvidenceId = 'f2e00000-0000-4000-8000-000000000001';
     const d0TransitionId = 'f2e00000-0000-4000-8000-000000000002';
     const d0OutboxId = 'f2e00000-0000-4000-8000-000000000003';
@@ -2802,6 +3056,7 @@ async function run(): Promise<void> {
     await assertM63B2ReadIndexes(scratchClient);
     await assertM63B2bD0Indexes(scratchClient);
     await assertM63B3CommandBoundary(scratchClient);
+    await assertM63B4ReviewBoundary(scratchClient);
 
     await scratchClient.$transaction(async (transaction) => {
       await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
@@ -2937,6 +3192,7 @@ async function run(): Promise<void> {
     await assertM63B2ReadIndexes(scratchClient);
     await assertM63B2bD0Indexes(scratchClient);
     const repeatedB3CatalogFingerprint = await assertM63B3CommandBoundary(scratchClient);
+    const repeatedB4CatalogFingerprint = await assertM63B4ReviewBoundary(scratchClient);
     await assertM63B2bD5ProtectedReadLock(scratchClient);
     await exerciseD5MigrationAtomicity(
       scratchClient,
@@ -2953,6 +3209,124 @@ async function run(): Promise<void> {
       ['db', 'execute', '--file', ASSERTIONS_SQL_PATH, '--schema', fullSchemaPath],
       scratchDatabaseUrl,
     );
+
+    const b4RollbackOperationId = randomUUID();
+    const b4RollbackAfterSaleId = randomUUID();
+    const b4RollbackOperationRows = await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      return transaction.$executeRaw`
+        INSERT INTO after_sale_operations (
+          id, store_id, after_sale_id, operation, idempotency_key_hash, request_hash,
+          status, result_summary, attempt_count, version, updated_at
+        )
+        SELECT
+          ${b4RollbackOperationId}::uuid, store.id, ${b4RollbackAfterSaleId}::uuid,
+          'ADMIN_REVIEW',
+          ${createHash('sha256').update('m63-b4-rollback-idempotency').digest('hex')},
+          ${createHash('sha256').update('m63-b4-rollback-request').digest('hex')},
+          'COMPLETED', '{"migrationGuard":true}'::jsonb, 1, 2, clock_timestamp()
+        FROM stores AS store
+        ORDER BY store.id
+        LIMIT 1
+      `;
+    });
+    if (b4RollbackOperationRows !== 1) {
+      fail('M6.3-B4 rollback guard fixture could not create a review operation fact');
+    }
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(b4DownGuardSql),
+      '55000',
+      'M6.3-B4 down review-operation fact guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_operations WHERE id = ${b4RollbackOperationId}::uuid
+      `;
+    });
+
+    const b4RollbackAuditId = randomUUID();
+    const b4RollbackAuditRows = await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      return transaction.$executeRaw`
+        INSERT INTO audit_logs (
+          id, store_id, actor_type, actor_id, action, target_type, target_id, correlation_id
+        )
+        SELECT
+          ${b4RollbackAuditId}::uuid, store.id, 'SYSTEM'::"AuditActorType",
+          '00000000-0000-4000-8000-000000000007'::uuid,
+          'after-sale.return.expired', 'after_sale', ${b4RollbackAfterSaleId},
+          'm63-b4-rollback-expiration-guard'
+        FROM stores AS store
+        ORDER BY store.id
+        LIMIT 1
+      `;
+    });
+    if (b4RollbackAuditRows !== 1) {
+      fail('M6.3-B4 rollback guard fixture could not create an expiration audit fact');
+    }
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(b4DownGuardSql),
+      '55000',
+      'M6.3-B4 down expiration-audit fact guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`DELETE FROM audit_logs WHERE id = ${b4RollbackAuditId}::uuid`;
+    });
+    const afterB4GuardFingerprint = await assertM63B4ReviewBoundary(scratchClient);
+    if (afterB4GuardFingerprint !== repeatedB4CatalogFingerprint) {
+      fail('M6.3-B4 rollback fail-fast changed the review security catalog');
+    }
+
+    for (const migrationName of [...B4_MIGRATIONS].reverse()) {
+      runPrisma(
+        [
+          'db',
+          'execute',
+          '--file',
+          join(MIGRATIONS_ROOT, migrationName, 'down.sql'),
+          '--schema',
+          fullSchemaPath,
+        ],
+        scratchDatabaseUrl,
+      );
+    }
+    await assertM63B4DownBoundary(scratchClient);
+    await assertM63B3CommandBoundary(scratchClient);
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations" WHERE migration_name = ANY(${[...B4_MIGRATIONS]})
+    `;
+    runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
+    await assertMigrationState(scratchClient, allMigrationNames);
+    const restoredB4CatalogFingerprint = await assertM63B4ReviewBoundary(scratchClient);
+    if (restoredB4CatalogFingerprint !== repeatedB4CatalogFingerprint) {
+      fail('M6.3-B4 down/forward exercise did not restore the review security catalog');
+    }
+    const afterB4RoundTripFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
+    if (afterB4RoundTripFingerprint !== beforeUpgradeFingerprint) {
+      fail('M1/M2 fixture fingerprint changed during the M6.3-B4 down/forward exercise');
+    }
+
+    // B3 cannot be rolled back while B4 functions and triggers still depend on its command
+    // boundary. Remove the two B4 migrations first, then restore all three in one forward deploy.
+    for (const migrationName of [...B4_MIGRATIONS].reverse()) {
+      runPrisma(
+        [
+          'db',
+          'execute',
+          '--file',
+          join(MIGRATIONS_ROOT, migrationName, 'down.sql'),
+          '--schema',
+          fullSchemaPath,
+        ],
+        scratchDatabaseUrl,
+      );
+    }
+    await assertM63B4DownBoundary(scratchClient);
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations" WHERE migration_name = ANY(${[...B4_MIGRATIONS]})
+    `;
 
     const b3RollbackOperationId = randomUUID();
     const b3RollbackAfterSaleId = randomUUID();
@@ -3006,6 +3380,10 @@ async function run(): Promise<void> {
     const restoredB3CatalogFingerprint = await assertM63B3CommandBoundary(scratchClient);
     if (restoredB3CatalogFingerprint !== repeatedB3CatalogFingerprint) {
       fail('M6.3-B3 down/forward exercise did not restore the command security catalog');
+    }
+    const restoredB4AfterB3CatalogFingerprint = await assertM63B4ReviewBoundary(scratchClient);
+    if (restoredB4AfterB3CatalogFingerprint !== repeatedB4CatalogFingerprint) {
+      fail('M6.3-B3 down/forward exercise did not restore the dependent B4 catalog');
     }
     const afterB3RoundTripFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterB3RoundTripFingerprint !== beforeUpgradeFingerprint) {
@@ -3232,6 +3610,7 @@ async function run(): Promise<void> {
     await assertM63B2bD0Indexes(scratchClient);
     await assertM63B2bD5ProtectedReadLock(scratchClient);
     await assertM63B3CommandBoundary(scratchClient);
+    await assertM63B4ReviewBoundary(scratchClient);
     const afterForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterForwardRepairFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during the M5/M6 forward repair exercise');
@@ -3421,6 +3800,7 @@ async function run(): Promise<void> {
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B2bD0Indexes(scratchClient);
     await assertM63B3CommandBoundary(scratchClient);
+    await assertM63B4ReviewBoundary(scratchClient);
     const [d0RoundTripShape] = await scratchClient.$queryRaw<
       Array<{ ledger_exists: boolean; object_role_exists: boolean }>
     >`
@@ -3905,9 +4285,10 @@ async function run(): Promise<void> {
     await assertM63B2bD0Indexes(scratchClient);
     await assertM63B2bD5ProtectedReadLock(scratchClient);
     await assertM63B3CommandBoundary(scratchClient);
+    await assertM63B4ReviewBoundary(scratchClient);
 
     console.log(
-      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair, B3 historical policy preflight, catalog restoration and rollback guards`,
+      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair, B3 historical policy preflight, B4 review/expiration catalog restoration and rollback guards`,
     );
   } catch (error) {
     primaryError = asError(error);
