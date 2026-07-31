@@ -4,13 +4,15 @@
 > M5.5-M5.7 仓库自动化已实施但外部验收仍阻塞；M6.1、M6.2、M6.3-A、M6.3-B0、B1、B2a、B2b-D0、
 > B2b-D1 repository + local/test storage validation、B2b-D2 repository implementation +
 > local/test scanner worker validation、B2b-D3 repository implementation + local/test member
-> evidence HTTP validation 与 B2b-D4 repository implementation + local/test deletion worker validation
-> 已完成且适用仓库门禁通过；B2/B2b、B3-B7、
-> M6.3、UI 与生产启用未完成或未授权并保持失败关闭；P0 整体未完成
+> evidence HTTP validation、B2b-D4 repository implementation + local/test deletion worker validation 与
+> B2b-D5 default-disabled repository implementation + local/test protected-read validation 已完成且适用
+> 仓库门禁通过；B3 default-disabled repository implementation + local/test validation 也已完成且适用
+> 仓库门禁通过；B2/B2b、B4-B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭；生产策略、TTL、对象存储、真实供应商、
+> 部署和 rollout 为 `NOT_AUTHORIZED / NOT_RUN`；P0 整体未完成
 >
-> 版本：0.13
+> 版本：0.15
 >
-> 日期：2026-07-30
+> 日期：2026-07-31
 >
 > 依赖：`REQUIREMENTS.md`、`AGENTS.md`、`docs/architecture/system-architecture.md`
 
@@ -197,6 +199,25 @@ claim、保护读取/管理员审计、legal hold 管理、外部告警或 produ
 lifecycle/rollout，B2b/B2、B3-B7、M6.3、M6、M5 与 P0 均未完成。完整证据见
 `docs/reports/m6.3-b2b-d4-evidence-deletion-worker-completion-report.md`。
 
+M6.3-B2b-D5 授权与仓库/local-test 完成记录（2026-07-31）：D4 后用户授权默认关闭的
+member/admin protected-read 与管理员逐次审计。第 44-48 段迁移完成锁后 session/store/account/RBAC/
+deadline revalidation、专用 guard role 与 issued-read audit；repository implementation + local/test
+validation 标记 `COMPLETE`。生产 IAM/KMS/HTTPS/versioning/Object Lock/lifecycle/legal retention、
+provider 风险接受、部署与 rollout 仍为 `NOT_AUTHORIZED / NOT_RUN`，完整证据见
+`docs/reports/m6.3-b2b-d5-protected-evidence-read-completion-report.md`。
+
+M6.3-B3 授权与 repository/local-test 完成记录（2026-07-31）：用户批准 B3 计划及第 3 节全部建议默认值，仅授权
+repository/local-test 的三条默认关闭写命令、迁移、测试和文档：会员创建、会员取消、管理员商家主动退款
+售后。实现已接入 `AFTER_SALE_COMMANDS_ENABLED`、会员/管理员写限流、session/MFA/RBAC 最终复验、
+服务端政策/订单/支付/交付/整数 VND/容量/evidence claim 计算，以及 operation/transition/audit 原子
+finalizer；商家主动退款只形成 `MERCHANT_REFUND + PENDING_REVIEW`，不执行退款 provider、库存或到账确认。
+写响应只返回不可变 acknowledgement，当前聚合由 GET 查询；管理员只接受目标商城直接 review 权限，
+cross-access-only 失败关闭；当前 COD 因无可证明收款事实失败关闭。五项 evidence capability 只在政策要求
+或请求携带非空 evidence id 时强制，Serializable 最多三次事务尝试且 `expected_version` 冲突不重试。B3
+default-disabled repository implementation + local/test validation 标记 `COMPLETE`，完整证据见
+`docs/reports/m6.3-b3-after-sale-commands-completion-report.md`；生产策略、TTL、对象存储、真实供应商、部署和
+rollout 均 `NOT_AUTHORIZED / NOT_RUN`。
+
 ## 1. 总体范围
 
 本计划覆盖 `REQUIREMENTS.md` 第 22.1 节的 P0 能力及其安全、合规和验收前置条件。P1/P2 只保留架构扩展点，不进入实现范围。所有阶段使用同一套代码，通过商城配置、主题令牌和行业属性模板表达美妆/服装差异。
@@ -350,11 +371,12 @@ lifecycle/rollout，B2b/B2、B3-B7、M6.3、M6、M5 与 P0 均未完成。完整
 B2b-D2 只交付内部真实 scanner、scan worker、租约安全投影和死信收敛，B2b-D3 只交付默认关闭的
 会员预上传/确认/owner 状态 HTTP，B2b-D4 只交付 local/test 到期与物理删除补偿，B2b-D5 以默认关闭、
 repository implementation + local/test validation `COMPLETE` 状态交付 member/admin 凭证正文保护读取与
-管理员逐次审计。B2a 不改写政策 RLS，保留会员历史政策读取；
-D0-D5 合计仍没有 B3 claim caller、legal hold 管理或外部告警，也不交付下列完整 M6 产品范围。只读摘要、
-政策控制面、预上传状态或保护读取存在，不能据此解释为售后申请、审核、返件、退款、结算或 UI 可用。完整
-B2b/B3-B7/生产政策与 enforcement/部署仍未授权
-并失败关闭。
+管理员逐次审计。B3 已在独立授权下增加默认关闭的会员申请/取消与管理员商家主动退款 repository/local-test
+写命令，并在创建事务中按条件接入 D0 evidence claim；B3 repository/local-test 验收已完成。B2a 不
+改写政策 RLS，保留会员历史政策读取；B3 也不提供审核、返件、退款 provider、库存恢复、换货履约或
+UI。只读摘要、政策控制面、凭证链路和默认关闭写命令存在，仍不能解释为完整售后产品或生产可用。
+完整 B2b、B4-B7、生产政策与 enforcement、TTL、对象存储、真实供应商、部署和 rollout 均
+未完成或为 `NOT_AUTHORIZED / NOT_RUN`，继续失败关闭。
 
 D5 的第 44-48 段迁移只建立数据库保护读取边界，不增加业务表、列、枚举或 STORE 权限代码：第 44 段
 `20260730100000_m63_b2b_d5_protected_read_lock` 建立 evidence `FOR SHARE` 锁读；第 45 段

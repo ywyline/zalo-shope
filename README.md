@@ -2,44 +2,46 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5 已加入按商城解析的 Zalo Checkout 适配器、官方 MAC/查单契约、provider-order 绑定和原始 body webhook 接缝；M5.6 已加入 GHN 适配器、可信仓库/订单物理事实、可靠运单命令、面单代理及三语轨迹工作台；M5.7 已加入退款创建/查询、支付状态投影、逐笔权威查单、本地异常任务和双端三语退款状态。M6.1 已冻结售后、会员收藏/历史和主动分享的数据、权限、API、严格 DTO 与纯领域契约；M6.2 已完成 30 个商城模型/表、11 段迁移、RLS、复合关系、权限目录和数据库完整性 guard。M6.3-A 已完成 checkout 政策解析/同事务快照 writer、readiness/enforcement 管理 API、新商城自动 OFF provisioning 和既有物流 purpose 分流；`verify`、21/21 E2E、生产依赖 high 门禁、交付候选 Gitleaks 与差异检查已通过。审计另有 3 项 React Router moderate 公告，已明确结转且不得写成零漏洞。M6.3-B0 已完成领域、契约、OpenAPI、schema 与前向修复，并通过独立完成报告所列适用门禁；M6.3-B1 已完成会员与管理员售后列表/详情四个只读接口及适用门禁。M6.3-B2a 政策列表/详情、草稿、版本列表/详情、发布和停用七个管理员接口及 settings 契约收口已完成仓库实施与适用门禁，状态为 `COMPLETE`。M6.3-B2b-D0 已完成凭证数据库生命周期、专用 SYSTEM scope、规范对象 ledger、并发配额锁、严格 outbox 与 dead-letter reconciliation 仓库底座。D0 没有 HTTP、worker 注册、对象存储、真实 scanner、短期 URL、外部告警或生产配置；数据库 fixture 不能冒充真实文件校验。每个 staging/production 数据库仍必须逐库执行只读 preflight 并留证。B2/B2b、B3-B7、M6.3、UI、生产政策/enforcement 启用、供应商调用、部署和发布仍未完成或未授权并保持失败关闭。所有商城政策 enforcement 继续默认 OFF，没有售后申请、审核、返件、退款或结算运行时，也没有 M6 UI。真实商户/物流凭据、HTTPS 回调、Zalo/GHN sandbox、商户结算文件、GHN COD 回款和真机证据仍未验收，不能标记 M5.5-M5.7、整个 M5、M6.3、M6 或 P0 完成。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5-M5.7 已加入 Zalo Checkout、GHN、退款及本地补偿底座，但真实凭据、沙箱、结算、COD 回款和真机仍未验收。M6.1/M6.2、M6.3-A/B0/B1/B2a 与 B2b-D0-D5 的各自 repository/local-test 边界已经完成。M6.3-B3 三条售后申请/取消/商家主动退款命令也已完成 default-disabled repository implementation + local/test validation；它们只返回稳定 acknowledgement，production 配置与服务层均拒绝启用。B2/B2b 整体、B4-B7、M6.3、M6、M6 UI 与 P0 仍未完成；所有生产政策/enforcement、TTL、对象存储、真实供应商、部署和 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。当前没有售后审核、返件、真实退款/结算、库存恢复或换货履约运行时，不能把 B3 的本地仓库完成状态表述为完整售后或生产就绪。生产依赖审计另保留 3 项 React Router moderate 公告，不得写成零漏洞。
 
 M6.3-B2b-D1 已完成专用 `AfterSaleEvidenceObjectStorageProvider`、默认失败关闭配置、本地/测试
 MinIO 独立 bucket 与 upload/read/delete 最小 IAM，以及真实对象长度、SHA-256、Content-Type 和
 JPEG/PNG/WebP/MP4 magic bytes 流式校验。当前只将 D1 repository implementation + local/test storage
 validation 标记 `COMPLETE`；`verify`、Gitleaks、差异复审、生产依赖 high 审计与 OpenAPI 回归均有
-精确通过证据。D1 没有 HTTP、worker、scanner、B3 claim 调用方、管理员读取审计或生产 storage
-rollout，不能据此标记 B2b/B2、M6.3、M6 或 P0 完成。
+精确通过证据。D1 收口时没有 HTTP、worker、scanner、B3 claim 调用方、管理员读取审计或生产 storage
+rollout；后续切片不改写该历史边界，且不能据此标记 B2b/B2、M6.3、M6 或 P0 完成。
 
 M6.3-B2b-D2 已完成真实 ClamAV 单会话 scanner、D1 同流 HEAD/`If-Match` GET 内容复验、严格 scan
 outbox handler、租约绑定数据库投影、版本漂移重排队、scan dead-letter 收敛和优雅停机 drain。真实
 PostgreSQL + MinIO + ClamAV D2 集成 20/20、完整 integration 32 个文件/270 项、43 段迁移演练、
 生产依赖 high、OpenAPI、Gitleaks 与独立复审均已通过。该结论只标记 repository implementation +
-local/test scanner worker validation `COMPLETE`；没有 HTTP、B3 claim、保护读取/审计、expire/delete
-worker、外部告警或 production storage/scanner/rollout，完整 B2b/B2、M6.3、M6 与 P0 继续未完成。
+local/test scanner worker validation `COMPLETE`；D2 收口时没有 HTTP、B3 claim、保护读取/审计、
+expire/delete worker、外部告警或 production storage/scanner/rollout，完整 B2b/B2、M6.3、M6 与 P0
+继续未完成；后续切片不改写该历史边界。
 
 M6.3-B2b-D3 已完成默认关闭的会员凭证初始化、确认和 owner 状态三条 HTTP 路由。初始化复用 D0
 配额/幂等并返回 D1 create-only URL 与必需 header；确认前验证真实对象 bytes 后原子排队 D2 scan；
 状态只公开 `PENDING/READY/UNAVAILABLE`。真实 PostgreSQL + Redis + MinIO + ClamAV D3 集成 4/4、
 完整 integration 33 个文件/274 项和 43 段迁移演练通过。该结论只标记 repository implementation +
-local/test member evidence HTTP validation `COMPLETE`；B3 claim、保护读取/管理员审计、expire/delete
-worker、生产参数批准与 rollout 仍未完成。
+local/test member evidence HTTP validation `COMPLETE`；D3 收口时 B3 claim、保护读取/管理员审计、
+expire/delete worker、生产参数批准与 rollout 仍未完成；后续切片不改写该历史范围。
 
 M6.3-B2b-D4 已完成默认关闭、与 scanner 解耦的凭证 expire/delete worker。expire/delete 结果提交均
 绑定当前 outbox 租约、商城、evidence version/status/legal hold 与完整活动对象 ledger；ORIGINAL、
 DERIVATIVE、SCAN_TEMPORARY 由 delete-only 身份并行幂等删除，provider 已删除、部分失败、租约换 owner、
 重试状态推进后崩溃与 lifecycle dead letter 均可安全收敛。D4 定向单元 114/114、真实 PostgreSQL +
 MinIO 6/6、完整 integration 34 文件/280 项、完整 `verify` 69 文件/545 项和 43 段迁移演练通过。该结论
-只标记 repository implementation + local/test deletion worker validation `COMPLETE`；B3 claim、保护读取/
-管理员审计、legal hold 管理、外部告警、production IAM/KMS/versioning/Object Lock/lifecycle 与 rollout
-仍未完成。
+只标记 repository implementation + local/test deletion worker validation `COMPLETE`；D4 收口时 B3 claim、
+保护读取/管理员审计、legal hold 管理、外部告警、production IAM/KMS/versioning/Object Lock/lifecycle 与
+rollout 仍未完成；后续切片不改写该历史范围。
 
 M6.3-B2b-D5 已完成默认关闭的 member/admin 已 claim `READY` ORIGINAL 保护读取和管理员逐次审计。
 签名 URL 严格受 ordinary-access、Bearer 与持久 session 最早截止点约束，最终事务锁定并复验商城、主体、
 session、RBAC、evidence 与提交余量；D5 审计使用服务端生成的 correlation ID，并记录规范化 peer
 `source_ip`。当前只将 default-disabled repository implementation + local/test protected-read validation
-标记 `COMPLETE`；B3 claim、legal-hold/dead-letter 管理、外部告警、production IAM/KMS/versioning/
-Object Lock/lifecycle、bearer-URL 风险接受和 rollout 仍未完成。
+标记 `COMPLETE`；D5 本身不包含 B3 claim。legal-hold/dead-letter 管理、外部告警、production
+IAM/KMS/versioning/Object Lock/lifecycle、bearer-URL 风险接受和 rollout 至今仍为
+`NOT_AUTHORIZED / NOT_RUN`。
 
 B2a 仓库内只读预检的本地测试库结果为 `policies=0, versions=0`。D0 owner preflight 的本地结果为
 `files=0, transitions=0, outbox=0, idempotency=0`；runtime RLS 连接按预期以 SQLSTATE `42501`
@@ -54,7 +56,8 @@ D1 当前证据与未完成门禁见
 `docs/reports/m6.3-b2b-d4-evidence-deletion-worker-completion-report.md`；D5 证据见
 `docs/reports/m6.3-b2b-d5-protected-evidence-read-completion-report.md`。五份报告只证明各自明确标注的
 repository/local-test 边界，不证明 production S3/KMS/lifecycle/versioning/Object Lock、scanner、
-legal hold 管理、外部告警、B3 claim 或完整 B2b 可用。
+legal hold 管理、外部告警、B3 claim 或完整 B2b 可用。B3 自身的 claim/命令证据另见
+`docs/reports/m6.3-b3-after-sale-commands-completion-report.md`。
 
 ## 应用与包
 
@@ -390,8 +393,9 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   60 秒窗口，会员 60 次、管理员 120 次，均绑定商城+主体；超限返回 `Retry-After`，Redis 不可用时
   在读取目标前失败关闭为 `503 UPSTREAM_UNAVAILABLE`。四个成功响应统一
   `Cache-Control: private, no-store` 并携带安全 `X-Correlation-Id`。
-- B1 本身不注册任何写 handler，不创建 UI、worker、政策或外部调用。随后增加并完成下节 B2a 政策控制面的仓库实施；B2b/B3-B7、完整返件验收/M6.4、
-  生产 rollout、部署和发布仍需单独授权。B1 可读不表示售后申请、审核、退款或结算可用。
+- B1 本身不注册任何写 handler，不创建 UI、worker、政策或外部调用。B1 收口时 B2b/B3-B7、完整返件
+  验收/M6.4、生产 rollout、部署和发布仍需单独授权；后续 B3 的局部完成不改写这一历史只读范围。
+  B1 可读本身不表示售后申请、审核、退款或结算可用。
 - B1 的最终自动化数字、独立复审修复和残余风险见
   `docs/reports/m6.3-b1-completion-report.md`；B1 完成不代表 M6.3、M6 或 P0 完成。
 
@@ -419,9 +423,8 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
 - 首轮全仓 ESLint 在本机约 2 GiB 默认堆下 OOM；仅为复验进程临时设置 `NODE_OPTIONS=--max-old-space-size=4096` 后完整 `verify` 通过，未修改仓库或运行时配置。
 - OpenAPI 检查未发现 YAML 重复键或外部引用，解析 556 个本地引用、112 个唯一目标；仓库没有专用 OpenAPI 3.1 语义 linter，因此该限制保留在完成报告中。
 - Gitleaks v8.24.3 的 tracked diff 与 13 个 untracked 候选均通过；pathless stdin 仅对固定非密钥 `M63_IDEMPOTENCY_KEY_SECRET` 使用精确 allowlist，未放宽规则。
-- 后续先授权并完成下节 D0 数据库底座，随后完成 D1 专用 storage adapter 与 local/test MinIO 校验；
-  完整 B2b 的 HTTP、真实扫描、B3 claim 调用、保护读取授权/审计和删除 worker，以及 B3-B7、UI、
-  生产政策/enforcement、部署和发布仍未授权；相关运行时能力保持 contract-only 或失败关闭。
+- B2a 完成后先授权 D0 数据库底座，随后分片完成 D1-D5 与 B3 的 repository/local-test 边界。B2a 收口时
+  完整 B2b、B3-B7、UI、生产政策/enforcement、部署和发布仍未授权；后续局部实施不改写该历史结论。
 
 ## M6.3-B2b-D0 凭证数据库生命周期底座
 
@@ -465,7 +468,7 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   通过；生产依赖 high 审计退出码为 0，并保留 3 项 moderate，OpenAPI 文件 diff 为 0，结构引用检查为
   556/112/0/0。最终 `verify`（62 个单元文件/482 项）、46 个交付候选文件逐文件与 committed history
   Gitleaks、`git diff --check` 和独立高风险复审均通过。D1 无 UI/HTTP，专项 E2E 为 `NOT_APPLICABLE`。
-- adapter 尚无 HTTP/worker 调用方，不消费 D0 outbox，也不调用 scanner。内部签名 GET 和 delete
+- D1 收口时 adapter 尚无 HTTP/worker 调用方，不消费 D0 outbox，也不调用 scanner。内部签名 GET 和 delete
   方法不能使 `protectedReadAvailable` 或 `deletionCompensationAvailable` 为 true；magic 校验也不是
   malware scanning。完整边界见
   `docs/reports/m6.3-b2b-d1-evidence-storage-completion-report.md`。
@@ -565,6 +568,33 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   rollout 或完整 B2b/B2/M6.3/M6/P0 完成声明。D5 的迁移、测试、门禁证据与生产阻断项见
   `docs/reports/m6.3-b2b-d5-protected-evidence-read-completion-report.md`。
 
+## M6.3-B3 售后申请、取消与商家主动退款
+
+- B3 计划及其建议默认值已获 repository/local-test 实施授权。实现范围只包含会员创建/取消与管理员
+  `MERCHANT_REFUND` 待审核事实；不会自动批准、发起真实退款、改变库存或创建返件/换货运单。
+- 三条命令默认由 `AFTER_SALE_COMMANDS_ENABLED=false` 关闭。local/test 可以在不启用可选 evidence
+  能力时测试无凭证且政策不强制凭证的申请；只有政策要求凭证或请求携带非空 `evidence_ids` 时，专用 S3
+  storage、ClamAV、会员上传校验、claim、保护读取、删除补偿和满足 `ordinary < retention` 的 TTL
+  才全部成为强制条件，任一缺失均在写入前失败关闭。
+- `.env.test.example` 的 ordinary 30 天、retention 90 天只用于可重复 local/test 自动化，不是生产
+  政策、隐私或合规结论。`NODE_ENV=production` 会拒绝开启 B3 命令；生产 TTL、对象存储、真实供应商、
+  部署与 rollout 仍需独立批准和目标环境证据。
+- 服务端只接受订单、类型、原因、描述、逐行数量/换货 SKU 与 evidence ID。政策、交付、支付、商城、
+  会员、VND 金额、状态和 correlation ID 均由服务端重验；同一售后只允许同 policy/version/hash 的订单行。
+- 管理员主动退款要求直接持有目标商城 `store.after-sales.review` 与近期 MFA；仅有平台 cross-access
+  不能替代该权限并固定返回 `403`。命令只创建
+  `MERCHANT_REFUND -> PENDING_REVIEW`。会员取消只允许本人、同商城、非 legacy、无后续副作用的
+  `PENDING_REVIEW`，并要求 expected version；取消不 unclaim 或删除凭证，也不缩短任何保留截止点。
+- 当前只接受可证明唯一 ONLINE 成功收款的已交付/完成订单；仓库尚无可证明的 COD 已确认收款事实，
+  因此 COD B3 创建失败关闭。三条写命令仅返回创建/取消时的不可变 acknowledgement，当前金额、状态和
+  时间线必须通过 GET 查询。
+- create/cancel 仅对 `P2034`/`40001` 序列化冲突执行最多三次 Serializable 事务尝试；
+  `expected_version` 冲突明确不重试并返回版本冲突。
+- 完整实施边界、回滚和验收门禁见
+  `docs/plans/m6.3-b3-after-sale-application-cancellation-plan.md`，最终证据见
+  `docs/reports/m6.3-b3-after-sale-commands-completion-report.md`。B3 的局部完成不构成 M6.3、M6 或 P0
+  完成声明。
+
 ## 环境与密钥
 
 - `.env.example` 和 `.env.test.example` 只包含本地开发占位凭据。
@@ -580,6 +610,10 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   identity 已配置时可以开启。预签名 read URL 必须短于数据库
   `ordinary_access_deadline_at`；local/test 可使用 MinIO HTTP，production 配置必须使用 HTTPS。该配置
   门禁不证明 provider 最小 IAM、KMS、versioning/Object Lock/lifecycle 或 legal retention 已通过验收。
+- `AFTER_SALE_COMMANDS_ENABLED` 默认 `false`，且 production 明确禁止开启。两项 evidence TTL 对无凭证
+  命令不是启动前提；政策要求凭证或请求携带非空 `evidence_ids` 时必须同时配置
+  `AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS` 与
+  `AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS`，且前者严格小于后者。仓库 30/90 天示例仅为测试基线。
 - 日志默认遮盖认证、Cookie 和 Zalo Token 请求头。
 - `ZALO_IDENTITY_PROVIDER=test` 只允许 `NODE_ENV=test`；生产环境会拒绝启动该 provider。
 - `PAYMENT_PROVIDER=test` 同样只允许 `NODE_ENV=test` 且需要专用测试密钥；development/production 默认并应保持 `disabled`。真实适配器从商城 `private_key_secret_ref` 解析部署密钥，`env:ZALO_CHECKOUT_*` 只是受限的本地/部署 resolver 示例，不是把密钥写入仓库。

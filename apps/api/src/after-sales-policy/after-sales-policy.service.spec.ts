@@ -29,6 +29,7 @@ function defaultAssignment() {
     allowed_types: ['REFUND_ONLY'],
     category_id: null,
     condition_rules: {
+      allowed_reason_codes: ['damaged'],
       evidence_required: true,
       evidence_required_reason_codes: ['damaged'],
       opened_package_exception_reason_codes: [],

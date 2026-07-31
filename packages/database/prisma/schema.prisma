@@ -1666,6 +1666,7 @@ model AfterSaleTransition {
   id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   storeId       String           @map("store_id") @db.Uuid
   afterSaleId   String           @map("after_sale_id") @db.Uuid
+  operationId   String?          @map("operation_id") @db.Uuid
   fromStatus    AfterSaleStatus? @map("from_status")
   toStatus      AfterSaleStatus  @map("to_status")
   event         String           @db.VarChar(64)
@@ -1675,8 +1676,9 @@ model AfterSaleTransition {
   correlationId String           @map("correlation_id") @db.VarChar(128)
   createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_transitions_store_id_fkey")
-  afterSale AfterSale @relation(fields: [storeId, afterSaleId], references: [storeId, id], onDelete: Restrict, map: "after_sale_transitions_case_fkey")
+  store     Store               @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_transitions_store_id_fkey")
+  afterSale AfterSale           @relation(fields: [storeId, afterSaleId], references: [storeId, id], onDelete: Restrict, map: "after_sale_transitions_case_fkey")
+  operation AfterSaleOperation? @relation(fields: [storeId, operationId, afterSaleId], references: [storeId, id, afterSaleId], onDelete: Restrict, map: "after_sale_transitions_operation_fkey")
 
   @@unique([storeId, id])
   @@index([storeId, afterSaleId, createdAt(sort: Desc), id(sort: Desc)])
@@ -1700,8 +1702,10 @@ model AfterSaleOperation {
 
   store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_operations_store_id_fkey")
   afterSale AfterSale @relation(fields: [storeId, afterSaleId], references: [storeId, id], onDelete: Restrict, map: "after_sale_operations_case_fkey")
+  transitions AfterSaleTransition[]
 
   @@unique([storeId, id])
+  @@unique([storeId, id, afterSaleId])
   @@unique([storeId, operation, idempotencyKeyHash])
   @@index([storeId, afterSaleId, createdAt(sort: Desc)])
   @@map("after_sale_operations")

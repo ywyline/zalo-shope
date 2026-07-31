@@ -48,6 +48,9 @@ export function canonicalizeAfterSalePolicyContent(
     category_id: input.category_id?.toLowerCase() ?? null,
     condition_rules: {
       ...input.condition_rules,
+      allowed_reason_codes: [...input.condition_rules.allowed_reason_codes].sort(
+        compareCanonicalText,
+      ),
       evidence_required_reason_codes: [
         ...input.condition_rules.evidence_required_reason_codes,
       ].sort(compareCanonicalText),

@@ -137,55 +137,6 @@ describe('M5.7 refund API and database invariants', () => {
     `;
   }
 
-  async function waitForAdvisoryWait(input: {
-    blockerPid: number;
-    pid: number;
-  }): Promise<{ orderLockModes: string[]; paymentLockModes: string[] }> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
-      const [state] = await owner.$queryRaw<
-        Array<{
-          advisory_waiting: boolean;
-          order_lock_modes: string[];
-          payment_lock_modes: string[];
-        }>
-      >`
-        SELECT
-          EXISTS (
-            SELECT 1 FROM pg_catalog.pg_locks lock
-            WHERE lock.pid = ${input.pid}
-              AND lock.locktype = 'advisory'
-              AND NOT lock.granted
-              AND ${input.blockerPid} = ANY(pg_catalog.pg_blocking_pids(lock.pid))
-          ) AS advisory_waiting,
-          ARRAY(
-            SELECT lock.mode FROM pg_catalog.pg_locks lock
-            WHERE lock.pid = ${input.pid}
-              AND lock.relation = 'orders'::regclass
-              AND lock.granted
-              AND lock.mode NOT IN ('AccessShareLock', 'SIReadLock')
-            ORDER BY lock.mode
-          ) AS order_lock_modes,
-          ARRAY(
-            SELECT lock.mode FROM pg_catalog.pg_locks lock
-            WHERE lock.pid = ${input.pid}
-              AND lock.relation = 'payment_attempts'::regclass
-              AND lock.granted
-              AND lock.mode NOT IN ('AccessShareLock', 'SIReadLock')
-            ORDER BY lock.mode
-          ) AS payment_lock_modes
-      `;
-      if (state?.advisory_waiting) {
-        return {
-          orderLockModes: state.order_lock_modes,
-          paymentLockModes: state.payment_lock_modes,
-        };
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
-    throw new Error(`Refund lock waiter ${input.pid} did not reach the expected advisory state`);
-  }
-
   async function waitForOtherAdvisoryWait(
     excludedPid: number,
     blockerPid: number,
@@ -624,7 +575,7 @@ describe('M5.7 refund API and database invariants', () => {
     ).toBe(true);
   });
 
-  it('takes the shared M6 advisory lock before M5 order and payment locks', async () => {
+  it('returns a retryable approval conflict while M5 waits before order and payment locks', async () => {
     const { order, payment } = await createSucceededPayment('m62-lock-order', 100_000);
     const afterSaleId = randomUUID();
     const afterSaleItemId = randomUUID();
@@ -752,24 +703,46 @@ describe('M5.7 refund API and database invariants', () => {
       },
       { timeout: 15_000 },
     );
+    const observedApproval = approvalAttempt.then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ reason, status: 'rejected' as const }),
+    );
     const approvalBackendPid = await approvalPid.promise;
     let observationFailure: unknown;
-    let refundAttempt: Promise<unknown> | undefined;
+    let approvalOutcome: Awaited<typeof observedApproval> | undefined;
+    let observedRefund:
+      | Promise<{ reason: unknown; status: 'rejected' } | { status: 'fulfilled'; value: unknown }>
+      | undefined;
     try {
-      expect(
-        await waitForAdvisoryWait({
-          blockerPid: advisoryBackendPid,
-          pid: approvalBackendPid,
-        }),
-      ).toEqual({ orderLockModes: [], paymentLockModes: [] });
-      refundAttempt = createRefundCommand(contender, context(BEAUTY_STORE_ID.replaceAll('-', '')), {
-        amountVnd: 100_001,
-        confirmation: 'CREATE_REFUND',
-        expectedPaymentVersion: payment.version,
-        idempotencyKey: `m57-m62-lock-order-${suffix}`,
-        paymentAttemptId: payment.id,
-        reason: 'Verify shared refund lock order before row locks',
+      approvalOutcome = await Promise.race([
+        observedApproval,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(
+            () => reject(new Error('Approval mutation did not fail its busy order lock promptly')),
+            3_000,
+          ),
+        ),
+      ]);
+      expect(approvalOutcome).toMatchObject({
+        reason: { code: 'P2010', meta: { code: '40001' } },
+        status: 'rejected',
       });
+      const refundAttempt = createRefundCommand(
+        contender,
+        context(BEAUTY_STORE_ID.replaceAll('-', '')),
+        {
+          amountVnd: 100_001,
+          confirmation: 'CREATE_REFUND',
+          expectedPaymentVersion: payment.version,
+          idempotencyKey: `m57-m62-lock-order-${suffix}`,
+          paymentAttemptId: payment.id,
+          reason: 'Verify shared refund lock order before row locks',
+        },
+      );
+      observedRefund = refundAttempt.then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (reason: unknown) => ({ reason, status: 'rejected' as const }),
+      );
       const m5Waiter = await waitForOtherAdvisoryWait(approvalBackendPid, advisoryBackendPid);
       expect(m5Waiter).toMatchObject({
         orderLockModes: [],
@@ -780,26 +753,39 @@ describe('M5.7 refund API and database invariants', () => {
     } finally {
       releaseAdvisory.resolve(undefined);
       await advisoryHolder;
+      approvalOutcome = await observedApproval;
     }
 
-    const outcomes = await Promise.allSettled([
-      approvalAttempt,
-      refundAttempt ?? Promise.reject(new Error('M5 refund command was not started')),
-    ]);
+    const refundOutcome = observedRefund
+      ? await observedRefund
+      : { reason: new Error('M5 refund command was not started'), status: 'rejected' as const };
     if (observationFailure instanceof Error) throw observationFailure;
     if (observationFailure) {
       throw new Error('M5/M6 advisory lock observation failed', { cause: observationFailure });
     }
-    expect(outcomes[0]).toMatchObject({ status: 'fulfilled' });
-    expect(outcomes[1]).toMatchObject({
+    expect(approvalOutcome).toMatchObject({
+      reason: { code: 'P2010', meta: { code: '40001' } },
+      status: 'rejected',
+    });
+    expect(refundOutcome).toMatchObject({
       reason: { code: 'REFUND_AMOUNT_EXCEEDS_AVAILABLE' },
       status: 'rejected',
     });
     expect(
-      await owner.$queryRaw<Array<{ status: string }>>`SELECT status::text AS status
+      await owner.$queryRaw<
+        Array<{ approved_total_vnd: bigint; status: string }>
+      >`SELECT approved_total_vnd, status::text AS status
         FROM after_sales
         WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`,
-    ).toEqual([{ status: 'APPROVED' }]);
+    ).toEqual([{ approved_total_vnd: 0n, status: 'REVIEW_REQUIRED' }]);
+    expect(
+      await owner.afterSaleItem.findUniqueOrThrow({
+        select: { approvedItemVnd: true, approvedQuantity: true },
+        where: { id: afterSaleItemId },
+      }),
+    ).toEqual({ approvedItemVnd: 0n, approvedQuantity: 0 });
+    expect(await owner.afterSaleOrderAllocation.count({ where: { afterSaleId } })).toBe(0);
+    expect(await owner.afterSaleLegacyDecision.count({ where: { afterSaleId } })).toBe(0);
     expect(await owner.refund.count({ where: { paymentAttemptId: payment.id } })).toBe(0);
   });
 

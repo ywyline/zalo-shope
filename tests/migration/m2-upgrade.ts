@@ -62,6 +62,8 @@ const D5_MIGRATIONS = [
   '20260731100000_m63_b2b_d5_commit_deadline_revalidation',
 ] as const;
 
+const B3_MIGRATION_NAME = '20260731110000_m63_b3_after_sale_commands' as const;
+
 const M6_MIGRATIONS = [
   '20260727110000_m62_after_sales_member_share_foundation',
   '20260727111000_m62_permission_catalog',
@@ -83,6 +85,7 @@ const M6_MIGRATIONS = [
   '20260729100000_m63_b2a_policy_control_plane',
   '20260729120000_m63_b2b_d0_evidence_lifecycle',
   ...D5_MIGRATIONS,
+  B3_MIGRATION_NAME,
 ] as const;
 
 type MigrationRecord = {
@@ -551,6 +554,690 @@ async function assertM63B2bD0Indexes(client: PrismaClientType): Promise<void> {
     indexName: 'after_sale_evidence_objects_store_id_evidence_file_id_objec_idx',
     tableName: 'after_sale_evidence_objects',
   });
+}
+
+type B3FunctionCatalogRecord = {
+  function_name: string;
+  identity_arguments: string;
+  public_can_execute: boolean;
+  runtime_can_execute: boolean;
+  security_definer: boolean;
+  safe_search_path: boolean;
+  row_security_on: boolean;
+};
+
+type B3TriggerCatalogRecord = {
+  function_name: string;
+  function_identity_arguments: string;
+  is_constraint: boolean;
+  is_deferrable: boolean;
+  is_initially_deferred: boolean;
+  is_enabled: boolean;
+  table_name: string;
+  trigger_name: string;
+};
+
+type B3ConstraintCatalogRecord = {
+  constraint_name: string;
+  constraint_type: string;
+  definition: string;
+  is_validated: boolean;
+  referenced_columns: string[] | null;
+  referenced_table: string | null;
+  source_columns: string[];
+  source_table: string;
+  delete_action: string;
+  update_action: string;
+};
+
+type B3IndexCatalogRecord = {
+  index_keys: string[];
+  is_ready: boolean;
+  is_unique: boolean;
+  is_valid: boolean;
+  key_attribute_count: number;
+  predicate: string | null;
+  total_attribute_count: number;
+};
+
+async function assertM63B3CommandBoundary(client: PrismaClientType): Promise<string> {
+  const functionRows = await client.$queryRaw<B3FunctionCatalogRecord[]>`
+    SELECT
+      function_definition.proname AS function_name,
+      pg_catalog.oidvectortypes(function_definition.proargtypes) AS identity_arguments,
+      EXISTS (
+        SELECT 1
+        FROM pg_catalog.aclexplode(
+          COALESCE(
+            function_definition.proacl,
+            pg_catalog.acldefault('f', function_definition.proowner)
+          )
+        ) AS privilege
+        WHERE privilege.grantee = 0 AND privilege.privilege_type = 'EXECUTE'
+      ) AS public_can_execute,
+      pg_catalog.has_function_privilege(
+        'zalo_shop_runtime', function_definition.oid, 'EXECUTE'
+      ) AS runtime_can_execute,
+      function_definition.prosecdef AS security_definer,
+      'search_path=pg_catalog, public, pg_temp' = ANY(function_definition.proconfig)
+        AS safe_search_path,
+      'row_security=on' = ANY(function_definition.proconfig) AS row_security_on
+    FROM pg_catalog.pg_proc AS function_definition
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = function_definition.pronamespace
+    WHERE namespace.nspname = 'app_security'
+      AND function_definition.proname IN (
+        'guard_m63_b3_approval_mutation_order_scope',
+        'lock_m63_b3_approval_order_scope',
+        'assert_m63_b3_command_authorization',
+        'validate_m63_b3_command_facts',
+        'validate_m63_b3_submit_transition',
+        'validate_m63_b3_operation_link',
+        'validate_m63_b3_operation_completion',
+        'validate_m63_b3_command_atomicity',
+        'validate_m63_b3_runtime_case_commit',
+        'finalize_m63_b3_after_sale_submit',
+        'cancel_m63_b3_member_after_sale'
+      )
+    ORDER BY function_definition.proname, identity_arguments
+  `;
+  const expectedFunctions = new Map<
+    string,
+    { runtimeCanExecute: boolean; securityDefiner: boolean; rowSecurityOn: boolean }
+  >([
+    [
+      'guard_m63_b3_approval_mutation_order_scope()',
+      { runtimeCanExecute: false, securityDefiner: true, rowSecurityOn: false },
+    ],
+    [
+      'lock_m63_b3_approval_order_scope()',
+      { runtimeCanExecute: false, securityDefiner: true, rowSecurityOn: false },
+    ],
+    [
+      'assert_m63_b3_command_authorization()',
+      { runtimeCanExecute: false, securityDefiner: true, rowSecurityOn: true },
+    ],
+    [
+      'validate_m63_b3_command_facts(uuid)',
+      { runtimeCanExecute: false, securityDefiner: true, rowSecurityOn: true },
+    ],
+    [
+      'validate_m63_b3_submit_transition()',
+      { runtimeCanExecute: false, securityDefiner: true, rowSecurityOn: false },
+    ],
+    [
+      'validate_m63_b3_operation_link()',
+      { runtimeCanExecute: false, securityDefiner: true, rowSecurityOn: false },
+    ],
+    [
+      'validate_m63_b3_operation_completion()',
+      { runtimeCanExecute: false, securityDefiner: false, rowSecurityOn: false },
+    ],
+    [
+      'validate_m63_b3_command_atomicity()',
+      { runtimeCanExecute: false, securityDefiner: true, rowSecurityOn: false },
+    ],
+    [
+      'validate_m63_b3_runtime_case_commit()',
+      { runtimeCanExecute: false, securityDefiner: true, rowSecurityOn: false },
+    ],
+    [
+      'finalize_m63_b3_after_sale_submit(uuid, uuid, inet)',
+      { runtimeCanExecute: true, securityDefiner: true, rowSecurityOn: false },
+    ],
+    [
+      'cancel_m63_b3_member_after_sale(uuid, uuid, text, text, integer, inet)',
+      { runtimeCanExecute: true, securityDefiner: true, rowSecurityOn: false },
+    ],
+  ]);
+  if (functionRows.length !== expectedFunctions.size) {
+    fail(`M6.3-B3 function catalog is incomplete: ${JSON.stringify(functionRows)}`);
+  }
+  for (const row of functionRows) {
+    const key = `${row.function_name}(${row.identity_arguments})`;
+    const expected = expectedFunctions.get(key);
+    if (
+      !expected ||
+      row.public_can_execute ||
+      row.runtime_can_execute !== expected.runtimeCanExecute ||
+      row.security_definer !== expected.securityDefiner ||
+      !row.safe_search_path ||
+      row.row_security_on !== expected.rowSecurityOn
+    ) {
+      fail(`M6.3-B3 function grants or configuration differ: ${JSON.stringify(row)}`);
+    }
+  }
+
+  const triggerRows = await client.$queryRaw<B3TriggerCatalogRecord[]>`
+    SELECT
+      relation.relname AS table_name,
+      trigger_definition.tgname AS trigger_name,
+      function_definition.proname AS function_name,
+      pg_catalog.oidvectortypes(function_definition.proargtypes)
+        AS function_identity_arguments,
+      trigger_definition.tgconstraint <> 0 AS is_constraint,
+      trigger_definition.tgdeferrable AS is_deferrable,
+      trigger_definition.tginitdeferred AS is_initially_deferred,
+      trigger_definition.tgenabled = 'O' AS is_enabled
+    FROM pg_catalog.pg_trigger AS trigger_definition
+    JOIN pg_catalog.pg_class AS relation
+      ON relation.oid = trigger_definition.tgrelid
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    JOIN pg_catalog.pg_proc AS function_definition
+      ON function_definition.oid = trigger_definition.tgfoid
+    WHERE NOT trigger_definition.tgisinternal
+      AND namespace.nspname = 'public'
+      AND trigger_definition.tgname IN (
+        'after_sale_items_a_b3_approval_order_lock_guard',
+        'after_sales_a_b3_approval_order_lock_guard',
+        'after_sale_order_allocations_a_b3_approval_order_lock_guard',
+        'after_sale_legacy_decisions_a_b3_approval_order_lock_guard',
+        'after_sale_transitions_a_b3_approval_order_lock_guard',
+        'after_sale_transitions_b3_submit_guard',
+        'after_sale_transitions_b3_operation_link_guard',
+        'after_sale_operations_b3_completion_guard',
+        'after_sale_operations_b3_atomic_guard',
+        'after_sale_transitions_b3_atomic_guard',
+        'after_sales_b3_runtime_commit_guard'
+      )
+    ORDER BY relation.relname, trigger_definition.tgname
+  `;
+  const expectedTriggers = new Map<
+    string,
+    {
+      functionName: string;
+      isConstraint: boolean;
+      isDeferrable: boolean;
+      isInitiallyDeferred: boolean;
+    }
+  >([
+    [
+      'after_sale_items:after_sale_items_a_b3_approval_order_lock_guard',
+      {
+        functionName: 'guard_m63_b3_approval_mutation_order_scope',
+        isConstraint: false,
+        isDeferrable: false,
+        isInitiallyDeferred: false,
+      },
+    ],
+    [
+      'after_sales:after_sales_a_b3_approval_order_lock_guard',
+      {
+        functionName: 'guard_m63_b3_approval_mutation_order_scope',
+        isConstraint: false,
+        isDeferrable: false,
+        isInitiallyDeferred: false,
+      },
+    ],
+    [
+      'after_sale_order_allocations:after_sale_order_allocations_a_b3_approval_order_lock_guard',
+      {
+        functionName: 'guard_m63_b3_approval_mutation_order_scope',
+        isConstraint: false,
+        isDeferrable: false,
+        isInitiallyDeferred: false,
+      },
+    ],
+    [
+      'after_sale_legacy_decisions:after_sale_legacy_decisions_a_b3_approval_order_lock_guard',
+      {
+        functionName: 'guard_m63_b3_approval_mutation_order_scope',
+        isConstraint: false,
+        isDeferrable: false,
+        isInitiallyDeferred: false,
+      },
+    ],
+    [
+      'after_sale_transitions:after_sale_transitions_a_b3_approval_order_lock_guard',
+      {
+        functionName: 'lock_m63_b3_approval_order_scope',
+        isConstraint: false,
+        isDeferrable: false,
+        isInitiallyDeferred: false,
+      },
+    ],
+    [
+      'after_sale_transitions:after_sale_transitions_b3_submit_guard',
+      {
+        functionName: 'validate_m63_b3_submit_transition',
+        isConstraint: false,
+        isDeferrable: false,
+        isInitiallyDeferred: false,
+      },
+    ],
+    [
+      'after_sale_transitions:after_sale_transitions_b3_operation_link_guard',
+      {
+        functionName: 'validate_m63_b3_operation_link',
+        isConstraint: false,
+        isDeferrable: false,
+        isInitiallyDeferred: false,
+      },
+    ],
+    [
+      'after_sale_operations:after_sale_operations_b3_completion_guard',
+      {
+        functionName: 'validate_m63_b3_operation_completion',
+        isConstraint: false,
+        isDeferrable: false,
+        isInitiallyDeferred: false,
+      },
+    ],
+    [
+      'after_sale_operations:after_sale_operations_b3_atomic_guard',
+      {
+        functionName: 'validate_m63_b3_command_atomicity',
+        isConstraint: true,
+        isDeferrable: true,
+        isInitiallyDeferred: true,
+      },
+    ],
+    [
+      'after_sale_transitions:after_sale_transitions_b3_atomic_guard',
+      {
+        functionName: 'validate_m63_b3_command_atomicity',
+        isConstraint: true,
+        isDeferrable: true,
+        isInitiallyDeferred: true,
+      },
+    ],
+    [
+      'after_sales:after_sales_b3_runtime_commit_guard',
+      {
+        functionName: 'validate_m63_b3_runtime_case_commit',
+        isConstraint: true,
+        isDeferrable: true,
+        isInitiallyDeferred: true,
+      },
+    ],
+  ]);
+  if (triggerRows.length !== expectedTriggers.size) {
+    fail(`M6.3-B3 trigger catalog is incomplete: ${JSON.stringify(triggerRows)}`);
+  }
+  for (const row of triggerRows) {
+    const expected = expectedTriggers.get(`${row.table_name}:${row.trigger_name}`);
+    if (
+      !expected ||
+      row.function_name !== expected.functionName ||
+      row.function_identity_arguments !== '' ||
+      row.is_constraint !== expected.isConstraint ||
+      row.is_deferrable !== expected.isDeferrable ||
+      row.is_initially_deferred !== expected.isInitiallyDeferred ||
+      !row.is_enabled
+    ) {
+      fail(`M6.3-B3 trigger shape differs: ${JSON.stringify(row)}`);
+    }
+  }
+
+  const constraintRows = await client.$queryRaw<B3ConstraintCatalogRecord[]>`
+    SELECT
+      constraint_definition.conname AS constraint_name,
+      constraint_definition.contype AS constraint_type,
+      pg_catalog.pg_get_constraintdef(constraint_definition.oid, true) AS definition,
+      constraint_definition.convalidated AS is_validated,
+      source_relation.relname AS source_table,
+      referenced_relation.relname AS referenced_table,
+      constraint_definition.confdeltype AS delete_action,
+      constraint_definition.confupdtype AS update_action,
+      ARRAY(
+        SELECT source_attribute.attname
+        FROM pg_catalog.unnest(constraint_definition.conkey) WITH ORDINALITY
+          AS source_key(attnum, ordinal)
+        JOIN pg_catalog.pg_attribute AS source_attribute
+          ON source_attribute.attrelid = constraint_definition.conrelid
+         AND source_attribute.attnum = source_key.attnum
+        ORDER BY source_key.ordinal
+      ) AS source_columns,
+      CASE WHEN constraint_definition.confrelid = 0 THEN NULL ELSE ARRAY(
+        SELECT referenced_attribute.attname
+        FROM pg_catalog.unnest(constraint_definition.confkey) WITH ORDINALITY
+          AS referenced_key(attnum, ordinal)
+        JOIN pg_catalog.pg_attribute AS referenced_attribute
+          ON referenced_attribute.attrelid = constraint_definition.confrelid
+         AND referenced_attribute.attnum = referenced_key.attnum
+        ORDER BY referenced_key.ordinal
+      ) END AS referenced_columns
+    FROM pg_catalog.pg_constraint AS constraint_definition
+    JOIN pg_catalog.pg_class AS source_relation
+      ON source_relation.oid = constraint_definition.conrelid
+    JOIN pg_catalog.pg_namespace AS source_namespace
+      ON source_namespace.oid = source_relation.relnamespace
+    LEFT JOIN pg_catalog.pg_class AS referenced_relation
+      ON referenced_relation.oid = constraint_definition.confrelid
+    WHERE source_namespace.nspname = 'public'
+      AND constraint_definition.conname IN (
+        'after_sale_operations_store_id_id_after_sale_id_key',
+        'after_sale_transitions_operation_fkey'
+      )
+    ORDER BY constraint_definition.conname
+  `;
+  const uniqueConstraint = constraintRows.find(
+    (row) => row.constraint_name === 'after_sale_operations_store_id_id_after_sale_id_key',
+  );
+  const operationForeignKey = constraintRows.find(
+    (row) => row.constraint_name === 'after_sale_transitions_operation_fkey',
+  );
+  if (
+    constraintRows.length !== 2 ||
+    !uniqueConstraint ||
+    uniqueConstraint.constraint_type !== 'u' ||
+    !uniqueConstraint.is_validated ||
+    uniqueConstraint.source_table !== 'after_sale_operations' ||
+    uniqueConstraint.source_columns.join(',') !== 'store_id,id,after_sale_id' ||
+    !operationForeignKey ||
+    operationForeignKey.constraint_type !== 'f' ||
+    !operationForeignKey.is_validated ||
+    operationForeignKey.source_table !== 'after_sale_transitions' ||
+    operationForeignKey.source_columns.join(',') !== 'store_id,operation_id,after_sale_id' ||
+    operationForeignKey.referenced_table !== 'after_sale_operations' ||
+    operationForeignKey.referenced_columns?.join(',') !== 'store_id,id,after_sale_id' ||
+    operationForeignKey.delete_action !== 'r' ||
+    operationForeignKey.update_action !== 'c'
+  ) {
+    fail(`M6.3-B3 composite constraint catalog differs: ${JSON.stringify(constraintRows)}`);
+  }
+
+  const indexRows = await client.$queryRaw<B3IndexCatalogRecord[]>`
+    SELECT
+      index_record.indisready AS is_ready,
+      index_record.indisunique AS is_unique,
+      index_record.indisvalid AS is_valid,
+      index_record.indnkeyatts AS key_attribute_count,
+      index_record.indnatts AS total_attribute_count,
+      ARRAY(
+        SELECT pg_catalog.pg_get_indexdef(
+          index_record.indexrelid, key_option.key_number::integer, true
+        )
+        FROM pg_catalog.unnest(index_record.indkey::smallint[])
+          WITH ORDINALITY AS key_option(attribute_number, key_number)
+        ORDER BY key_option.key_number
+      ) AS index_keys,
+      pg_catalog.pg_get_expr(index_record.indpred, index_record.indrelid, true) AS predicate
+    FROM pg_catalog.pg_index AS index_record
+    JOIN pg_catalog.pg_class AS index_relation
+      ON index_relation.oid = index_record.indexrelid
+    JOIN pg_catalog.pg_class AS table_relation
+      ON table_relation.oid = index_record.indrelid
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = table_relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND table_relation.relname = 'after_sale_transitions'
+      AND index_relation.relname = 'after_sale_transitions_one_submit_per_case_key'
+  `;
+  const submitIndex = indexRows[0];
+  if (
+    indexRows.length !== 1 ||
+    !submitIndex ||
+    !submitIndex.is_ready ||
+    !submitIndex.is_unique ||
+    !submitIndex.is_valid ||
+    submitIndex.key_attribute_count !== 2 ||
+    submitIndex.total_attribute_count !== 2 ||
+    submitIndex.index_keys.join(',') !== 'store_id,after_sale_id' ||
+    !submitIndex.predicate ||
+    !submitIndex.predicate.includes('event') ||
+    !submitIndex.predicate.includes('SUBMIT')
+  ) {
+    fail(`M6.3-B3 submit uniqueness index differs: ${JSON.stringify(submitIndex ?? null)}`);
+  }
+
+  const [operationIdColumn] = await client.$queryRaw<
+    Array<{ is_nullable: string; udt_name: string }>
+  >`
+    SELECT is_nullable, udt_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'after_sale_transitions'
+      AND column_name = 'operation_id'
+  `;
+  const [runtimeOperationInsert] = await client.$queryRaw<Array<{ can_insert: boolean }>>`
+    SELECT pg_catalog.has_table_privilege(
+      'zalo_shop_runtime', 'public.after_sale_operations', 'INSERT'
+    ) AS can_insert
+  `;
+  if (
+    !operationIdColumn ||
+    operationIdColumn.udt_name !== 'uuid' ||
+    operationIdColumn.is_nullable !== 'YES' ||
+    runtimeOperationInsert?.can_insert
+  ) {
+    fail(
+      `M6.3-B3 operation link column or runtime grant differs: ${JSON.stringify({
+        operationIdColumn,
+        runtimeOperationInsert,
+      })}`,
+    );
+  }
+
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        functionRows,
+        triggerRows,
+        constraintRows,
+        indexRows,
+        operationIdColumn,
+        runtimeOperationInsert,
+      }),
+    )
+    .digest('hex');
+}
+
+async function assertM63B3DownBoundary(client: PrismaClientType): Promise<void> {
+  const [catalogState] = await client.$queryRaw<
+    Array<{
+      b3_constraints: bigint;
+      b3_functions: bigint;
+      b3_indexes: bigint;
+      b3_triggers: bigint;
+      operation_id_column: bigint;
+      operations_insert_grant: boolean;
+      operations_insert_policy: bigint;
+      transitions_cancel_policy: bigint;
+    }>
+  >`
+    SELECT
+      (SELECT count(*) FROM pg_catalog.pg_constraint
+       WHERE conname IN (
+         'after_sale_operations_store_id_id_after_sale_id_key',
+         'after_sale_transitions_operation_fkey'
+       )) AS b3_constraints,
+      (SELECT count(*)
+       FROM pg_catalog.pg_proc function_definition
+       JOIN pg_catalog.pg_namespace namespace
+         ON namespace.oid = function_definition.pronamespace
+       WHERE namespace.nspname = 'app_security'
+         AND function_definition.proname LIKE '%m63_b3%') AS b3_functions,
+      (SELECT count(*)
+       FROM pg_catalog.pg_class index_relation
+       JOIN pg_catalog.pg_index index_record ON index_record.indexrelid = index_relation.oid
+       WHERE index_relation.relname = 'after_sale_transitions_one_submit_per_case_key') AS b3_indexes,
+      (SELECT count(*)
+       FROM pg_catalog.pg_trigger trigger_definition
+       WHERE NOT trigger_definition.tgisinternal
+         AND trigger_definition.tgname LIKE '%b3%') AS b3_triggers,
+      (SELECT count(*) FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'after_sale_transitions'
+         AND column_name = 'operation_id') AS operation_id_column,
+      pg_catalog.has_table_privilege(
+        'zalo_shop_runtime', 'public.after_sale_operations', 'INSERT'
+      ) AS operations_insert_grant,
+      (SELECT count(*) FROM pg_catalog.pg_policy policy_definition
+       JOIN pg_catalog.pg_class relation ON relation.oid = policy_definition.polrelid
+       JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
+       WHERE namespace.nspname = 'public' AND relation.relname = 'after_sale_operations'
+         AND policy_definition.polname = 'after_sale_operations_insert_scope') AS operations_insert_policy,
+      (SELECT count(*) FROM pg_catalog.pg_policy policy_definition
+       JOIN pg_catalog.pg_class relation ON relation.oid = policy_definition.polrelid
+       JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
+       WHERE namespace.nspname = 'public' AND relation.relname = 'after_sale_transitions'
+         AND policy_definition.polname = 'after_sale_transitions_member_cancel_insert') AS transitions_cancel_policy
+  `;
+  if (
+    catalogState?.b3_constraints !== 0n ||
+    catalogState.b3_functions !== 0n ||
+    catalogState.b3_indexes !== 0n ||
+    catalogState.b3_triggers !== 0n ||
+    catalogState.operation_id_column !== 0n ||
+    !catalogState.operations_insert_grant ||
+    catalogState.operations_insert_policy !== 1n ||
+    catalogState.transitions_cancel_policy !== 1n
+  ) {
+    fail(
+      `M6.3-B3 down.sql did not restore the pre-B3 catalog: ${JSON.stringify({
+        b3_constraints: String(catalogState?.b3_constraints),
+        b3_functions: String(catalogState?.b3_functions),
+        b3_indexes: String(catalogState?.b3_indexes),
+        b3_triggers: String(catalogState?.b3_triggers),
+        operation_id_column: String(catalogState?.operation_id_column),
+        operations_insert_grant: catalogState?.operations_insert_grant,
+        operations_insert_policy: String(catalogState?.operations_insert_policy),
+        transitions_cancel_policy: String(catalogState?.transitions_cancel_policy),
+      })}`,
+    );
+  }
+}
+
+type B3HistoricalPolicyFixtureIds = Readonly<{
+  afterSaleId: string;
+  orderItemId: string;
+  policyId: string;
+  policyVersionId: string;
+  storeId: string;
+}>;
+
+type B3HistoricalPolicyFixtureRecord = {
+  after_sale_count: string;
+  case_payload: unknown;
+  case_payload_hash: string | null;
+  draft_payload: unknown;
+  draft_payload_hash: string | null;
+  order_item_count: string;
+  policy_count: string;
+  policy_version_count: string;
+  snapshot_count: string;
+  snapshot_payload: unknown;
+  snapshot_payload_hash: string | null;
+  version_payload: unknown;
+  version_payload_hash: string | null;
+};
+
+type MigrationHistorySnapshotRecord = MigrationRecord & {
+  id: string;
+  started_at: Date;
+};
+
+async function migrationHistoryFingerprint(client: PrismaClientType): Promise<string> {
+  const records = await client.$queryRaw<MigrationHistorySnapshotRecord[]>`
+    SELECT
+      id, checksum, finished_at, migration_name, logs, rolled_back_at,
+      started_at, applied_steps_count
+    FROM "_prisma_migrations"
+    ORDER BY started_at, id
+  `;
+  return createHash('sha256').update(JSON.stringify(records)).digest('hex');
+}
+
+async function b3HistoricalPolicyFixtureFingerprint(
+  client: PrismaClientType,
+  fixture: B3HistoricalPolicyFixtureIds,
+): Promise<string> {
+  const [record] = await client.$queryRaw<B3HistoricalPolicyFixtureRecord[]>`
+    SELECT
+      (SELECT count(*)::text FROM after_sale_policies
+       WHERE store_id = ${fixture.storeId}::uuid AND id = ${fixture.policyId}::uuid)
+        AS policy_count,
+      (SELECT draft_payload FROM after_sale_policies
+       WHERE store_id = ${fixture.storeId}::uuid AND id = ${fixture.policyId}::uuid)
+        AS draft_payload,
+      (SELECT draft_hash FROM after_sale_policies
+       WHERE store_id = ${fixture.storeId}::uuid AND id = ${fixture.policyId}::uuid)
+        AS draft_payload_hash,
+      (SELECT count(*)::text FROM after_sale_policy_versions
+       WHERE store_id = ${fixture.storeId}::uuid AND id = ${fixture.policyVersionId}::uuid)
+        AS policy_version_count,
+      (SELECT payload FROM after_sale_policy_versions
+       WHERE store_id = ${fixture.storeId}::uuid AND id = ${fixture.policyVersionId}::uuid)
+        AS version_payload,
+      (SELECT payload_hash FROM after_sale_policy_versions
+       WHERE store_id = ${fixture.storeId}::uuid AND id = ${fixture.policyVersionId}::uuid)
+        AS version_payload_hash,
+      (SELECT count(*)::text FROM order_items
+       WHERE store_id = ${fixture.storeId}::uuid AND id = ${fixture.orderItemId}::uuid)
+        AS order_item_count,
+      (SELECT count(*)::text FROM order_item_after_sale_policy_snapshots
+       WHERE store_id = ${fixture.storeId}::uuid AND order_item_id = ${fixture.orderItemId}::uuid)
+        AS snapshot_count,
+      (SELECT payload FROM order_item_after_sale_policy_snapshots
+       WHERE store_id = ${fixture.storeId}::uuid AND order_item_id = ${fixture.orderItemId}::uuid)
+        AS snapshot_payload,
+      (SELECT payload_hash FROM order_item_after_sale_policy_snapshots
+       WHERE store_id = ${fixture.storeId}::uuid AND order_item_id = ${fixture.orderItemId}::uuid)
+        AS snapshot_payload_hash,
+      (SELECT count(*)::text FROM after_sales
+       WHERE store_id = ${fixture.storeId}::uuid AND id = ${fixture.afterSaleId}::uuid)
+        AS after_sale_count,
+      (SELECT policy_snapshot FROM after_sales
+       WHERE store_id = ${fixture.storeId}::uuid AND id = ${fixture.afterSaleId}::uuid)
+        AS case_payload,
+      (SELECT policy_hash FROM after_sales
+       WHERE store_id = ${fixture.storeId}::uuid AND id = ${fixture.afterSaleId}::uuid)
+        AS case_payload_hash
+  `;
+  if (
+    !record ||
+    record.policy_count !== '1' ||
+    record.policy_version_count !== '1' ||
+    record.order_item_count !== '1' ||
+    record.snapshot_count !== '1' ||
+    record.after_sale_count !== '1'
+  ) {
+    fail('M6.3-B3 historical policy preflight fixture is incomplete');
+  }
+  return createHash('sha256').update(JSON.stringify(record)).digest('hex');
+}
+
+async function assertB3HistoricalPolicyPreflightFailure(
+  client: PrismaClientType,
+  databaseUrl: URL,
+  schemaPath: string,
+  migrationPath: string,
+  fixture: B3HistoricalPolicyFixtureIds,
+  context: string,
+): Promise<void> {
+  const fixtureFingerprintBefore = await b3HistoricalPolicyFixtureFingerprint(client, fixture);
+  const migrationHistoryBefore = await migrationHistoryFingerprint(client);
+  const migrationSql = await readFile(migrationPath, 'utf8');
+  const preflightStart = migrationSql.indexOf('DO $m63_b3_policy_payload_preflight$');
+  const preflightTerminator = '$m63_b3_policy_payload_preflight$;';
+  const preflightEnd = migrationSql.indexOf(preflightTerminator, preflightStart);
+  if (preflightStart < 0 || preflightEnd <= preflightStart) {
+    fail('the M6.3-B3 historical policy preflight statement could not be isolated');
+  }
+  const preflightSql = migrationSql.slice(
+    preflightStart,
+    preflightEnd + preflightTerminator.length,
+  );
+  await expectSqlState(
+    client.$executeRawUnsafe(preflightSql),
+    '55000',
+    `M6.3-B3 ${context} historical policy preflight`,
+  );
+  runPrismaExpectFailure(
+    ['db', 'execute', '--file', migrationPath, '--schema', schemaPath],
+    databaseUrl,
+    'M6.3-B3 historical policy payload preflight failed',
+  );
+  const fixtureFingerprintAfter = await b3HistoricalPolicyFixtureFingerprint(client, fixture);
+  const migrationHistoryAfter = await migrationHistoryFingerprint(client);
+  if (fixtureFingerprintAfter !== fixtureFingerprintBefore) {
+    fail(`M6.3-B3 ${context} preflight failure changed its historical fixture`);
+  }
+  if (migrationHistoryAfter !== migrationHistoryBefore) {
+    fail(`M6.3-B3 ${context} preflight failure changed _prisma_migrations`);
+  }
+  await assertM63B3DownBoundary(client);
 }
 
 async function assertM63B2bD5ProtectedReadLock(client: PrismaClientType): Promise<void> {
@@ -1392,6 +2079,9 @@ async function run(): Promise<void> {
   if (M2_MIGRATIONS.some((migrationName, index) => allMigrationNames[index] !== migrationName)) {
     fail('the tracked migration prefix no longer matches the approved M2 boundary');
   }
+  if (allMigrationNames.at(-1) !== B3_MIGRATION_NAME) {
+    fail('the approved M6.3-B3 command migration must be the current migration tail');
+  }
   const m5BoundaryIndex = allMigrationNames.indexOf(M5_MIGRATIONS.at(-1) ?? '');
   if (m5BoundaryIndex < 0) fail('the approved M5 boundary migration was not found');
   const m5BoundaryMigrationNames = allMigrationNames.slice(0, m5BoundaryIndex + 1);
@@ -1404,6 +2094,10 @@ async function run(): Promise<void> {
     fail('the approved M6.3-B2a to B2b-D0 migration boundary was not found');
   }
   const m63B2aBoundaryMigrationNames = allMigrationNames.slice(0, d0BoundaryIndex);
+  const b3BoundaryMigrationNames = allMigrationNames.slice(0, -1);
+  if (b3BoundaryMigrationNames.at(-1) !== D5_MIGRATIONS.at(-1)) {
+    fail('the approved M6.3-B2b-D5 to B3 migration boundary was not found');
+  }
 
   const adminDatabaseUrl = new URL(ownerDatabaseUrl);
   adminDatabaseUrl.pathname = '/postgres';
@@ -1441,6 +2135,11 @@ async function run(): Promise<void> {
       tempDirectory,
       'm63-b2a-boundary',
       m63B2aBoundaryMigrationNames,
+    );
+    const b3BoundarySchemaPath = await createMigrationTree(
+      tempDirectory,
+      'm63-b3-boundary',
+      b3BoundaryMigrationNames,
     );
 
     validateScratchDatabaseName(scratchDatabaseName);
@@ -1601,9 +2300,12 @@ async function run(): Promise<void> {
     const fullSchemaPath = join(PRISMA_ROOT, 'schema.prisma');
     const d0MigrationPath = join(MIGRATIONS_ROOT, d0MigrationName, 'migration.sql');
     const d0DownPath = join(MIGRATIONS_ROOT, d0MigrationName, 'down.sql');
-    const [d0MigrationSql, d0DownSql] = await Promise.all([
+    const b3MigrationPath = join(MIGRATIONS_ROOT, B3_MIGRATION_NAME, 'migration.sql');
+    const b3DownPath = join(MIGRATIONS_ROOT, B3_MIGRATION_NAME, 'down.sql');
+    const [d0MigrationSql, d0DownSql, b3DownSql] = await Promise.all([
       readFile(d0MigrationPath, 'utf8'),
       readFile(d0DownPath, 'utf8'),
+      readFile(b3DownPath, 'utf8'),
     ]);
     const d0ForwardGuardStart = d0MigrationSql.indexOf('DO $$');
     const d0ForwardGuardEnd = d0MigrationSql.indexOf(
@@ -1623,6 +2325,12 @@ async function run(): Promise<void> {
     }
     const d0ForwardGuardSql = d0MigrationSql.slice(d0ForwardGuardStart, d0ForwardGuardEnd).trim();
     const d0DownGuardSql = d0DownSql.slice(d0DownGuardStart, d0DownGuardEnd).trim();
+    const b3DownGuardStart = b3DownSql.indexOf('DO $$');
+    const b3DownGuardEnd = b3DownSql.indexOf('REVOKE ALL ON FUNCTION');
+    if (b3DownGuardStart < 0 || b3DownGuardEnd <= b3DownGuardStart) {
+      fail('the M6.3-B3 down migration guard boundaries could not be isolated');
+    }
+    const b3DownGuardSql = b3DownSql.slice(b3DownGuardStart, b3DownGuardEnd).trim();
     const d0EvidenceId = 'f2e00000-0000-4000-8000-000000000001';
     const d0TransitionId = 'f2e00000-0000-4000-8000-000000000002';
     const d0OutboxId = 'f2e00000-0000-4000-8000-000000000003';
@@ -1782,11 +2490,366 @@ async function run(): Promise<void> {
       fail('the M6.3-B2b-D0 forward guard fixtures were not independently cleaned');
     }
 
+    runPrisma(['migrate', 'deploy', '--schema', b3BoundarySchemaPath], scratchDatabaseUrl);
+    await assertMigrationState(scratchClient, b3BoundaryMigrationNames);
+    await assertM63B3DownBoundary(scratchClient);
+
+    const b3ValidConditionRules = {
+      allowed_reason_codes: ['damaged-item', 'wrong-item'],
+      evidence_required: false,
+      evidence_required_reason_codes: ['damaged-item'],
+      opened_package_exception_reason_codes: ['wrong-item'],
+    };
+    const b3ValidPolicyPayload = {
+      allowed_types: ['REFUND_ONLY', 'RETURN_REFUND'],
+      category_id: null,
+      condition_rules: b3ValidConditionRules,
+      damaged_exception: true,
+      defect_exception: true,
+      exchange_attribute_code: null,
+      exchange_same_product_only: true,
+      hygiene_restricted: false,
+      localizations: [
+        {
+          buyer_instructions: 'Huong dan kiem tra nang cap B3',
+          locale: 'vi',
+          name: 'Chinh sach nang cap B3',
+          summary: 'Du lieu lich su hop le cho kiem tra nang cap B3',
+        },
+        {
+          buyer_instructions: 'B3 升级检查说明',
+          locale: 'zh',
+          name: 'B3 升级政策',
+          summary: '用于 B3 升级检查的有效历史数据',
+        },
+        {
+          buyer_instructions: 'B3 upgrade check instructions',
+          locale: 'en',
+          name: 'B3 upgrade policy',
+          summary: 'Valid historical data for the B3 upgrade check',
+        },
+      ],
+      product_ids: ['f2400000-0000-4000-8000-000000000001'],
+      request_window_days: 30,
+      return_shipping_payer: 'MERCHANT',
+      return_window_days: 7,
+      unopened_required: false,
+      wrong_item_exception: true,
+    };
+    const b3MissingAllowedReasonPayload = {
+      ...b3ValidPolicyPayload,
+      condition_rules: {
+        evidence_required: false,
+        evidence_required_reason_codes: [],
+        opened_package_exception_reason_codes: [],
+      },
+    };
+    const b3IllegalAllowedReasonPayload = {
+      ...b3ValidPolicyPayload,
+      condition_rules: {
+        ...b3ValidConditionRules,
+        allowed_reason_codes: ['damaged-item', 'INVALID_CODE'],
+        evidence_required_reason_codes: ['damaged-item'],
+        opened_package_exception_reason_codes: [],
+      },
+    };
+    const b3InvalidReasonSubsetPayload = {
+      ...b3ValidPolicyPayload,
+      condition_rules: {
+        ...b3ValidConditionRules,
+        allowed_reason_codes: ['damaged-item'],
+        evidence_required_reason_codes: ['wrong-item'],
+        opened_package_exception_reason_codes: [],
+      },
+    };
+    const b3DuplicateAllowedReasonPayload = {
+      ...b3ValidPolicyPayload,
+      condition_rules: {
+        ...b3ValidConditionRules,
+        allowed_reason_codes: ['damaged-item', 'damaged-item'],
+        evidence_required_reason_codes: ['damaged-item'],
+        opened_package_exception_reason_codes: [],
+      },
+    };
+    const serializeB3PolicyPayload = (payload: unknown) => JSON.stringify(payload);
+    const hashB3PolicyPayload = (payload: unknown) =>
+      createHash('sha256').update(serializeB3PolicyPayload(payload)).digest('hex');
+    const b3ValidPolicyPayloadJson = serializeB3PolicyPayload(b3ValidPolicyPayload);
+    const b3ValidPolicyPayloadHash = hashB3PolicyPayload(b3ValidPolicyPayload);
+    const b3MissingAllowedReasonPayloadJson = serializeB3PolicyPayload(
+      b3MissingAllowedReasonPayload,
+    );
+    const b3MissingAllowedReasonPayloadHash = hashB3PolicyPayload(b3MissingAllowedReasonPayload);
+    const b3IllegalAllowedReasonPayloadJson = serializeB3PolicyPayload(
+      b3IllegalAllowedReasonPayload,
+    );
+    const b3IllegalAllowedReasonPayloadHash = hashB3PolicyPayload(b3IllegalAllowedReasonPayload);
+    const b3InvalidReasonSubsetPayloadJson = serializeB3PolicyPayload(b3InvalidReasonSubsetPayload);
+    const b3InvalidReasonSubsetPayloadHash = hashB3PolicyPayload(b3InvalidReasonSubsetPayload);
+    const b3DuplicateAllowedReasonPayloadJson = serializeB3PolicyPayload(
+      b3DuplicateAllowedReasonPayload,
+    );
+    const b3DuplicateAllowedReasonPayloadHash = hashB3PolicyPayload(
+      b3DuplicateAllowedReasonPayload,
+    );
+    const b3HistoricalPolicyFixture: B3HistoricalPolicyFixtureIds = {
+      afterSaleId: randomUUID(),
+      orderItemId: randomUUID(),
+      policyId: randomUUID(),
+      policyVersionId: randomUUID(),
+      storeId: m5HistoricalFacts.storeId,
+    };
+
+    // Model stored pre-B3 JSON at the migration-owner boundary. Replica mode
+    // bypasses runtime immutability triggers while preserving relational and
+    // CHECK constraints, and every injected row is removed before down tests.
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO order_items (
+          id, store_id, order_id, sku_id, product_id, brand_id, category_id,
+          sku_code, product_name, brand_name, option_snapshot, unit_price_vnd,
+          quantity, subtotal_vnd, payable_vnd
+        ) VALUES (
+          ${b3HistoricalPolicyFixture.orderItemId}::uuid,
+          ${b3HistoricalPolicyFixture.storeId}::uuid,
+          ${m5HistoricalFacts.orderId}::uuid,
+          'f2500000-0000-4000-8000-000000000001'::uuid,
+          'f2400000-0000-4000-8000-000000000001'::uuid,
+          'f2100000-0000-4000-8000-000000000001'::uuid,
+          'f2210000-0000-4000-8000-000000000001'::uuid,
+          'm63-b3-upgrade-fixture', 'M6.3-B3 upgrade product',
+          'M6.3-B3 upgrade brand', '{"fixture":"m63-b3-upgrade"}'::jsonb,
+          100000, 1, 100000, 100000
+        )
+      `;
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_policies (
+          id, store_id, code, status, draft_payload, draft_hash,
+          created_by, updated_by, updated_at
+        ) VALUES (
+          ${b3HistoricalPolicyFixture.policyId}::uuid,
+          ${b3HistoricalPolicyFixture.storeId}::uuid,
+          'm63-b3-upgrade-fixture', 'DRAFT',
+          ${b3MissingAllowedReasonPayloadJson}::jsonb,
+          ${b3MissingAllowedReasonPayloadHash},
+          ${m5HistoricalFacts.adminId}::uuid, ${m5HistoricalFacts.adminId}::uuid,
+          clock_timestamp()
+        )
+      `;
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_policy_versions (
+          id, store_id, policy_id, version_number, effective_at,
+          request_window_days, return_window_days, allowed_types,
+          return_shipping_payer, unopened_required, hygiene_restricted,
+          damaged_exception, wrong_item_exception, defect_exception,
+          condition_rules, payload, payload_hash, published_by
+        ) VALUES (
+          ${b3HistoricalPolicyFixture.policyVersionId}::uuid,
+          ${b3HistoricalPolicyFixture.storeId}::uuid,
+          ${b3HistoricalPolicyFixture.policyId}::uuid,
+          1, clock_timestamp(), 30, 7,
+          ARRAY['REFUND_ONLY','RETURN_REFUND']::after_sale_type[],
+          'MERCHANT', false, false, true, true, true,
+          ${JSON.stringify(b3ValidConditionRules)}::jsonb,
+          ${b3ValidPolicyPayloadJson}::jsonb, ${b3ValidPolicyPayloadHash},
+          ${m5HistoricalFacts.adminId}::uuid
+        )
+      `;
+      await transaction.$executeRaw`
+        INSERT INTO order_item_after_sale_policy_snapshots (
+          store_id, order_id, order_item_id, policy_id, policy_version_id,
+          policy_code, policy_version_number, payload, payload_hash
+        ) VALUES (
+          ${b3HistoricalPolicyFixture.storeId}::uuid,
+          ${m5HistoricalFacts.orderId}::uuid,
+          ${b3HistoricalPolicyFixture.orderItemId}::uuid,
+          ${b3HistoricalPolicyFixture.policyId}::uuid,
+          ${b3HistoricalPolicyFixture.policyVersionId}::uuid,
+          'm63-b3-upgrade-fixture', 1,
+          ${b3ValidPolicyPayloadJson}::jsonb, ${b3ValidPolicyPayloadHash}
+        )
+      `;
+      await transaction.$executeRaw`
+        INSERT INTO after_sales (
+          id, store_id, order_id, member_id, public_case_number, type, status,
+          source, reason_code, policy_snapshot, policy_hash, policy_id,
+          policy_version_id, legacy_policy_review, idempotency_key_hash,
+          request_hash, initiated_by, correlation_id, updated_at
+        ) VALUES (
+          ${b3HistoricalPolicyFixture.afterSaleId}::uuid,
+          ${b3HistoricalPolicyFixture.storeId}::uuid,
+          ${m5HistoricalFacts.orderId}::uuid,
+          'f2020000-0000-4000-8000-000000000001'::uuid,
+          ${`ASC-B3${b3HistoricalPolicyFixture.afterSaleId
+            .replaceAll('-', '')
+            .slice(0, 16)
+            .toUpperCase()}`},
+          'REFUND_ONLY', 'PENDING_REVIEW', 'ADMIN', 'damaged-item',
+          ${b3ValidPolicyPayloadJson}::jsonb, ${b3ValidPolicyPayloadHash},
+          ${b3HistoricalPolicyFixture.policyId}::uuid,
+          ${b3HistoricalPolicyFixture.policyVersionId}::uuid, false,
+          ${createHash('sha256').update('m63-b3-upgrade-idempotency').digest('hex')},
+          ${createHash('sha256').update('m63-b3-upgrade-request').digest('hex')},
+          ${m5HistoricalFacts.adminId}::uuid, 'm63-b3-upgrade-preflight',
+          clock_timestamp()
+        )
+      `;
+    });
+
+    await assertB3HistoricalPolicyPreflightFailure(
+      scratchClient,
+      scratchDatabaseUrl,
+      fullSchemaPath,
+      b3MigrationPath,
+      b3HistoricalPolicyFixture,
+      'draft payload missing allowed_reason_codes',
+    );
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        UPDATE after_sale_policies
+        SET draft_payload = ${b3ValidPolicyPayloadJson}::jsonb,
+          draft_hash = ${b3ValidPolicyPayloadHash}, updated_at = clock_timestamp()
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND id = ${b3HistoricalPolicyFixture.policyId}::uuid
+      `;
+      await transaction.$executeRaw`
+        UPDATE after_sale_policy_versions
+        SET payload = ${b3IllegalAllowedReasonPayloadJson}::jsonb,
+          payload_hash = ${b3IllegalAllowedReasonPayloadHash}
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND id = ${b3HistoricalPolicyFixture.policyVersionId}::uuid
+      `;
+    });
+    await assertB3HistoricalPolicyPreflightFailure(
+      scratchClient,
+      scratchDatabaseUrl,
+      fullSchemaPath,
+      b3MigrationPath,
+      b3HistoricalPolicyFixture,
+      'version payload with an illegal allowed_reason_codes entry',
+    );
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        UPDATE after_sale_policy_versions
+        SET payload = ${b3ValidPolicyPayloadJson}::jsonb,
+          payload_hash = ${b3ValidPolicyPayloadHash}
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND id = ${b3HistoricalPolicyFixture.policyVersionId}::uuid
+      `;
+      await transaction.$executeRaw`
+        UPDATE order_item_after_sale_policy_snapshots
+        SET payload = ${b3InvalidReasonSubsetPayloadJson}::jsonb,
+          payload_hash = ${b3InvalidReasonSubsetPayloadHash}
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND order_item_id = ${b3HistoricalPolicyFixture.orderItemId}::uuid
+      `;
+    });
+    await assertB3HistoricalPolicyPreflightFailure(
+      scratchClient,
+      scratchDatabaseUrl,
+      fullSchemaPath,
+      b3MigrationPath,
+      b3HistoricalPolicyFixture,
+      'order-item snapshot with a reason-code subset violation',
+    );
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        UPDATE order_item_after_sale_policy_snapshots
+        SET payload = ${b3ValidPolicyPayloadJson}::jsonb,
+          payload_hash = ${b3ValidPolicyPayloadHash}
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND order_item_id = ${b3HistoricalPolicyFixture.orderItemId}::uuid
+      `;
+      await transaction.$executeRaw`
+        UPDATE after_sales
+        SET policy_snapshot = ${b3DuplicateAllowedReasonPayloadJson}::jsonb,
+          policy_hash = ${b3DuplicateAllowedReasonPayloadHash},
+          updated_at = clock_timestamp()
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND id = ${b3HistoricalPolicyFixture.afterSaleId}::uuid
+      `;
+    });
+    await assertB3HistoricalPolicyPreflightFailure(
+      scratchClient,
+      scratchDatabaseUrl,
+      fullSchemaPath,
+      b3MigrationPath,
+      b3HistoricalPolicyFixture,
+      'after-sale snapshot with duplicate allowed_reason_codes',
+    );
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        UPDATE after_sales
+        SET policy_snapshot = ${b3ValidPolicyPayloadJson}::jsonb,
+          policy_hash = ${b3ValidPolicyPayloadHash}, updated_at = clock_timestamp()
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND id = ${b3HistoricalPolicyFixture.afterSaleId}::uuid
+      `;
+    });
+
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B1ReadIndexes(scratchClient);
     await assertM63B2ReadIndexes(scratchClient);
     await assertM63B2bD0Indexes(scratchClient);
+    await assertM63B3CommandBoundary(scratchClient);
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sales
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND id = ${b3HistoricalPolicyFixture.afterSaleId}::uuid
+      `;
+      await transaction.$executeRaw`
+        DELETE FROM order_item_after_sale_policy_snapshots
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND order_item_id = ${b3HistoricalPolicyFixture.orderItemId}::uuid
+      `;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_policy_versions
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND id = ${b3HistoricalPolicyFixture.policyVersionId}::uuid
+      `;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_policies
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND id = ${b3HistoricalPolicyFixture.policyId}::uuid
+      `;
+      await transaction.$executeRaw`
+        DELETE FROM order_items
+        WHERE store_id = ${b3HistoricalPolicyFixture.storeId}::uuid
+          AND id = ${b3HistoricalPolicyFixture.orderItemId}::uuid
+      `;
+    });
+    const [cleanB3HistoricalPolicyFixture] = await scratchClient.$queryRaw<
+      Array<{ remaining_rows: bigint }>
+    >`
+      SELECT
+        (SELECT count(*) FROM after_sale_policies
+          WHERE id = ${b3HistoricalPolicyFixture.policyId}::uuid) +
+        (SELECT count(*) FROM after_sale_policy_versions
+          WHERE id = ${b3HistoricalPolicyFixture.policyVersionId}::uuid) +
+        (SELECT count(*) FROM order_item_after_sale_policy_snapshots
+          WHERE order_item_id = ${b3HistoricalPolicyFixture.orderItemId}::uuid) +
+        (SELECT count(*) FROM after_sales
+          WHERE id = ${b3HistoricalPolicyFixture.afterSaleId}::uuid) +
+        (SELECT count(*) FROM order_items
+          WHERE id = ${b3HistoricalPolicyFixture.orderItemId}::uuid)
+          AS remaining_rows
+    `;
+    if (cleanB3HistoricalPolicyFixture?.remaining_rows !== 0n) {
+      fail('the M6.3-B3 historical policy preflight fixtures were not cleaned');
+    }
     const upgradedM5Facts = await scratchClient.$queryRaw<
       Array<{
         after_sale_id: string | null;
@@ -1873,6 +2936,7 @@ async function run(): Promise<void> {
     await assertM63B1ReadIndexes(scratchClient);
     await assertM63B2ReadIndexes(scratchClient);
     await assertM63B2bD0Indexes(scratchClient);
+    const repeatedB3CatalogFingerprint = await assertM63B3CommandBoundary(scratchClient);
     await assertM63B2bD5ProtectedReadLock(scratchClient);
     await exerciseD5MigrationAtomicity(
       scratchClient,
@@ -1889,6 +2953,64 @@ async function run(): Promise<void> {
       ['db', 'execute', '--file', ASSERTIONS_SQL_PATH, '--schema', fullSchemaPath],
       scratchDatabaseUrl,
     );
+
+    const b3RollbackOperationId = randomUUID();
+    const b3RollbackAfterSaleId = randomUUID();
+    const b3RollbackOperationRows = await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      return transaction.$executeRaw`
+        INSERT INTO after_sale_operations (
+          id, store_id, after_sale_id, operation, idempotency_key_hash, request_hash,
+          status, result_summary, attempt_count, version, updated_at
+        )
+        SELECT
+          ${b3RollbackOperationId}::uuid, store.id, ${b3RollbackAfterSaleId}::uuid,
+          'MEMBER_CREATE',
+          ${createHash('sha256').update('m63-b3-rollback-idempotency').digest('hex')},
+          ${createHash('sha256').update('m63-b3-rollback-request').digest('hex')},
+          'COMPLETED', '{"migrationGuard":true}'::jsonb, 1, 2, clock_timestamp()
+        FROM stores AS store
+        ORDER BY store.id
+        LIMIT 1
+      `;
+    });
+    if (b3RollbackOperationRows !== 1) {
+      fail('M6.3-B3 rollback guard fixture could not create a command operation fact');
+    }
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(b3DownGuardSql),
+      '55000',
+      'M6.3-B3 down command-fact guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_operations WHERE id = ${b3RollbackOperationId}::uuid
+      `;
+    });
+    const afterB3GuardFingerprint = await assertM63B3CommandBoundary(scratchClient);
+    if (afterB3GuardFingerprint !== repeatedB3CatalogFingerprint) {
+      fail('M6.3-B3 rollback fail-fast changed the command security catalog');
+    }
+
+    runPrisma(
+      ['db', 'execute', '--file', b3DownPath, '--schema', fullSchemaPath],
+      scratchDatabaseUrl,
+    );
+    await assertM63B3DownBoundary(scratchClient);
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations" WHERE migration_name = ${B3_MIGRATION_NAME}
+    `;
+    runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
+    await assertMigrationState(scratchClient, allMigrationNames);
+    const restoredB3CatalogFingerprint = await assertM63B3CommandBoundary(scratchClient);
+    if (restoredB3CatalogFingerprint !== repeatedB3CatalogFingerprint) {
+      fail('M6.3-B3 down/forward exercise did not restore the command security catalog');
+    }
+    const afterB3RoundTripFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
+    if (afterB3RoundTripFingerprint !== beforeUpgradeFingerprint) {
+      fail('M1/M2 fixture fingerprint changed during the M6.3-B3 down/forward exercise');
+    }
 
     const d5RollbackAuditId = randomUUID();
     const d5RollbackAuditRows = await scratchClient.$executeRaw`
@@ -2109,6 +3231,7 @@ async function run(): Promise<void> {
     await assertM63B2ReadIndexes(scratchClient);
     await assertM63B2bD0Indexes(scratchClient);
     await assertM63B2bD5ProtectedReadLock(scratchClient);
+    await assertM63B3CommandBoundary(scratchClient);
     const afterForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterForwardRepairFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during the M5/M6 forward repair exercise');
@@ -2297,6 +3420,7 @@ async function run(): Promise<void> {
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B2bD0Indexes(scratchClient);
+    await assertM63B3CommandBoundary(scratchClient);
     const [d0RoundTripShape] = await scratchClient.$queryRaw<
       Array<{ ledger_exists: boolean; object_role_exists: boolean }>
     >`
@@ -2780,9 +3904,10 @@ async function run(): Promise<void> {
     await assertM63B2ReadIndexes(scratchClient);
     await assertM63B2bD0Indexes(scratchClient);
     await assertM63B2bD5ProtectedReadLock(scratchClient);
+    await assertM63B3CommandBoundary(scratchClient);
 
     console.log(
-      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair and rollback guards`,
+      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair, B3 historical policy preflight, catalog restoration and rollback guards`,
     );
   } catch (error) {
     primaryError = asError(error);

@@ -101,6 +101,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
   if (!ownerUrl || !runtimeUrl) throw new Error('M6.2 database URLs are required');
 
   const owner = new PrismaClient({ datasourceUrl: ownerUrl });
+  const ownerContender = new PrismaClient({ datasourceUrl: ownerUrl });
   const runtime = createRuntimePrismaClient(runtimeUrl);
   const contender = createRuntimePrismaClient(runtimeUrl);
 
@@ -982,9 +983,21 @@ describe('M6.2 after-sale, member and share database foundation', () => {
     }
   }
 
-  beforeAll(async () => Promise.all([owner.$connect(), runtime.$connect(), contender.$connect()]));
+  beforeAll(async () =>
+    Promise.all([
+      owner.$connect(),
+      ownerContender.$connect(),
+      runtime.$connect(),
+      contender.$connect(),
+    ]),
+  );
   afterAll(async () =>
-    Promise.all([owner.$disconnect(), runtime.$disconnect(), contender.$disconnect()]),
+    Promise.all([
+      owner.$disconnect(),
+      ownerContender.$disconnect(),
+      runtime.$disconnect(),
+      contender.$disconnect(),
+    ]),
   );
 
   it('forces RLS on every M6 table and fails closed without a store context', async () => {
@@ -1182,7 +1195,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
     await withCommittedCommerceFixture(async (fixture) => {
       const afterSaleIds = [randomUUID(), randomUUID()] as const;
       const digest = (value: string) => createHash('sha256').update(value).digest('hex');
-      const attempts = [runtime, contender].map((client, index) =>
+      const attempts = [owner, ownerContender].map((client, index) =>
         client.$transaction(async (transaction) => {
           const afterSaleId = afterSaleIds[index]!;
           await setContext(transaction, {
@@ -1525,22 +1538,22 @@ describe('M6.2 after-sale, member and share database foundation', () => {
             ${fixture.brandId}::uuid, ${BEAUTY_CATEGORY_ID}::uuid,
             ${`m62-sku-${fixture.skuId.slice(0, 8)}`}, 'M6.2 product',
             '{"size":"small"}'::jsonb, 50000, now())`;
-        await transaction.$executeRaw`INSERT INTO after_sale_operations
-          (id, store_id, after_sale_id, operation, idempotency_key_hash, request_hash,
-            updated_at)
-          VALUES (${operationId}::uuid, ${BEAUTY_STORE_ID}::uuid,
-            ${afterSaleId}::uuid, 'MEMBER_SUBMIT', ${digest(`operation-key-${operationId}`)},
-            ${digest(`operation-request-${operationId}`)}, now())`;
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`INSERT INTO after_sale_operations
+            (id, store_id, after_sale_id, operation, idempotency_key_hash, request_hash,
+              updated_at)
+            VALUES (${operationId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+              ${afterSaleId}::uuid, 'MEMBER_SUBMIT',
+              ${digest(`operation-key-${operationId}`)},
+              ${digest(`operation-request-${operationId}`)}, now())`,
+          '42501',
+        );
 
         await expect(
           transaction.$executeRaw`UPDATE after_sale_items
             SET updated_at = now() + interval '1 second'
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleItemId}::uuid`,
-        ).resolves.toBe(0);
-        await expect(
-          transaction.$executeRaw`UPDATE after_sale_operations
-            SET attempt_count = 1, updated_at = now()
-            WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${operationId}::uuid`,
         ).resolves.toBe(0);
         await expectDatabaseFailure(
           transaction,
@@ -1653,22 +1666,26 @@ describe('M6.2 after-sale, member and share database foundation', () => {
               AND id = ${privacyRequestId}::uuid`,
         ).toEqual([{ status: 'CANCELLED', version: 2 }]);
 
-        await transaction.$executeRaw`INSERT INTO after_sale_transitions
-          (store_id, after_sale_id, from_status, to_status, event, actor_type,
-            actor_id, correlation_id)
-          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
-            'PENDING_REVIEW', 'CANCELLED', 'CANCEL', 'MEMBER',
-            ${fixture.memberId}::uuid,
-            pg_catalog.current_setting('app.correlation_id', true))`;
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`INSERT INTO after_sale_transitions
+            (store_id, after_sale_id, from_status, to_status, event, actor_type,
+              actor_id, correlation_id)
+            VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+              'PENDING_REVIEW', 'CANCELLED', 'CANCEL', 'MEMBER',
+              ${fixture.memberId}::uuid,
+              pg_catalog.current_setting('app.correlation_id', true))`,
+          '42501',
+        );
         expect(
           await transaction.$queryRaw`SELECT status, version, completed_at IS NOT NULL AS completed
             FROM after_sales
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`,
-        ).toEqual([{ completed: true, status: 'CANCELLED', version: 2 }]);
+        ).toEqual([{ completed: false, status: 'PENDING_REVIEW', version: 1 }]);
         expect(
           await transaction.$queryRaw`SELECT attempt_count FROM after_sale_operations
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${operationId}::uuid`,
-        ).toEqual([{ attempt_count: 0 }]);
+        ).toEqual([]);
       });
     });
   });
@@ -2045,7 +2062,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
               ${digest(`operation-key-${operationId}`)},
               ${digest(`operation-request-${operationId}`)}, 'COMPLETED',
               '{"forged":true}'::jsonb, 1, now())`,
-          '23514',
+          '42501',
         );
 
         const evidenceId = randomUUID();

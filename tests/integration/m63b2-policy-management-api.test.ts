@@ -71,6 +71,13 @@ describe.sequential('M6.3-B2a after-sale policy management API', () => {
 
   const api = () => request(app.getHttpServer() as Server);
   const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+  const createDeferred = <T = void>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((complete) => {
+      resolve = complete;
+    });
+    return { promise, resolve };
+  };
   const path = (code = primaryCode, storeName: StoreName = 'a') =>
     `/v1/admin/after-sale-policies/${code}?store_id=${store[storeName].id}`;
   const versionsPath = (code = primaryCode, storeName: StoreName = 'a') =>
@@ -90,6 +97,7 @@ describe.sequential('M6.3-B2a after-sale policy management API', () => {
       allowed_types: ['EXCHANGE', 'REFUND_ONLY'],
       category_id: null,
       condition_rules: {
+        allowed_reason_codes: ['damaged-item', 'defect', 'wrong-item'],
         evidence_required: true,
         evidence_required_reason_codes: ['wrong-item', 'damaged-item'],
         opened_package_exception_reason_codes: ['wrong-item', 'defect'],
@@ -177,6 +185,29 @@ describe.sequential('M6.3-B2a after-sale policy management API', () => {
         correlation_id: response.headers['x-correlation-id'],
       });
     }
+  }
+
+  async function waitForPolicyAdvisoryWaiters(blockerPid: number): Promise<void> {
+    const deadline = Date.now() + 3_000;
+    while (Date.now() < deadline) {
+      const rows = await owner.$queryRaw<Array<{ waiter_count: bigint }>>`
+        SELECT count(DISTINCT waiting.pid)::bigint AS waiter_count
+        FROM pg_catalog.pg_locks waiting
+        JOIN pg_catalog.pg_locks held
+          ON held.locktype = waiting.locktype
+          AND held.database IS NOT DISTINCT FROM waiting.database
+          AND held.classid IS NOT DISTINCT FROM waiting.classid
+          AND held.objid IS NOT DISTINCT FROM waiting.objid
+          AND held.objsubid IS NOT DISTINCT FROM waiting.objsubid
+        WHERE waiting.locktype = 'advisory'
+          AND NOT waiting.granted
+          AND held.granted
+          AND held.pid = ${blockerPid}
+      `;
+      if ((rows[0]?.waiter_count ?? 0n) >= 2n) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('Both policy commands did not wait on the expected advisory lock');
   }
 
   beforeAll(async () => {
@@ -615,6 +646,7 @@ describe.sequential('M6.3-B2a after-sale policy management API', () => {
         policyDraft(0, {
           allowed_types: ['REFUND_ONLY', 'EXCHANGE'],
           condition_rules: {
+            allowed_reason_codes: ['damaged-item', 'defect', 'wrong-item'],
             evidence_required: true,
             evidence_required_reason_codes: ['damaged-item', 'wrong-item'],
             opened_package_exception_reason_codes: ['defect', 'wrong-item'],
@@ -1144,7 +1176,40 @@ describe.sequential('M6.3-B2a after-sale policy management API', () => {
         .put(path(concurrentCode))
         .set({ ...headers('operator'), 'Idempotency-Key': concurrentKey })
         .send(policyDraft(0));
-    const concurrentResponses = await Promise.all([putConcurrentDraft(), putConcurrentDraft()]);
+    const advisoryReady = createDeferred<number>();
+    const releaseAdvisory = createDeferred();
+    const advisoryHolder = owner.$transaction(
+      async (transaction) => {
+        const [backend] = await transaction.$queryRaw<Array<{ pid: number }>>`
+          SELECT pg_catalog.pg_backend_pid()::integer AS pid
+        `;
+        if (!backend) throw new Error('Policy advisory holder backend PID is unavailable');
+        await transaction.$executeRaw`
+          SELECT pg_catalog.pg_advisory_xact_lock(
+            pg_catalog.hashtextextended(${`m62-policy:${store.a.id}`}, 0)
+          )
+        `;
+        advisoryReady.resolve(backend.pid);
+        await releaseAdvisory.promise;
+      },
+      { timeout: 15_000 },
+    );
+    const advisoryBackendPid = await advisoryReady.promise;
+    const concurrentResponsesPromise = Promise.all([putConcurrentDraft(), putConcurrentDraft()]);
+    let observationFailure: unknown;
+    try {
+      await waitForPolicyAdvisoryWaiters(advisoryBackendPid);
+    } catch (error) {
+      observationFailure = error;
+    } finally {
+      releaseAdvisory.resolve(undefined);
+      await advisoryHolder;
+    }
+    const concurrentResponses = await concurrentResponsesPromise;
+    if (observationFailure instanceof Error) throw observationFailure;
+    if (observationFailure) {
+      throw new Error('Policy advisory lock observation failed', { cause: observationFailure });
+    }
     expect(concurrentResponses.map(({ status }) => status)).toEqual([200, 200]);
     expect(
       concurrentResponses.map(
@@ -1161,6 +1226,15 @@ describe.sequential('M6.3-B2a after-sale policy management API', () => {
           action: 'after-sale.policy.draft.created',
           storeId: store.a.id,
           targetId: concurrentPolicy.id,
+        },
+      }),
+    ).toBe(1);
+    expect(
+      await owner.idempotencyRecord.count({
+        where: {
+          idempotencyKey: digest(JSON.stringify(concurrentKey)),
+          operation: 'after-sale.policy.draft.put',
+          storeId: store.a.id,
         },
       }),
     ).toBe(1);

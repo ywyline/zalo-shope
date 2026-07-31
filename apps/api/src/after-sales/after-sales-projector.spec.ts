@@ -61,6 +61,10 @@ function fixture(): AfterSaleReadRecord {
     },
     publicCaseNumber: 'ASC-0123456789ABCDEF',
     reasonCode: 'damaged-item',
+    requestedItemVnd: 90_000n,
+    requestedOtherVnd: 0n,
+    requestedShippingVnd: 10_000n,
+    requestedTotalVnd: 100_000n,
     reasonDetailCiphertext: encryptSensitive('Hộp sản phẩm bị hư hỏng.', encryptionKey),
     returnDeadlineAt: new Date('2026-08-04T08:00:00.000Z'),
     returnShipments: [
@@ -135,6 +139,12 @@ describe('AfterSalesProjector', () => {
     });
     expect(response.reason_detail).toBe('Hộp sản phẩm bị hư hỏng.');
     expect(response.created_at).toBe('2026-07-28T08:00:00.000Z');
+    expect(response).toMatchObject({
+      requested_item_vnd: 90_000,
+      requested_other_vnd: 0,
+      requested_shipping_vnd: 10_000,
+      requested_total_vnd: 100_000,
+    });
     expect(response.evidence[0]).toEqual({
       access_expires_at: '2026-07-29T08:00:00.000Z',
       evidence_id: '40000000-0000-4000-8000-000000000001',
@@ -223,6 +233,9 @@ describe('AfterSalesProjector', () => {
     const overflow = fixture();
     overflow.settlements[0]!.amountVnd = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
     expect(() => projector.project(overflow, 'vi')).toThrow(AfterSaleProjectionError);
+    const inconsistentRequestedTotal = fixture();
+    inconsistentRequestedTotal.requestedTotalVnd = 99_999n;
+    expect(() => projector.project(inconsistentRequestedTotal, 'vi')).toThrow();
     const duplicateLink = fixture();
     duplicateLink.settlements[0]!.refunds.push({
       refund: { publicRefundNumber: 'RFD-1123456789ABCDEF' },

@@ -46,6 +46,7 @@ describe.sequential('M6.3-B2a after-sale policy management database primitives',
       allowed_types: ['EXCHANGE', 'REFUND_ONLY'],
       category_id: null,
       condition_rules: {
+        allowed_reason_codes: ['damaged', 'defect', 'wrong-item'],
         evidence_required: true,
         evidence_required_reason_codes: ['wrong-item', 'damaged'],
         opened_package_exception_reason_codes: ['wrong-item', 'defect'],

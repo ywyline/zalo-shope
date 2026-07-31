@@ -29,6 +29,7 @@ export const AFTER_SALE_STATUSES = [
 export type AfterSaleStatus = (typeof AFTER_SALE_STATUSES)[number];
 
 export type AfterSaleEvent =
+  | 'SUBMIT'
   | 'APPROVE'
   | 'REJECT'
   | 'CANCEL'
@@ -66,7 +67,7 @@ export const AFTER_SALE_SYSTEM_EVENTS = [
 ] as const satisfies readonly AfterSaleEvent[];
 
 const afterSaleSystemEvents = new Set<AfterSaleEvent>(AFTER_SALE_SYSTEM_EVENTS);
-const afterSaleMemberEvents = new Set<AfterSaleEvent>(['CANCEL', 'START_RETURN']);
+const afterSaleMemberEvents = new Set<AfterSaleEvent>(['SUBMIT', 'CANCEL', 'START_RETURN']);
 
 export const AFTER_SALE_SYSTEM_SCOPE = 'after-sale-transition' as const;
 export const AFTER_SALE_EVIDENCE_SYSTEM_SCOPE = 'after-sale-evidence-lifecycle' as const;
@@ -148,8 +149,13 @@ export type AfterSaleInvariantErrorCode =
   | 'AFTER_SALE_EXCHANGE_NOT_ALLOWED'
   | 'AFTER_SALE_RETURN_WINDOW_INVALID'
   | 'AFTER_SALE_RETURN_WINDOW_CLOSED'
+  | 'AFTER_SALE_REQUEST_WINDOW_INVALID'
+  | 'AFTER_SALE_REQUEST_WINDOW_CLOSED'
   | 'AFTER_SALE_ACTOR_NOT_ALLOWED'
   | 'AFTER_SALE_POLICY_MISMATCH'
+  | 'AFTER_SALE_REASON_NOT_ALLOWED'
+  | 'AFTER_SALE_ORDER_NOT_ELIGIBLE'
+  | 'AFTER_SALE_PAYMENT_NOT_PROVEN'
   | 'AFTER_SALE_EVIDENCE_REQUIRED'
   | 'AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE'
   | 'AFTER_SALE_EVIDENCE_ACCESS_DENIED'
@@ -301,6 +307,24 @@ export type AfterSaleCommandTransition = {
   status: AfterSaleStatus;
 };
 
+export type AfterSaleCreationTransition = {
+  event: 'SUBMIT';
+  fromStatus: null;
+  status: 'PENDING_REVIEW' | 'REVIEW_REQUIRED';
+};
+
+export function submitAfterSale(
+  actorType: Extract<AfterSaleActorType, 'MEMBER' | 'ADMIN'>,
+  legacyPolicyReview = false,
+): AfterSaleCreationTransition {
+  assertAfterSaleEventActorAllowed(actorType, 'SUBMIT');
+  return {
+    event: 'SUBMIT',
+    fromStatus: null,
+    status: legacyPolicyReview ? 'REVIEW_REQUIRED' : 'PENDING_REVIEW',
+  };
+}
+
 export function assertAfterSaleEventActorAllowed(
   actorType: AfterSaleActorType,
   event: AfterSaleEvent,
@@ -436,33 +460,80 @@ export function assertAfterSaleReturnWindowOpen(input: {
 const MILLISECONDS_PER_NATURAL_DAY = 24 * 60 * 60 * 1_000;
 const HO_CHI_MINH_UTC_OFFSET_MS = 7 * 60 * 60 * 1_000;
 
+function calculateHoChiMinhNaturalDayDeadlineEpochMs(
+  startEpochMs: number,
+  windowDays: number,
+  maximumWindowDays: number,
+  invalidCode: Extract<
+    AfterSaleInvariantErrorCode,
+    'AFTER_SALE_REQUEST_WINDOW_INVALID' | 'AFTER_SALE_RETURN_WINDOW_INVALID'
+  >,
+): number {
+  if (
+    !Number.isSafeInteger(startEpochMs) ||
+    startEpochMs < 0 ||
+    !Number.isSafeInteger(windowDays) ||
+    windowDays < 0 ||
+    windowDays > maximumWindowDays
+  ) {
+    throw new AfterSaleInvariantError(invalidCode);
+  }
+  const localEpochMs = startEpochMs + HO_CHI_MINH_UTC_OFFSET_MS;
+  if (!Number.isSafeInteger(localEpochMs)) {
+    throw new AfterSaleInvariantError(invalidCode);
+  }
+  const localDayStartEpochMs =
+    Math.floor(localEpochMs / MILLISECONDS_PER_NATURAL_DAY) * MILLISECONDS_PER_NATURAL_DAY;
+  const deadline =
+    localDayStartEpochMs +
+    (windowDays + 1) * MILLISECONDS_PER_NATURAL_DAY -
+    HO_CHI_MINH_UTC_OFFSET_MS;
+  if (!Number.isSafeInteger(deadline)) {
+    throw new AfterSaleInvariantError(invalidCode);
+  }
+  return deadline;
+}
+
+export function calculateAfterSaleRequestDeadlineEpochMs(input: {
+  deliveredAtEpochMs: number;
+  requestWindowDays: number;
+}): number {
+  return calculateHoChiMinhNaturalDayDeadlineEpochMs(
+    input.deliveredAtEpochMs,
+    input.requestWindowDays,
+    365,
+    'AFTER_SALE_REQUEST_WINDOW_INVALID',
+  );
+}
+
+export function assertAfterSaleRequestWindowOpen(input: {
+  nowEpochMs: number;
+  requestDeadlineEpochMs: number;
+}): void {
+  if (
+    !Number.isSafeInteger(input.nowEpochMs) ||
+    !Number.isSafeInteger(input.requestDeadlineEpochMs) ||
+    input.nowEpochMs < 0 ||
+    input.requestDeadlineEpochMs < 0 ||
+    input.nowEpochMs >= input.requestDeadlineEpochMs
+  ) {
+    throw new AfterSaleInvariantError('AFTER_SALE_REQUEST_WINDOW_CLOSED');
+  }
+}
+
 export function calculateAfterSaleReturnDeadlineEpochMs(input: {
   approvedAtEpochMs: number;
   returnWindowDays: number;
 }): number {
-  if (
-    !Number.isSafeInteger(input.approvedAtEpochMs) ||
-    input.approvedAtEpochMs < 0 ||
-    !Number.isSafeInteger(input.returnWindowDays) ||
-    input.returnWindowDays <= 0 ||
-    input.returnWindowDays > 60
-  ) {
+  if (!Number.isSafeInteger(input.returnWindowDays) || input.returnWindowDays <= 0) {
     throw new AfterSaleInvariantError('AFTER_SALE_RETURN_WINDOW_INVALID');
   }
-  const approvalLocalEpochMs = input.approvedAtEpochMs + HO_CHI_MINH_UTC_OFFSET_MS;
-  if (!Number.isSafeInteger(approvalLocalEpochMs)) {
-    throw new AfterSaleInvariantError('AFTER_SALE_RETURN_WINDOW_INVALID');
-  }
-  const approvalLocalDayStartEpochMs =
-    Math.floor(approvalLocalEpochMs / MILLISECONDS_PER_NATURAL_DAY) * MILLISECONDS_PER_NATURAL_DAY;
-  const deadline =
-    approvalLocalDayStartEpochMs +
-    (input.returnWindowDays + 1) * MILLISECONDS_PER_NATURAL_DAY -
-    HO_CHI_MINH_UTC_OFFSET_MS;
-  if (!Number.isSafeInteger(deadline)) {
-    throw new AfterSaleInvariantError('AFTER_SALE_RETURN_WINDOW_INVALID');
-  }
-  return deadline;
+  return calculateHoChiMinhNaturalDayDeadlineEpochMs(
+    input.approvedAtEpochMs,
+    input.returnWindowDays,
+    60,
+    'AFTER_SALE_RETURN_WINDOW_INVALID',
+  );
 }
 
 export function transitionAfterSaleReturnExpired(
@@ -988,6 +1059,57 @@ export function resolveAfterSaleCasePolicy(
   return { legacyPolicyReview: false, policy: first };
 }
 
+export function assertAfterSaleReasonAllowed(input: {
+  allowedReasonCodes: readonly string[];
+  reasonCode: string;
+}): void {
+  const allowedReasons = new Set<string>();
+  for (const reasonCode of input.allowedReasonCodes) {
+    const normalized = reasonCode.trim();
+    if (normalized.length === 0 || normalized !== reasonCode || allowedReasons.has(normalized)) {
+      throw new AfterSaleInvariantError('AFTER_SALE_POLICY_MISMATCH');
+    }
+    allowedReasons.add(normalized);
+  }
+  if (allowedReasons.size === 0) {
+    throw new AfterSaleInvariantError('AFTER_SALE_POLICY_MISMATCH');
+  }
+  if (!allowedReasons.has(input.reasonCode)) {
+    throw new AfterSaleInvariantError('AFTER_SALE_REASON_NOT_ALLOWED');
+  }
+}
+
+export type AfterSaleOrderAdmissionPaymentStatus =
+  | 'PENDING'
+  | 'PROCESSING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'EXPIRED'
+  | 'CANCELLED'
+  | 'PARTIALLY_REFUNDED'
+  | 'FULLY_REFUNDED';
+
+export function assertAfterSaleOrderPaymentAdmissionAllowed(input: {
+  confirmedReceiptFact: boolean;
+  orderStatus: string;
+  paymentMethod: 'COD' | 'ONLINE';
+  paymentStatus: AfterSaleOrderAdmissionPaymentStatus;
+}): void {
+  if (input.orderStatus !== 'DELIVERED' && input.orderStatus !== 'COMPLETED') {
+    throw new AfterSaleInvariantError('AFTER_SALE_ORDER_NOT_ELIGIBLE');
+  }
+  if (!input.confirmedReceiptFact) {
+    throw new AfterSaleInvariantError('AFTER_SALE_PAYMENT_NOT_PROVEN');
+  }
+  if (
+    input.paymentMethod === 'ONLINE' &&
+    input.paymentStatus !== 'SUCCEEDED' &&
+    input.paymentStatus !== 'PARTIALLY_REFUNDED'
+  ) {
+    throw new AfterSaleInvariantError('AFTER_SALE_PAYMENT_NOT_PROVEN');
+  }
+}
+
 export type AfterSaleEvidenceCapabilities = {
   claimAvailable: boolean;
   deletionCompensationAvailable: boolean;
@@ -1004,17 +1126,18 @@ export function assertAfterSaleEvidenceCreationAllowed(input: {
   if (!Number.isSafeInteger(input.readyEvidenceCount) || input.readyEvidenceCount < 0) {
     throw new AfterSaleInvariantError('AFTER_SALE_EVIDENCE_REQUIRED');
   }
-  if (!input.evidenceRequired) return;
+  const evidenceProvided = input.readyEvidenceCount > 0;
   if (
-    input.capabilities.claimAvailable !== true ||
-    input.capabilities.deletionCompensationAvailable !== true ||
-    input.capabilities.malwareScanningAvailable !== true ||
-    input.capabilities.protectedReadAvailable !== true ||
-    input.capabilities.uploadValidationAvailable !== true
+    (input.evidenceRequired || evidenceProvided) &&
+    (input.capabilities.claimAvailable !== true ||
+      input.capabilities.deletionCompensationAvailable !== true ||
+      input.capabilities.malwareScanningAvailable !== true ||
+      input.capabilities.protectedReadAvailable !== true ||
+      input.capabilities.uploadValidationAvailable !== true)
   ) {
     throw new AfterSaleInvariantError('AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE');
   }
-  if (input.readyEvidenceCount === 0) {
+  if (input.evidenceRequired && !evidenceProvided) {
     throw new AfterSaleInvariantError('AFTER_SALE_EVIDENCE_REQUIRED');
   }
 }

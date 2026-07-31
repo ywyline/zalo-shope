@@ -699,6 +699,7 @@ describe('M4 address, checkout and COD orders', () => {
         allowed_types: ['REFUND_ONLY', 'RETURN_REFUND'],
         category_id: input.categoryId,
         condition_rules: {
+          allowed_reason_codes: ['damaged', 'defect', 'wrong-item'],
           evidence_required: true,
           evidence_required_reason_codes: ['damaged', 'defect', 'wrong-item'],
           opened_package_exception_reason_codes: [],

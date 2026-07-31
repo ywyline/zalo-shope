@@ -44,6 +44,14 @@ local/test 删除补偿链路。该局部结论只标记 repository implementati
 validation `COMPLETE`；B3 claim、保护读取/管理员审计、legal hold 管理、外部告警和 production
 versioned storage/rollout 继续未完成。
 
+用户随后授权 B2b-D5，仓库已交付默认关闭的 member/admin 保护读取、锁后授权/到期重验与管理员逐次
+审计，并完成 repository/local-test validation；production provider/IAM/KMS/versioning/Object Lock/
+lifecycle/retention 与 rollout 仍未授权、未运行。2026-07-31 用户批准 M6.3-B3 计划及第 3 节默认值，
+仅授权三条默认关闭的售后申请/取消/商家主动退款 repository/local-test 写命令及其迁移、测试和文档。
+B3 default-disabled repository implementation + local/test validation 已完成；生产策略、TTL、对象存储、
+真实供应商、部署和 rollout 均保持
+`NOT_AUTHORIZED / NOT_RUN`，不因仓库实现而改变既有外部上线门禁。
+
 ## 1. 决策范围
 
 本文确定首次脚手架前需要批准的技术方向，覆盖应用边界、多商城隔离、数据与集成原则、部署形态和质量门禁。本文不定义完整表字段、最终 API 契约或供应商私有参数；这些内容在后续专项设计中完成。
@@ -410,7 +418,9 @@ docs/
   `(store_id, updated_at DESC, id DESC)` 前向索引；Prisma 仅补记数据库原有
   `after_sale_refunds(store_id, settlement_id)` 唯一约束以修复 schema drift，不重复创建索引。
 - B1 本身不开放申请、取消、审核、凭证访问、返件、退款、COD 结算或任何写路径，也不交付 UI、worker、生产政策/启用或外部调用。
-  随后增加并完成下节 B2a 政策控制面的仓库实施；B2b/B3-B7、完整返件验收与库存恢复 M6.4、生产 rollout、部署和发布继续需要单独授权。
+  随后增加并完成下节 B2a 政策控制面，并在独立授权下完成默认关闭的 B3 repository/local-test 写命令；
+  这不改变 B1 的历史只读结论。完整 B2b、B4-B7、返件验收与库存恢复 M6.4、生产 rollout、
+  部署和发布仍需独立授权。
   B1 可读不代表整个 M6.3、M6、M5 或 P0 完成。
 
 ### M6.3-B2a 政策控制面仓库完成边界
@@ -437,15 +447,17 @@ docs/
   这一历史读，又无法隐藏 ACTIVE head 行内草稿列；管理操作由应用层独立 RBAC 和显式 store scope 叠加 FORCE RLS 保护。
 - 旧数据库允许下划线 code 与非严格 object payload，新 API 不接受这些事实。仓库的只读分批预检已在本地测试库通过
   （`policies=0, versions=0`）；适用仓库门禁均已通过，B2a 仓库实施为 `COMPLETE`。每个目标库在 rollout 前仍必须重新执行并留证；
-  B2/B2b、B3-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭。
+  B2/B2b、B4-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭；B3 的局部完成不构成
+  M6.3 或生产启用。
 
 ### M6.3-B2b-D0 凭证数据库生命周期与可靠排队边界
 
 - D0 只建立仓库内数据库底座。它没有注册
   `POST /v1/after-sales/evidence-uploads`、确认、owner 状态或保护读取路由，没有在
   `apps/worker` 注册 scan/expire/delete handler，也没有对象存储、真实 scanner、短期 URL、外部告警
-  或生产配置。OpenAPI 中相关操作继续是 contract-only；要求凭证的未来 B3 申请仍须在任一外部能力
-  缺失时失败关闭。
+  或生产配置。D0 收口时 OpenAPI 中相关操作仍是 contract-only；后续 D1-D5 分片和 B3 默认关闭写命令
+  不改写这一历史范围。当前 B3 对要求凭证或携带 evidence 的申请仍在任一必要 capability 缺失时
+  失败关闭。
 - `after_sale_evidence_files` 新增上传确认、扫描请求/完成/generation、可信 scanner 身份、独立普通
   访问截止与删除耗尽事实。普通读取与物理保留从此分离：B1 对已 claim 的 `READY` 只使用
   `ordinary_access_deadline_at`，不能因对象仍处于 retention 或 legal hold 而继续读取；物理清理使用
@@ -629,6 +641,43 @@ docs/
   D5 的 44-48 迁移回归、定向/完整验证和适用仓库门禁已通过，但该 repository + local/test `COMPLETE`
   状态不代表生产就绪；完整证据见
   `docs/reports/m6.3-b2b-d5-protected-evidence-read-completion-report.md`。
+
+### M6.3-B3 默认关闭的售后申请、取消与商家主动退款仓库边界
+
+- B3 只新增三条写命令：会员 `POST /v1/after-sales` 创建
+  `REFUND_ONLY/RETURN_REFUND/EXCHANGE`，会员 `POST /v1/after-sales/{afterSaleId}/cancel` 取消本人
+  可取消初态，管理员 `POST /v1/admin/orders/{orderId}/after-sales` 创建
+  `MERCHANT_REFUND + PENDING_REVIEW`。三条命令只返回由 operation `result_summary` 重建的不可变
+  acknowledgement；当前完整聚合使用既有 B1 GET projector。B3 不新增平行聚合或审批、退款 provider、
+  库存、返件、换货履约和 UI。
+- `AFTER_SALE_COMMANDS_ENABLED` 默认关闭，config 在 production 拒绝启用，service 也对 production
+  失败关闭。会员命令依赖当前商城/member/session；管理员命令只接受目标商城直接
+  `store.after-sales.review`、近期 MFA 和 ADMIN WRITE 限流。当前 B3 不接受 cross-access-only，
+  `X-Access-Reason` 不能替代目标商城权限；数据库 finalizer 在同一事务再次复验 active store、actor、
+  Bearer/session 截止和 RBAC，不能以请求体覆盖这些事实。
+- 应用 primitive 使用 `Serializable` 事务锁定订单、订单行、售后容量、政策快照、支付和
+  `ORDER_OUTBOUND` 交付事实。服务端计算整数 VND 逐行权益、每订单一次 merchant-paid 运费权益和
+  exchange 等价性；reason 必须命中政策 allowlist，越南自然日窗口排他截止，legacy 只进入
+  `REVIEW_REQUIRED`。当前仓库只证明唯一 ONLINE 成功收款；没有可锁定复验的 COD 已确认收款事实，
+  因此 COD 与任何无法证明的 payment/delivery/policy 条件都失败关闭。
+- evidence 要求或 evidence id 非空时，upload validation、malware scan、claim、protected read 和 deletion
+  compensation 以及显式 `ordinary < retention` TTL 必须全部可用；D0 claim 与 header/items/operation/
+  transition/audit 同事务提交。取消只追加 `CANCELLED`、operation 和审计，不 unclaim、不缩短期限、不
+  删除对象、不执行退款或库存动作。
+- 第 49 段迁移 `20260731110000_m63_b3_after_sale_commands` 在任何 DDL 前只读校验草稿、版本、订单行快照
+  与售后快照的 reason allowlist/子集合约；不兼容时以 `55000` 停止且不回填。随后为 transition 增加
+  `operation_id` 复合 FK、每 case 单一 `SUBMIT`、operation/link/completion/atomicity/deferred commit
+  guards 和两个窄 security-definer finalizer。普通 runtime 不能直接 INSERT operation；只能执行提交/取消函数，
+  `MEMBER_CREATE`、`MERCHANT_REFUND_CREATE`、`MEMBER_CANCEL` 的 request hash 与不可变
+  `result_summary` 支持稳定幂等重放和异参冲突。
+- B3 create 与审批准备共享 per-order advisory lock。item/header/allocation/legacy-approve 的 early guard
+  在锁冲突时以 `40001` 回滚整笔审批，transition lock trigger 排在 B0 contract guard 前；这消除了审批
+  先持售后行、B3 先持 order lock 时的反向等待，并为后续 B4 保留明确的整事务重试契约。
+- create/cancel 只对 Prisma `P2034` 或 PostgreSQL `40001` 做最多三次 Serializable 事务尝试；
+  `expected_version` 冲突显式排除在重试之外并稳定返回版本冲突，避免旧前置条件在重试中被接受。
+- B3 default-disabled repository implementation + local/test validation 已完成，适用仓库门禁证据见
+  `docs/reports/m6.3-b3-after-sale-commands-completion-report.md`。生产策略、TTL、对象存储、真实支付/
+  物流供应商、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`；B4-B7、M6.3、M6 与 P0 继续未完成。
 
 ## 7. 身份、安全与隐私
 

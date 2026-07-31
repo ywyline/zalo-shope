@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ServiceUnavailableException,
+  UnprocessableEntityException,
   type ArgumentsHost,
 } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
@@ -91,6 +92,32 @@ describe('API conflict reason envelopes', () => {
       correlation_id: 'm35-filter-test',
       message_key: 'error.conflict',
     });
+  });
+
+  it('returns only allowlisted after-sale admission and capability reasons', () => {
+    const admission = harness();
+    new ApiExceptionFilter().catch(
+      new UnprocessableEntityException('AFTER_SALE_PAYMENT_NOT_PROVEN'),
+      admission.host,
+    );
+    expect(admission.status).toHaveBeenCalledWith(422);
+    expect(admission.json).toHaveBeenCalledWith({
+      code: 'UNPROCESSABLE_ENTITY',
+      correlation_id: 'm35-filter-test',
+      details: { reason_code: 'AFTER_SALE_PAYMENT_NOT_PROVEN' },
+      message_key: 'error.unprocessable_entity',
+    });
+
+    const unavailable = harness();
+    new ApiExceptionFilter().catch(
+      new ServiceUnavailableException('AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE'),
+      unavailable.host,
+    );
+    expect(unavailable.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        details: { reason_code: 'AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE' },
+      }),
+    );
   });
 
   it('does not echo an unsafe client-supplied correlation ID', () => {

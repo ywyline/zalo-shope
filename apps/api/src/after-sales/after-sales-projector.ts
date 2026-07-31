@@ -62,6 +62,10 @@ export function createAfterSaleReadSelect(locale: AfterSaleLocale) {
     publicCaseNumber: true,
     reasonCode: true,
     reasonDetailCiphertext: true,
+    requestedItemVnd: true,
+    requestedOtherVnd: true,
+    requestedShippingVnd: true,
+    requestedTotalVnd: true,
     returnDeadlineAt: true,
     returnShipments: {
       orderBy: [{ submittedAt: 'asc' as const }, { id: 'asc' as const }],
@@ -150,6 +154,10 @@ export class AfterSalesProjector {
         record.reasonDetailCiphertext === null
           ? null
           : decryptSensitive(record.reasonDetailCiphertext, this.config.PII_ENCRYPTION_KEY),
+      requested_item_vnd: this.vnd(record.requestedItemVnd),
+      requested_other_vnd: this.vnd(record.requestedOtherVnd),
+      requested_shipping_vnd: this.vnd(record.requestedShippingVnd),
+      requested_total_vnd: this.vnd(record.requestedTotalVnd),
       return_deadline_at:
         record.returnDeadlineAt === null ? null : this.date(record.returnDeadlineAt),
       return_shipments: record.returnShipments.map((shipment) => ({

@@ -72,6 +72,14 @@ const validMemberEvidenceUploadsEnvironment = {
   AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS: '900',
 };
 
+const validAfterSaleCommandsEnvironment = {
+  ...validMemberEvidenceUploadsEnvironment,
+  AFTER_SALE_COMMANDS_ENABLED: 'true',
+  AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS: String(30 * 24 * 60 * 60),
+  AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED: 'true',
+  AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS: String(90 * 24 * 60 * 60),
+};
+
 const productionPlaceholderFields = [
   'AFTER_SALE_CURSOR_HMAC_KEYS',
   'AUTH_JWT_SECRET',
@@ -110,6 +118,7 @@ describe('parseRuntimeConfig', () => {
 
     expect(config.NODE_ENV).toBe('development');
     expect(config.AFTER_SALE_CURSOR_TTL_SECONDS).toBe(900);
+    expect(config.AFTER_SALE_COMMANDS_ENABLED).toBe(false);
     expect(config.API_PORT).toBe(3000);
     expect(config.WORKER_PORT).toBe(3001);
     expect(config.INVENTORY_EXPIRATION_INTERVAL_MS).toBe(5_000);
@@ -137,6 +146,8 @@ describe('parseRuntimeConfig', () => {
     expect(config.EVIDENCE_SCANNER_SIGNATURE_MAX_AGE_SECONDS).toBeUndefined();
     expect(config.AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED).toBe(false);
     expect(config.AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED).toBe(false);
+    expect(config.AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS).toBeUndefined();
+    expect(config.AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS).toBeUndefined();
     expect(config.AFTER_SALE_EVIDENCE_UPLOAD_TTL_SECONDS).toBeUndefined();
     expect(config.AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_FILES).toBeUndefined();
     expect(config.AFTER_SALE_EVIDENCE_MAX_UNCLAIMED_BYTES).toBeUndefined();
@@ -348,6 +359,52 @@ describe('parseRuntimeConfig', () => {
         EVIDENCE_STORAGE_PROVIDER: 'disabled',
       }),
     ).toThrow(InvalidEnvironmentError);
+  });
+
+  it('keeps after-sale commands independent from optional evidence capabilities and TTLs', () => {
+    const commandsWithoutEvidence = parseRuntimeConfig({
+      ...validEnvironment,
+      AFTER_SALE_COMMANDS_ENABLED: 'true',
+    });
+    expect(commandsWithoutEvidence).toMatchObject({
+      AFTER_SALE_COMMANDS_ENABLED: true,
+      AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: false,
+      AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED: false,
+    });
+    expect(commandsWithoutEvidence.AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS).toBeUndefined();
+    expect(commandsWithoutEvidence.AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS).toBeUndefined();
+    expect(parseRuntimeConfig(validAfterSaleCommandsEnvironment)).toMatchObject({
+      AFTER_SALE_COMMANDS_ENABLED: true,
+      AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS: 30 * 24 * 60 * 60,
+      AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS: 90 * 24 * 60 * 60,
+    });
+
+    for (const [field, value] of [
+      ['AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS', ''],
+      ['AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS', ''],
+    ] as const) {
+      const config = parseRuntimeConfig({ ...validAfterSaleCommandsEnvironment, [field]: value });
+      expect(config.AFTER_SALE_COMMANDS_ENABLED).toBe(true);
+      expect(config[field]).toBeUndefined();
+    }
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validAfterSaleCommandsEnvironment,
+        AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS: String(90 * 24 * 60 * 60),
+      }),
+    ).toThrow(InvalidEnvironmentError);
+
+    try {
+      parseRuntimeConfig({
+        ...validAfterSaleCommandsEnvironment,
+        ...validProductionEnvironment,
+      });
+      throw new Error('expected production after-sale commands to be rejected');
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidEnvironmentError);
+      expect(String(error)).toContain('AFTER_SALE_COMMANDS_ENABLED');
+    }
   });
 
   it('allows only an explicit loopback ClamAV sidecar in production', () => {
