@@ -7,7 +7,8 @@
 > local/test deletion worker validation、B2b-D5 default-disabled repository implementation +
 > local/test protected-read validation `COMPLETE`，适用 repository/local-test 门禁 `PASS`；
 > B3 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且适用门禁
-> `PASS`；B2/B2b、B4-B7、M6.3、UI 与生产启用仍未完成。生产策略、TTL、对象存储、真实供应商、部署和 rollout 均为
+> `PASS`；B4 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且
+> 适用门禁 `PASS`；B2/B2b、B5-B7、M6.3、UI 与生产启用仍未完成。生产策略、TTL、对象存储、真实供应商、部署和 rollout 均为
 > `NOT_AUTHORIZED / NOT_RUN` 并保持失败关闭
 >
 > 日期：2026-07-31
@@ -31,9 +32,13 @@ member owner RLS，不新增 STORE 权限或生产角色授权；它不开放凭
 会员创建、会员取消和管理员创建商家主动退款售后。B3 不增加 STORE 权限 code 或生产角色 seed；管理员
 路径只接受目标商城直接 `store.after-sales.review` 与近期 MFA，会员路径复用本人商城/session scope。
 B3 repository/local-test 门禁已通过；其他售后写入、会员、分享 controller/service/worker/UI 仍未交付。
+B4 随后复用同一目标商城直接 `store.after-sales.review`、近期 MFA 与 ADMIN WRITE 限流，实现默认关闭的
+初审和 manual/legacy review 解决；商家主动退款要求不同管理员复核。独立 SYSTEM 到期 worker 不增加
+STORE 权限或生产角色授权，只能使用固定 `after-sale-transition` scope 追加 `RETURN_EXPIRED`。
 本矩阵中除明确标为 M6.3-A、B1、B2a、D0 数据层、D1 local/test storage、D2 local/test 内部扫描、
-D3 local/test 会员 HTTP、D4 local/test 内部删除 worker、D5 local/test 保护读取或 B3 默认关闭写命令的
-动作外，其余动作行是 B0 已冻结、等待完整 B2b/B4-B7 或后续里程碑另行授权实施的契约，不代表按钮、
+D3 local/test 会员 HTTP、D4 local/test 内部删除 worker、D5 local/test 保护读取、B3 默认关闭写命令或
+B4 默认关闭审核/到期的动作外，其余动作行是 B0 已冻结、等待完整 B2b/B5-B7 或后续里程碑另行授权
+实施的契约，不代表按钮、
 API、worker 或生产角色授权已经交付。
 B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transaction actor，不是可授予管理员
 角色的权限，也不能复用固定管理员 UUID。
@@ -329,8 +334,9 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
 - B2a 不改变会员权限。B1 会员仍仅能通过本人售后投影读取已绑定历史政策；不得访问管理草稿路由。新迁移没有改写 RLS，
   不会因政策停用或新版本发布而让历史售后不可读。
 - 定向权限/限流/契约单测、完整 integration 29 个文件/234 项、M2→current 42 段迁移、`verify`、OpenAPI 结构检查、生产依赖/Gitleaks 与
-  独立高风险复审均通过，因此 B2a 仓库实施为 `COMPLETE`。目标库仍须逐库 preflight；B2/B2b、B3
-  完整验收、B4-B7、M6.3、UI、生产政策/enforcement/部署继续未完成或未授权且失败关闭。
+  独立高风险复审均通过，因此 B2a 仓库实施为 `COMPLETE`。目标库仍须逐库 preflight；后续 B3/B4
+  default-disabled repository/local-test 边界已完成，但 B2/B2b、B5-B7、M6.3、UI、生产政策/
+  enforcement/部署继续未完成或未授权且失败关闭。
 
 ## 10. B2b-D0 授权与当前边界
 
@@ -506,4 +512,20 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
   避免重试绕过调用方冻结的并发前置条件。
 - B3 default-disabled repository implementation + local/test validation 已 `COMPLETE`，完整数据库/API/
   并发/迁移/全仓/泄漏扫描及独立高风险复审证据见专项完成报告。生产策略、TTL、对象存储、真实支付/
-  物流供应商、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`；B4-B7、UI、M6.3、M6 与 P0 继续未完成。
+  物流供应商、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`；后续 B4 局部完成不改写 B3 历史范围。
+
+## 17. B4 审核、复核与寄回到期授权边界
+
+- `POST /v1/admin/after-sales/{afterSaleId}/review` 与 `resolve-review` 只接受目标商城直接
+  `store.after-sales.review`、近期 MFA、有效 admin session/Bearer 和 ADMIN WRITE 限流；只有
+  `platform.stores.cross_access` 的上下文固定 `403`，访问原因不能替代目标商城角色。
+- `MERCHANT_REFUND` 创建者不得审核自己的 case，必须由目标商城另一名具备 review 权限且近期 MFA
+  有效的管理员决定。首次执行和幂等重放都在持锁事务中重新校验 ACTIVE 商城、管理员、session、token、
+  MFA 与当前 RBAC，授权漂移失败关闭。
+- `AFTER_SALE_REVIEW_COMMANDS_ENABLED=false` 和
+  `AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED=false` 相互独立且默认关闭；production 配置解析拒绝
+  开启，服务层也拒绝 production 审核命令。B4 不新增 permission code 或生产角色授权。
+- 到期 worker 使用固定 SYSTEM actor 与既有 `after-sale-transition` scope，只能追加 `RETURN_EXPIRED`，
+  不能执行管理员审核、复核、退款、返件或库存事件；每个商城单独建立事务，跨商城数据不混入上下文。
+- 审核/复核只返回原 operation 的不可变 acknowledgement。完整当前聚合继续由 B1 GET 权限边界读取；
+  审核权限不隐含 evidence protected read、退款、COD、物流、验收、库存或换货权限。

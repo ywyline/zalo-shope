@@ -983,22 +983,54 @@ describe('M6.2 after-sale, member and share database foundation', () => {
     }
   }
 
-  beforeAll(async () =>
-    Promise.all([
+  beforeAll(async () => {
+    await Promise.all([
       owner.$connect(),
       ownerContender.$connect(),
       runtime.$connect(),
       contender.$connect(),
-    ]),
-  );
-  afterAll(async () =>
-    Promise.all([
-      owner.$disconnect(),
-      ownerContender.$disconnect(),
-      runtime.$disconnect(),
-      contender.$disconnect(),
-    ]),
-  );
+    ]);
+    const [operationLinkTrigger] = await owner.$queryRaw<Array<{ enabled: boolean }>>`
+      SELECT trigger_definition.tgenabled = 'O' AS enabled
+      FROM pg_catalog.pg_trigger trigger_definition
+      WHERE trigger_definition.tgrelid = 'after_sale_transitions'::regclass
+        AND trigger_definition.tgname = 'after_sale_transitions_b3_operation_link_guard'
+        AND NOT trigger_definition.tgisinternal
+    `;
+    if (!operationLinkTrigger?.enabled) {
+      throw new Error('M6.2 regression isolation requires the B3/B4 operation-link guard enabled');
+    }
+    // This historical suite exercises M6.2/B0 transition, amount, capacity and lock guards.
+    // B4 command-operation binding has its own current-stage database coverage and otherwise
+    // masks the lower-layer failures this file is intended to assert.
+    await owner.$executeRawUnsafe(
+      'ALTER TABLE "after_sale_transitions" DISABLE TRIGGER "after_sale_transitions_b3_operation_link_guard"',
+    );
+  });
+  afterAll(async () => {
+    try {
+      await owner.$executeRawUnsafe(
+        'ALTER TABLE "after_sale_transitions" ENABLE TRIGGER "after_sale_transitions_b3_operation_link_guard"',
+      );
+      const [operationLinkTrigger] = await owner.$queryRaw<Array<{ enabled: boolean }>>`
+        SELECT trigger_definition.tgenabled = 'O' AS enabled
+        FROM pg_catalog.pg_trigger trigger_definition
+        WHERE trigger_definition.tgrelid = 'after_sale_transitions'::regclass
+          AND trigger_definition.tgname = 'after_sale_transitions_b3_operation_link_guard'
+          AND NOT trigger_definition.tgisinternal
+      `;
+      if (!operationLinkTrigger?.enabled) {
+        throw new Error('M6.2 regression isolation did not restore the operation-link guard');
+      }
+    } finally {
+      await Promise.all([
+        owner.$disconnect(),
+        ownerContender.$disconnect(),
+        runtime.$disconnect(),
+        contender.$disconnect(),
+      ]);
+    }
+  });
 
   it('forces RLS on every M6 table and fails closed without a store context', async () => {
     const metadata = await owner.$queryRawUnsafe<
@@ -4365,15 +4397,27 @@ describe('M6.2 after-sale, member and share database foundation', () => {
       });
 
       await setEvidenceSystemContext(transaction, BEAUTY_STORE_ID);
-      const deletionQueuedAt = new Date();
-      await transaction.$executeRaw`UPDATE after_sale_evidence_files
-        SET status = 'DELETION_PENDING', version = version + 1, updated_at = ${deletionQueuedAt}
-        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
-      await appendEvidenceOutbox({
-        availableAt: deletionQueuedAt,
-        eventType: 'after-sale.evidence.delete.requested',
-        expectedVersion: 5,
-      });
+      const deleteEventType = 'after-sale.evidence.delete.requested';
+      const deleteIdempotencyKey = `${deleteEventType}:${evidenceId}:5`;
+      await transaction.$executeRaw`
+        WITH deletion_queue AS (
+          UPDATE after_sale_evidence_files
+          SET status = 'DELETION_PENDING', version = version + 1,
+            updated_at = clock_timestamp()
+          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid
+          RETURNING updated_at
+        )
+        INSERT INTO outbox_messages
+          (store_id, aggregate_type, aggregate_id, event_type, event_version,
+            idempotency_key, payload, available_at, max_attempts, updated_at)
+        SELECT ${BEAUTY_STORE_ID}::uuid, 'AFTER_SALE_EVIDENCE', ${evidenceId}::uuid,
+          ${deleteEventType}, 1, ${deleteIdempotencyKey}, ${JSON.stringify({
+            evidence_id: evidenceId,
+            expected_version: 5,
+            store_id: BEAUTY_STORE_ID,
+          })}::jsonb, deletion_queue.updated_at, 3, clock_timestamp()
+        FROM deletion_queue
+      `;
 
       await setEvidenceSystemContext(transaction, BEAUTY_STORE_ID);
       await expectDatabaseFailure(

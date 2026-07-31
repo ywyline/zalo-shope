@@ -2,7 +2,7 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5-M5.7 已加入 Zalo Checkout、GHN、退款及本地补偿底座，但真实凭据、沙箱、结算、COD 回款和真机仍未验收。M6.1/M6.2、M6.3-A/B0/B1/B2a 与 B2b-D0-D5 的各自 repository/local-test 边界已经完成。M6.3-B3 三条售后申请/取消/商家主动退款命令也已完成 default-disabled repository implementation + local/test validation；它们只返回稳定 acknowledgement，production 配置与服务层均拒绝启用。B2/B2b 整体、B4-B7、M6.3、M6、M6 UI 与 P0 仍未完成；所有生产政策/enforcement、TTL、对象存储、真实供应商、部署和 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。当前没有售后审核、返件、真实退款/结算、库存恢复或换货履约运行时，不能把 B3 的本地仓库完成状态表述为完整售后或生产就绪。生产依赖审计另保留 3 项 React Router moderate 公告，不得写成零漏洞。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5-M5.7 已加入 Zalo Checkout、GHN、退款及本地补偿底座，但真实凭据、沙箱、结算、COD 回款和真机仍未验收。M6.1/M6.2、M6.3-A/B0/B1/B2a 与 B2b-D0-D5 的各自 repository/local-test 边界已经完成。M6.3-B3 三条售后申请/取消/商家主动退款命令及 B4 管理员审核/人工复核与 SYSTEM 寄回到期也已完成 default-disabled repository implementation + local/test validation；它们只返回稳定 acknowledgement 或追加受限 SYSTEM 事实，production 配置与服务层均拒绝启用。B2/B2b 整体、B5-B7、M6.3、M6、M6 UI 与 P0 仍未完成；所有生产政策/enforcement、TTL、对象存储、真实供应商、部署和 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。当前没有返件提交/物流、真实退款/COD 结算、验收、库存恢复或换货履约运行时，不能把 B3/B4 的本地仓库完成状态表述为完整售后或生产就绪。生产依赖审计另保留 3 项 React Router moderate 公告，不得写成零漏洞。
 
 M6.3-B2b-D1 已完成专用 `AfterSaleEvidenceObjectStorageProvider`、默认失败关闭配置、本地/测试
 MinIO 独立 bucket 与 upload/read/delete 最小 IAM，以及真实对象长度、SHA-256、Content-Type 和
@@ -595,6 +595,20 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   `docs/reports/m6.3-b3-after-sale-commands-completion-report.md`。B3 的局部完成不构成 M6.3、M6 或 P0
   完成声明。
 
+## M6.3-B4 售后审核、复核与寄回到期
+
+- 已注册默认关闭的管理员初审与 `resolve-review` 路由。普通批准必须逐行完整提交批准数量，金额由
+  服务端按冻结请求行的整数 VND 余数重算；legacy 只允许一次批准/拒绝并保存加密的历史政策依据，不能
+  用当前政策伪造历史快照。
+- 商家主动退款创建者不能自审；审核要求目标商城另一名直接持有 `store.after-sales.review` 的管理员、
+  近期 MFA 和有效 session。cross-access-only 不能替代商城权限。命令只返回不可变 acknowledgement，
+  当前金额、状态和时间线继续通过 B1 GET 获取。
+- 默认关闭的寄回到期 worker 按商城使用专用 SYSTEM scope，只为已到期且没有返件/资金/验收/库存/
+  换货副作用的 case 追加 `RETURN_EXPIRED`。它不创建退款、返件物流、库存恢复或换货履约。
+- 完整范围和回滚见 `docs/plans/m6.3-b4-after-sale-review-expiration-plan.md`；最终证据见
+  `docs/reports/m6.3-b4-after-sale-review-expiration-completion-report.md`。B4 的局部完成不构成 B5-B7、
+  M6.3、M6、P0 或生产就绪。
+
 ## 环境与密钥
 
 - `.env.example` 和 `.env.test.example` 只包含本地开发占位凭据。
@@ -614,6 +628,9 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   命令不是启动前提；政策要求凭证或请求携带非空 `evidence_ids` 时必须同时配置
   `AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS` 与
   `AFTER_SALE_EVIDENCE_RETENTION_TTL_SECONDS`，且前者严格小于后者。仓库 30/90 天示例仅为测试基线。
+- `AFTER_SALE_REVIEW_COMMANDS_ENABLED` 与
+  `AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED` 默认 `false` 且 production 明确禁止开启；batch size
+  和 interval 只控制 local/test worker，不是生产 SLA 或政策批准。
 - 日志默认遮盖认证、Cookie 和 Zalo Token 请求头。
 - `ZALO_IDENTITY_PROVIDER=test` 只允许 `NODE_ENV=test`；生产环境会拒绝启动该 provider。
 - `PAYMENT_PROVIDER=test` 同样只允许 `NODE_ENV=test` 且需要专用测试密钥；development/production 默认并应保持 `disabled`。真实适配器从商城 `private_key_secret_ref` 解析部署密钥，`env:ZALO_CHECKOUT_*` 只是受限的本地/部署 resolver 示例，不是把密钥写入仓库。

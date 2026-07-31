@@ -48,12 +48,14 @@ export const afterSaleCursorScopeSchema = z
 
 export const afterSalePublicNumberSchema = z.string().regex(/^ASC-[A-Z0-9]{16,32}$/);
 export const afterSaleReasonDetailResponseSchema = z.string().min(10).max(2_000).nullable();
+export const afterSaleTypeSchema = z.enum(AFTER_SALE_TYPES);
+export const afterSaleStatusSchema = z.enum(AFTER_SALE_STATUSES);
 
 export const afterSaleCommandAcknowledgementResponseSchema = z
   .object({
     id: uuidSchema,
     public_number: afterSalePublicNumberSchema,
-    status: z.enum(['PENDING_REVIEW', 'REVIEW_REQUIRED', 'CANCELLED']),
+    status: afterSaleStatusSchema,
     version: z.number().int().positive(),
   })
   .strict();
@@ -85,8 +87,6 @@ export const AFTER_SALE_RATE_LIMIT_POLICY = {
   member_write: { limit: 10, scope: 'store_id:member_id', window_seconds: 60 },
 } as const;
 
-export const afterSaleTypeSchema = z.enum(AFTER_SALE_TYPES);
-export const afterSaleStatusSchema = z.enum(AFTER_SALE_STATUSES);
 export const afterSalePolicyStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'DISABLED']);
 const afterSaleWireDateTimeSchema = z.string().datetime({ offset: true });
 const afterSaleMoneyVndSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
@@ -838,6 +838,8 @@ export const afterSaleSettingsEnforcementSchema = z
 export type AfterSaleCreateRequest = z.infer<typeof afterSaleCreateRequestSchema>;
 export type MerchantAfterSaleCreateRequest = z.infer<typeof merchantAfterSaleCreateRequestSchema>;
 export type AfterSaleCancelRequest = z.infer<typeof afterSaleCancelRequestSchema>;
+export type AfterSaleReviewRequest = z.infer<typeof afterSaleReviewRequestSchema>;
+export type AfterSaleReviewResolveRequest = z.infer<typeof afterSaleReviewResolveRequestSchema>;
 export type AfterSaleCommandAcknowledgementResponse = z.infer<
   typeof afterSaleCommandAcknowledgementResponseSchema
 >;

@@ -24,6 +24,7 @@ import {
 } from './after-sales-evidence/after-sale-evidence-deletion.handler';
 import { AfterSaleEvidenceScanRequestedHandler } from './after-sales-evidence/after-sale-evidence-scan.handler';
 import { AfterSaleEvidenceStorageLifecycleService } from './after-sales-evidence/after-sale-evidence-storage-lifecycle.service';
+import { AfterSaleReturnExpirationService } from './after-sales/after-sale-return-expiration.service';
 import { InventoryExpirationService } from './inventory/inventory-expiration.service';
 import { OrderReconciliationService } from './orders/order-reconciliation.service';
 import { OutboxMessageDispatcher } from './reliable-messaging/outbox-message-handler';
@@ -197,6 +198,9 @@ function createEvidenceScanner(config: RuntimeConfig): AfterSaleEvidenceScanner 
       ],
     },
     InventoryExpirationService,
+    ...(runtimeConfig.AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED
+      ? [AfterSaleReturnExpirationService]
+      : []),
     OrderReconciliationService,
     AfterSaleEvidenceStorageLifecycleService,
     OutboxMessageDispatcher,

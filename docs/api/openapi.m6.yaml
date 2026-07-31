@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M6 incremental API contract
-  version: 0.6.3-b3
+  version: 0.6.3-b4
   description: >-
     M6 incremental contract combined with the M1-M5 contracts. M6.3-A implements the after-sale
     settings GET/PUT routes, M6.3-B1 implements the member/admin after-sale list and detail GET
@@ -10,18 +10,20 @@ info:
     M6.3-B2b-D4 deletion worker has repository implementation and local/test validation.
     M6.3-B2b-D5 has completed default-disabled repository implementation and local/test validation
     for member and administrator protected evidence reads, including migrations 44-48 and final
-    commit-deadline revalidation. M6.3-B3 implements the three after-sale create/cancel commands
-    behind an explicit repository/local-test-only, default-disabled capability gate. This does not
+    commit-deadline revalidation. M6.3-B3 implements the three after-sale create/cancel commands.
+    M6.3-B4 implements administrator review, one-time legacy/manual review resolution and the
+    return-expiration worker behind independent repository/local-test-only, default-disabled
+    capability gates. This does not
     establish production readiness: legal-hold/dead-letter management, external alerting,
     production TTL policy, IAM/KMS/versioning/Object
     Lock/lifecycle certification, bearer-URL risk acceptance, deployment and rollout remain
-    NOT_AUTHORIZED / NOT_RUN. Operations assigned to B4 through B7 remain contract-only.
+    NOT_AUTHORIZED / NOT_RUN. Operations assigned to B5 through B7 remain contract-only.
     Buyer store ownership comes from the authenticated member and X-Store-Code. Admin routes
     additionally require the matching store_id query parameter. D5 protected-read routes generate
     X-Correlation-Id on the server and do not accept a client correlation identifier; the generated
     value is propagated through authorization, audit, logs and error bodies.
 x-after-sale-b0-contract:
-  runtime_status: m6_3_a_b1_b2a_d3_d5_and_b3_repository_local_test_implemented
+  runtime_status: m6_3_a_b1_b2a_d3_d5_b3_and_b4_repository_local_test_implemented
   runtime_operations:
     implemented_m6_3_a: [getAfterSaleSettings, setAfterSalePolicyEnforcement]
     implemented_m6_3_b1:
@@ -44,6 +46,7 @@ x-after-sale-b0-contract:
       ]
     implemented_m6_3_b2b_d5: [getMemberAfterSaleEvidence, getAdminAfterSaleEvidence]
     implemented_m6_3_b3: [createAfterSale, cancelMemberAfterSale, createMerchantAfterSale]
+    implemented_m6_3_b4: [reviewAfterSale, resolveAfterSaleManualReview]
     contract_only_m6_3_b2_to_b7: all_after_sale_operations_not_listed_as_implemented_above
   protected_evidence_read:
     status: complete_repository_local_test_default_disabled
@@ -77,7 +80,7 @@ x-after-sale-b0-contract:
       member_read: implemented_m6_3_b1_m6_3_b2b_d3_and_d5
       admin_read: implemented_m6_3_b1_m6_3_b2a_and_m6_3_b2b_d5
       member_write: implemented_m6_3_b2b_d3_and_b3
-      admin_write: implemented_m6_3_b2a_and_b3
+      admin_write: implemented_m6_3_b2a_b3_and_b4
     read_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
     write_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
   b3_commands:
@@ -90,6 +93,18 @@ x-after-sale-b0-contract:
     serialization_attempts: maximum_three_expected_version_conflict_not_retried
     creation_transition: SUBMIT_null_to_pending_review_or_legacy_review_required
     evidence_ttl_baseline: local_test_30_day_ordinary_90_day_retention
+  b4_review_and_expiration:
+    status: complete_repository_local_test_default_disabled
+    repository_gates: pass
+    migration_range: '50-51'
+    production_status: not_authorized_not_run_and_rejected_by_runtime_configuration
+    review_gate: AFTER_SALE_REVIEW_COMMANDS_ENABLED_false
+    expiration_gate: AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED_false
+    admin_authorization: direct_target_store_review_only_recent_mfa_cross_access_only_forbidden
+    merchant_refund_review: different_administrator_required
+    command_response: immutable_operation_acknowledgement_get_reads_current_aggregate
+    expiration_actor: dedicated_SYSTEM_after_sale_transition_scope
+    excluded_side_effects: refund_cod_return_logistics_inspection_inventory_exchange
   system_principal:
     scope: after-sale-transition
     events:
@@ -520,7 +535,7 @@ paths:
   /v1/admin/after-sales/{afterSaleId}/review:
     post:
       operationId: reviewAfterSale
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b4_repository_local_test_default_disabled
       x-rate-limit-tier: admin_write
       summary: Approve or reject after policy and order fact checks
       description: >-
@@ -529,7 +544,10 @@ paths:
         order line; at least one is positive, none exceeds requested quantity, and the server locks
         order lines and applies the frozen integer-VND remainder algorithm. A case created directly
         in REVIEW_REQUIRED because its order lacks a trustworthy policy snapshot must use
-        resolve-review with LEGACY_APPROVE or LEGACY_REJECT; the paths cannot be interchanged.
+        resolve-review with LEGACY_APPROVE or LEGACY_REJECT; the paths cannot be interchanged. The
+        command requires direct target-store review permission and recent MFA. The administrator
+        who created a MERCHANT_REFUND cannot review it. Production configuration rejects this
+        repository capability.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
@@ -543,18 +561,23 @@ paths:
             schema: { $ref: '#/components/schemas/AfterSaleReviewRequest' }
       responses:
         '200':
-          description: Reviewed case
+          description: >-
+            Immutable acknowledgement of the completed review operation; use the B1 GET route for
+            the current aggregate.
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AfterSale' }
+              schema: { $ref: '#/components/schemas/AfterSaleCommandAcknowledgement' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /v1/admin/after-sales/{afterSaleId}/refund:
     post:
       operationId: requestAfterSaleRefund
@@ -667,7 +690,7 @@ paths:
   /v1/admin/after-sales/{afterSaleId}/resolve-review:
     post:
       operationId: resolveAfterSaleManualReview
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b4_repository_local_test_default_disabled
       x-rate-limit-tier: admin_write
       summary: Resolve an uncertain fact or make the one-time decision for a legacy-policy case
       description: >-
@@ -681,6 +704,8 @@ paths:
         return window and shipping payer. The server rejects non-null return terms for non-return
         types and requires them for return-refund/exchange. policy_basis is an audited reference to
         reviewed archival rules, not a field for raw evidence, account data or payment details.
+        Both paths require direct target-store review permission and recent MFA; production
+        configuration rejects this repository capability.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
@@ -694,18 +719,23 @@ paths:
             schema: { $ref: '#/components/schemas/AfterSaleReviewResolveRequest' }
       responses:
         '200':
-          description: Case resumed or given its one-time legacy decision after audited validation
+          description: >-
+            Immutable acknowledgement of the completed resolution operation; use the B1 GET route
+            for the current aggregate.
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AfterSale' }
+              schema: { $ref: '#/components/schemas/AfterSaleCommandAcknowledgement' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /v1/admin/after-sales/{afterSaleId}/cod-refunds/{settlementNumber}/confirm:
     post:
       operationId: confirmAfterSaleCodRefund
@@ -1674,7 +1704,27 @@ components:
       properties:
         id: { type: string, format: uuid }
         public_number: { type: string, pattern: '^ASC-[A-Z0-9]{16,32}$' }
-        status: { type: string, enum: [PENDING_REVIEW, REVIEW_REQUIRED, CANCELLED] }
+        status:
+          {
+            type: string,
+            enum:
+              [
+                PENDING_REVIEW,
+                REVIEW_REQUIRED,
+                APPROVED,
+                RETURN_PENDING,
+                RETURN_IN_TRANSIT,
+                INSPECTION_PENDING,
+                REFUND_PENDING,
+                REFUND_PROCESSING,
+                REFUNDED,
+                EXCHANGE_PENDING,
+                EXCHANGE_IN_TRANSIT,
+                REJECTED,
+                CANCELLED,
+                COMPLETED,
+              ],
+          }
         version: { type: integer, minimum: 1 }
     AfterSaleStandardItemInput:
       type: object

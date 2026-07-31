@@ -63,10 +63,17 @@ describe('M6 strict after-sale DTOs', () => {
         order_id: orderId,
       }),
     ).toThrow();
-    expect(() =>
+    expect(
       afterSaleCommandAcknowledgementResponseSchema.parse({
         ...acknowledgement,
         status: 'APPROVED',
+        version: 2,
+      }),
+    ).toMatchObject({ status: 'APPROVED', version: 2 });
+    expect(() =>
+      afterSaleCommandAcknowledgementResponseSchema.parse({
+        ...acknowledgement,
+        status: 'UNKNOWN',
       }),
     ).toThrow();
   });

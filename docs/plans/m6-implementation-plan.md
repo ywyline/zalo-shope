@@ -6,7 +6,8 @@
 > B2b-D4 repository implementation + local/test deletion worker validation 已完成且适用仓库门禁通过；
 > B2b-D5 default-disabled repository implementation + local/test protected-read validation 已完成且
 > 适用仓库门禁通过；B3 default-disabled repository implementation + local/test validation 已完成且
-> 适用仓库门禁通过；B2/B2b、B4-B7、
+> 适用仓库门禁通过；B4 default-disabled repository implementation + local/test validation 也已完成且
+> 适用仓库门禁通过；B2/B2b、B5-B7、
 > M6.3、UI 与生产启用未完成或未授权并保持失败关闭；M6 整体未完成
 >
 > 版本：1.0
@@ -313,9 +314,9 @@ M6.3-B0/B1/B2a/B2b-D0 仓库实施、B2b-D1 repository + local/test storage vali
 repository implementation + local/test scanner worker validation、B2b-D3 repository
 implementation + local/test member evidence HTTP validation、B2b-D4 repository implementation + local/test
 deletion worker validation 与 B2b-D5 default-disabled repository implementation + local/test
-protected-read validation 已完成。B3 计划及建议默认值已获 repository/local-test 实施授权，且
-B3 default-disabled repository implementation + local/test validation 现已完成；B2/B2b、B4-B7 仍未完成
-或未授权并失败关闭。A/B0/B1/B2a/D0-D5/B3 的局部交付也不代表 M6.3 完成，详见
+protected-read validation 已完成。B3 与 B4 计划及建议默认值已获 repository/local-test 实施授权，且
+两者的 default-disabled repository implementation + local/test validation 现已完成；B2/B2b、B5-B7
+仍未完成或未授权并失败关闭。A/B0/B1/B2a/D0-D5/B3/B4 的局部交付也不代表 M6.3 完成，详见
 `docs/plans/m6.3-implementation-plan.md`。
 
 - B1 只读列表/详情使用严格响应投影和三语历史政策回退；不得因 RLS 没有列级保护而使用宽
@@ -451,8 +452,9 @@ B3 default-disabled repository implementation + local/test validation 现已完�
 - M6.2 只交付数据事实边界；其历史范围保持不变。当前后续运行时已新增 B1 会员/管理员售后列表与详情，并完成 B2a 七个
   政策管理接口；D0-D2 分别完成数据库生命周期、storage 和 scanner 底座，D3 开放默认关闭的会员
   初始化/确认/owner 状态 HTTP，D4 接通 local/test 到期与物理删除补偿，D5 完成默认关闭的 member/admin
-  保护读取与管理员逐次审计；B3 已完成默认关闭的售后申请/取消与商家主动退款待审核写命令。收藏、历史、
-  隐私、分享以及售后审核/返件/退款/结算仍未交付；表、原语、权限目录、只读响应、政策控制面或 B3
+  保护读取与管理员逐次审计；B3 已完成默认关闭的售后申请/取消与商家主动退款待审核写命令，B4 已完成
+  默认关闭的管理员初审/人工复核与 SYSTEM 寄回到期。收藏、历史、隐私、分享以及返件/退款/结算仍未
+  交付；表、原语、权限目录、只读响应、政策控制面或 B3/B4
   局部写路径存在不等于完整产品或生产可用。
 - 证据对象视为敏感且不可信；必须限制类型、magic bytes、大小、数量、扫描状态、保留期和下载授权。
   到期立即停止普通访问；无 legal hold 时幂等删除原件、衍生物与扫描临时对象，失败有界重试并告警；
@@ -533,3 +535,8 @@ B3 最终 repository/local-test 证据见
 `docs/reports/m6.3-b3-after-sale-commands-completion-report.md`。该局部 `COMPLETE` 只覆盖默认关闭的三条
 命令及第 49 段迁移；production policy/TTL/storage/provider/deployment/rollout 均为
 `NOT_AUTHORIZED / NOT_RUN`，也不完成 B2/B2b、B4-B7、M6.3、M6 或 P0。
+B4 最终 repository/local-test 证据见
+`docs/reports/m6.3-b4-after-sale-review-expiration-completion-report.md`。该局部 `COMPLETE` 只覆盖默认
+关闭的两条管理员审核命令、SYSTEM 寄回到期 worker 与第 50-51 段迁移；production policy、真实退款/
+COD、返件物流、验收、库存、换货、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`，也不完成
+B2/B2b、B5-B7、M6.3、M6 或 P0。

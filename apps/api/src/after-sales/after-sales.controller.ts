@@ -27,6 +27,8 @@ import {
   afterSaleIdempotencyKeySchema,
   afterSaleListQuerySchema,
   afterSaleMemberReadQuerySchema,
+  afterSaleReviewRequestSchema,
+  afterSaleReviewResolveRequestSchema,
   afterSaleStoreCodeHeaderSchema,
   merchantAfterSaleCreateRequestSchema,
   orderIdParamsSchema,
@@ -239,6 +241,72 @@ export class AfterSalesAdminOrderController {
 @Controller('v1/admin/after-sales')
 export class AfterSalesAdminController {
   public constructor(@Inject(AfterSalesService) private readonly afterSales: AfterSalesService) {}
+
+  @Post(':afterSaleId/review')
+  @HttpCode(HttpStatus.OK)
+  public async review(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @Param() params: unknown,
+    @Body() body: unknown,
+    @Query() query: unknown,
+    @Req() request: HttpRequest,
+    @Res({ passthrough: true }) response: HttpResponse,
+  ) {
+    const requestCorrelationId = resolveCorrelationId();
+    request.id = requestCorrelationId;
+    setReadHeaders(response, requestCorrelationId);
+    const execution = await this.afterSales.adminReview({
+      afterSaleId: parse(afterSaleIdParamsSchema, params).afterSaleId,
+      body: parse(afterSaleReviewRequestSchema, body),
+      headers: adminHeaders({
+        accessReason,
+        authorization,
+        correlationId: requestCorrelationId,
+        sourceIp: sourceIp(request.ip),
+        storeCode,
+      }),
+      idempotencyKey: parse(afterSaleIdempotencyKeySchema, idempotencyKey),
+      query: parse(afterSaleAdminStoreQuerySchema, query),
+    });
+    response.setHeader('Idempotency-Replayed', String(execution.replayed));
+    return execution.body;
+  }
+
+  @Post(':afterSaleId/resolve-review')
+  @HttpCode(HttpStatus.OK)
+  public async resolveReview(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @Param() params: unknown,
+    @Body() body: unknown,
+    @Query() query: unknown,
+    @Req() request: HttpRequest,
+    @Res({ passthrough: true }) response: HttpResponse,
+  ) {
+    const requestCorrelationId = resolveCorrelationId();
+    request.id = requestCorrelationId;
+    setReadHeaders(response, requestCorrelationId);
+    const execution = await this.afterSales.adminResolveReview({
+      afterSaleId: parse(afterSaleIdParamsSchema, params).afterSaleId,
+      body: parse(afterSaleReviewResolveRequestSchema, body),
+      headers: adminHeaders({
+        accessReason,
+        authorization,
+        correlationId: requestCorrelationId,
+        sourceIp: sourceIp(request.ip),
+        storeCode,
+      }),
+      idempotencyKey: parse(afterSaleIdempotencyKeySchema, idempotencyKey),
+      query: parse(afterSaleAdminStoreQuerySchema, query),
+    });
+    response.setHeader('Idempotency-Replayed', String(execution.replayed));
+    return execution.body;
+  }
 
   @Get()
   public list(

@@ -942,4 +942,93 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
     expect(response.status).toBe(404);
     expect(response.body).toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
   });
+
+  it('reviews a member case through the real API with MFA, replay and store isolation', async () => {
+    const created = await api()
+      .post('/v1/after-sales')
+      .set({
+        ...memberHeaders(),
+        'Idempotency-Key': `m63b4-api-member-create-${suffix}`,
+      })
+      .send(memberBody());
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body).toMatchObject({ status: 'PENDING_REVIEW', version: 1 });
+
+    const reviewBody = {
+      confirmation_code: 'APPROVE_AFTER_SALE',
+      decision: 'APPROVE',
+      expected_version: 1,
+      items: [{ approved_quantity: 1, order_item_id: fixture.orderItemId }],
+      reason: 'Approve after completing the required administrator evidence review.',
+    };
+    const reviewKey = `m63b4-api-review-${suffix}`;
+    await owner.adminSession.update({
+      data: { mfaVerifiedAt: new Date(Date.now() - 11 * 60 * 1_000) },
+      where: { id: fixture.adminSessionId },
+    });
+    const stale = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/review?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': reviewKey })
+      .send(reviewBody);
+    expect(stale.status).toBe(403);
+    await owner.adminSession.update({
+      data: { mfaVerifiedAt: new Date() },
+      where: { id: fixture.adminSessionId },
+    });
+
+    const approved = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/review?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': reviewKey })
+      .send(reviewBody);
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(approved.headers['idempotency-replayed']).toBe('false');
+    expect(approved.body).toEqual({ ...created.body, status: 'APPROVED', version: 2 });
+
+    const replay = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/review?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': reviewKey })
+      .send(reviewBody);
+    expect(replay.status).toBe(200);
+    expect(replay.headers['idempotency-replayed']).toBe('true');
+    expect(replay.body).toEqual(approved.body);
+
+    const conflict = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/review?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': reviewKey })
+      .send({
+        confirmation_code: 'REJECT_AFTER_SALE',
+        decision: 'REJECT',
+        expected_version: 1,
+        reason: 'A different decision cannot reuse the completed review command key.',
+      });
+    expect(conflict.status).toBe(409);
+    expect(conflict.body).toMatchObject({
+      code: 'CONFLICT',
+      details: { reason_code: 'AFTER_SALE_IDEMPOTENCY_CONFLICT' },
+    });
+
+    const foreign = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/review?store_id=${FASHION_STORE_ID}`)
+      .set({
+        ...adminHeaders(FASHION_STORE_CODE),
+        'Idempotency-Key': `m63b4-api-foreign-review-${suffix}`,
+      })
+      .send(reviewBody);
+    expect(foreign.status).toBe(404);
+    expect(foreign.body).toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
+
+    const merchant = await owner.afterSale.findFirstOrThrow({
+      select: { id: true },
+      where: { orderId: fixture.orderId, source: 'ADMIN', storeId: BEAUTY_STORE_ID },
+    });
+    const selfReview = await api()
+      .post(`/v1/admin/after-sales/${merchant.id}/review?store_id=${BEAUTY_STORE_ID}`)
+      .set({
+        ...adminHeaders(),
+        'Idempotency-Key': `m63b4-api-maker-checker-${suffix}`,
+      })
+      .send(reviewBody);
+    expect(selfReview.status).toBe(403);
+    expect(selfReview.body).toMatchObject({ code: 'AUTHORIZATION_DENIED' });
+  });
 });

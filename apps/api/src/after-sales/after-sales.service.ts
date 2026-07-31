@@ -21,6 +21,8 @@ import type {
   AfterSaleCreateRequest,
   AfterSaleListQuery,
   AfterSalePageResponse,
+  AfterSaleReviewRequest,
+  AfterSaleReviewResolveRequest,
   AfterSaleResponse,
   MerchantAfterSaleCreateRequest,
 } from '@zalo-shop/contracts';
@@ -34,12 +36,14 @@ import {
   cancelMemberAfterSaleCommand,
   createMemberAfterSaleCommand,
   createMerchantRefundAfterSaleCommand,
+  resolveAfterSaleReviewCommand,
+  reviewAfterSaleCommand,
   type AfterSaleCommandResult,
   type PrismaClient,
   type StoreTransaction,
   withStoreTransaction,
 } from '@zalo-shop/database';
-import { createStoreContext, type StoreContext } from '@zalo-shop/domain';
+import { createStoreContext, type AfterSaleStatus, type StoreContext } from '@zalo-shop/domain';
 import { resolveCorrelationId } from '@zalo-shop/logger';
 import { encryptSensitive } from '@zalo-shop/security';
 
@@ -63,6 +67,12 @@ type AfterSaleCommandExecution = {
   body: AfterSaleCommandAcknowledgementResponse;
   replayed: boolean;
 };
+type AcknowledgedAfterSaleCommand = Readonly<{
+  afterSaleId: string;
+  publicCaseNumber: string;
+  status: AfterSaleStatus;
+  version: number;
+}>;
 
 function sensitiveReasonDigest(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -177,7 +187,7 @@ export class AfterSalesService {
       input.query.store_id,
       'store.after-sales.review',
     );
-    this.assertB3MerchantRefundAuthorization(context);
+    this.assertDirectReviewAuthorization(context);
     await this.consumeWriteLimit(context, 'ADMIN');
     this.assertCommandsEnabled();
     let command: Awaited<ReturnType<typeof createMerchantRefundAfterSaleCommand>>;
@@ -205,6 +215,71 @@ export class AfterSalesService {
       body: this.acknowledgeCommand(command),
       replayed: command.replayed,
     };
+  }
+
+  public async adminReview(input: {
+    afterSaleId: string;
+    body: AfterSaleReviewRequest;
+    headers: AdminHeaders;
+    idempotencyKey: string;
+    query: AfterSaleAdminStoreQuery;
+  }): Promise<AfterSaleCommandExecution> {
+    const context = await this.admin.authorizeSensitive(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.review',
+    );
+    this.assertDirectReviewAuthorization(context);
+    await this.consumeWriteLimit(context, 'ADMIN');
+    this.assertReviewCommandsEnabled();
+    let command: Awaited<ReturnType<typeof reviewAfterSaleCommand>>;
+    try {
+      command = await reviewAfterSaleCommand(this.database, context, {
+        afterSaleId: input.afterSaleId,
+        body: input.body,
+        idempotencyKey: input.idempotencyKey,
+        ...(input.headers.sourceIp === undefined ? {} : { sourceIp: input.headers.sourceIp }),
+      });
+    } catch (error) {
+      this.throwCommandError(error, 'admin');
+    }
+    return { body: this.acknowledgeCommand(command), replayed: command.replayed };
+  }
+
+  public async adminResolveReview(input: {
+    afterSaleId: string;
+    body: AfterSaleReviewResolveRequest;
+    headers: AdminHeaders;
+    idempotencyKey: string;
+    query: AfterSaleAdminStoreQuery;
+  }): Promise<AfterSaleCommandExecution> {
+    const context = await this.admin.authorizeSensitive(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.review',
+    );
+    this.assertDirectReviewAuthorization(context);
+    await this.consumeWriteLimit(context, 'ADMIN');
+    this.assertReviewCommandsEnabled();
+    const policyBasis = 'policy_basis' in input.body ? input.body.policy_basis : undefined;
+    let command: Awaited<ReturnType<typeof resolveAfterSaleReviewCommand>>;
+    try {
+      command = await resolveAfterSaleReviewCommand(this.database, context, {
+        afterSaleId: input.afterSaleId,
+        body: input.body,
+        idempotencyKey: input.idempotencyKey,
+        ...(policyBasis === undefined
+          ? {}
+          : {
+              policyBasisCiphertext: encryptSensitive(policyBasis, this.config.PII_ENCRYPTION_KEY),
+              policyBasisHash: sensitiveReasonDigest(policyBasis),
+            }),
+        ...(input.headers.sourceIp === undefined ? {} : { sourceIp: input.headers.sourceIp }),
+      });
+    } catch (error) {
+      this.throwCommandError(error, 'admin');
+    }
+    return { body: this.acknowledgeCommand(command), replayed: command.replayed };
   }
 
   public async memberList(input: {
@@ -400,13 +475,19 @@ export class AfterSalesService {
     });
   }
 
-  private assertB3MerchantRefundAuthorization(context: StoreContext): void {
+  private assertDirectReviewAuthorization(context: StoreContext): void {
     // Generic platform cross-store access is an audited scope entry, not a substitute for the
     // target store's high-risk after-sale review permission. AdminService returns STORE only after
-    // resolving that concrete store permission; keep this stricter boundary local to B3 so other
+    // resolving that concrete store permission; keep this stricter boundary local to B3/B4 so other
     // existing admin routes retain their frozen authorization contract.
     if (context.adminAuthorizationScope !== 'STORE') {
       throw new ForbiddenException('Target store after-sale review permission is required');
+    }
+  }
+
+  private assertReviewCommandsEnabled(): void {
+    if (!this.config.AFTER_SALE_REVIEW_COMMANDS_ENABLED || this.config.NODE_ENV === 'production') {
+      throw new ServiceUnavailableException('After-sale review commands are unavailable');
     }
   }
 
@@ -453,7 +534,7 @@ export class AfterSalesService {
   }
 
   private acknowledgeCommand(
-    command: AfterSaleCommandResult,
+    command: AfterSaleCommandResult | AcknowledgedAfterSaleCommand,
   ): AfterSaleCommandAcknowledgementResponse {
     return afterSaleCommandAcknowledgementResponseSchema.parse({
       id: command.afterSaleId,
