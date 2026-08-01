@@ -326,7 +326,37 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
             storeId: BEAUTY_STORE_ID,
           },
           {
+            permissionCode: 'store.after-sales.read',
+            roleId: fixture.beautyRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+          {
+            permissionCode: 'store.refunds.create',
+            roleId: fixture.beautyRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+          {
+            permissionCode: 'store.refunds.read',
+            roleId: fixture.beautyRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+          {
             permissionCode: 'store.after-sales.review',
+            roleId: fixture.fashionRoleId,
+            storeId: FASHION_STORE_ID,
+          },
+          {
+            permissionCode: 'store.after-sales.read',
+            roleId: fixture.fashionRoleId,
+            storeId: FASHION_STORE_ID,
+          },
+          {
+            permissionCode: 'store.refunds.create',
+            roleId: fixture.fashionRoleId,
+            storeId: FASHION_STORE_ID,
+          },
+          {
+            permissionCode: 'store.refunds.read',
             roleId: fixture.fashionRoleId,
             storeId: FASHION_STORE_ID,
           },
@@ -467,7 +497,7 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
       });
       await transaction.order.create({
         data: {
-          baseSubtotalVnd: 200_000,
+          baseSubtotalVnd: 300_000,
           couponDiscountVnd: 0,
           currency: 'VND',
           id: fixture.orderId,
@@ -475,7 +505,7 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
           memberId: fixture.memberId,
           orderDiscountVnd: 0,
           orderNumber: `M63-B3-${suffix}`,
-          payableVnd: 200_000,
+          payableVnd: 300_000,
           paymentMethod: 'ONLINE',
           paymentStatus: 'SUCCEEDED',
           quoteHash: digest(`m63b3-order-${suffix}`),
@@ -497,14 +527,14 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
           optionSnapshot: [],
           orderDiscountVnd: 0,
           orderId: fixture.orderId,
-          payableVnd: 200_000,
+          payableVnd: 300_000,
           productId: fixture.productId,
           productName: 'M6.3-B3 product',
-          quantity: 2,
+          quantity: 3,
           skuCode: `m63b3-sku-${suffix}`,
           skuId: fixture.skuId,
           storeId: BEAUTY_STORE_ID,
-          subtotalVnd: 200_000,
+          subtotalVnd: 300_000,
           unitPriceVnd: 100_000,
         },
       });
@@ -523,7 +553,7 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
       });
       await transaction.paymentAttempt.create({
         data: {
-          amountVnd: 200_000,
+          amountVnd: 300_000,
           attemptSequence: 1,
           channelId: fixture.paymentChannelId,
           correlationId: `m63b3-payment-${suffix}`,
@@ -562,7 +592,7 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
           id: fixture.shipmentItemId,
           orderId: fixture.orderId,
           orderItemId: fixture.orderItemId,
-          quantity: 2,
+          quantity: 3,
           shipmentId: fixture.shipmentId,
           storeId: BEAUTY_STORE_ID,
         },
@@ -1212,5 +1242,100 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
         expect.objectContaining({ id: created.body.id, status: 'INSPECTION_PENDING' }),
       ]),
     );
+  });
+
+  it('requests a server-calculated ONLINE refund with direct refund/read scopes', async () => {
+    await limiterRedis.del(
+      ...[-1, 0, 1].flatMap((offset) => [
+        rateLimitKey('MEMBER', fixture.memberId, BEAUTY_STORE_ID, offset),
+        rateLimitKey('ADMIN', fixture.adminId, BEAUTY_STORE_ID, offset),
+        rateLimitKey('ADMIN', fixture.adminId, FASHION_STORE_ID, offset),
+      ]),
+    );
+    const created = await api()
+      .post('/v1/after-sales')
+      .set({
+        ...memberHeaders(),
+        'Idempotency-Key': `m63b6-api-member-create-${suffix}`,
+      })
+      .send(memberBody(1, 'REFUND_ONLY'));
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+
+    const approved = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/review?store_id=${BEAUTY_STORE_ID}`)
+      .set({
+        ...adminHeaders(),
+        'Idempotency-Key': `m63b6-api-review-${suffix}`,
+      })
+      .send({
+        confirmation_code: 'APPROVE_AFTER_SALE',
+        decision: 'APPROVE',
+        expected_version: created.body.version,
+        items: [{ approved_quantity: 1, order_item_id: fixture.orderItemId }],
+        reason: 'Approve the online refund request after completing administrator review.',
+      });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(approved.body).toMatchObject({ status: 'APPROVED', version: 2 });
+
+    const refundKey = `m63b6-api-refund-${suffix}`;
+    const refundBody = {
+      confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
+      expected_version: approved.body.version,
+      reason: 'Issue the approved online refund after the final review.',
+    };
+    const requested = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/refund?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': refundKey })
+      .send(refundBody);
+    expect(requested.status, JSON.stringify(requested.body)).toBe(202);
+    expect(requested.headers['idempotency-replayed']).toBe('false');
+    expect(requested.body).toMatchObject({
+      approved_refund_vnd: 100_000,
+      id: created.body.id,
+      status: 'REFUND_PROCESSING',
+      version: 4,
+    });
+    expect(requested.body.settlements).toEqual([
+      expect.objectContaining({
+        amount_vnd: 100_000,
+        method: 'ONLINE_ORIGINAL',
+        status: 'PROCESSING',
+      }),
+    ]);
+
+    const replay = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/refund?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': refundKey })
+      .send(refundBody);
+    expect(replay.status).toBe(202);
+    expect(replay.headers['idempotency-replayed']).toBe('true');
+    expect(replay.body).toEqual(requested.body);
+
+    const conflict = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/refund?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': refundKey })
+      .send({ ...refundBody, reason: 'A different refund reason cannot reuse this command key.' });
+    expect(conflict.status).toBe(409);
+    expect(conflict.body).toMatchObject({
+      code: 'CONFLICT',
+      details: { reason_code: 'AFTER_SALE_IDEMPOTENCY_CONFLICT' },
+    });
+
+    const altered = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/refund?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': `m63b6-api-refund-invalid-${suffix}` })
+      .send({ ...refundBody, amount_vnd: 1 });
+    expect(altered.status).toBe(400);
+    expect(altered.body).toMatchObject({ code: 'INPUT_INVALID' });
+
+    const foreign = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/refund?store_id=${FASHION_STORE_ID}`)
+      .set({
+        ...adminHeaders(FASHION_STORE_CODE),
+        'Idempotency-Key': `m63b6-api-refund-foreign-${suffix}`,
+      })
+      .send(refundBody);
+    expect(foreign.status).toBe(404);
+    expect(foreign.body).toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
   });
 });

@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AfterSalePolicyContent } from '@zalo-shop/contracts';
 import {
   AfterSaleCommandDatabaseError,
+  applyRefundProviderFact,
   canonicalAfterSaleCommandRequestHash,
   canonicalAfterSalePolicyHash,
   cancelMemberAfterSaleCommand,
@@ -21,8 +22,10 @@ import {
   initializeAfterSaleEvidenceUpload,
   resolveAfterSaleReviewCommand,
   recordAfterSaleReturnFact,
+  requestAfterSaleOnlineRefund,
   reviewAfterSaleCommand,
   submitMemberAfterSaleReturn,
+  syncAfterSaleRefund,
   type Prisma,
   PrismaClient,
   withAfterSaleSystemTransaction,
@@ -714,6 +717,31 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
     return { afterSaleId: created.afterSaleId, order, version: approved.version };
   }
 
+  async function createApprovedRefundCase(tag: string): Promise<{
+    afterSaleId: string;
+    order: OrderFixture;
+    version: number;
+  }> {
+    const order = await createOrder({ quantity: 1, tag });
+    const created = await createMemberAfterSaleCommand(
+      requiredRuntime(),
+      memberContext(),
+      memberCreateInput(order, tag, 1, { type: 'REFUND_ONLY' }),
+    );
+    const approved = await reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+      afterSaleId: created.afterSaleId,
+      body: {
+        confirmation_code: 'APPROVE_AFTER_SALE',
+        decision: 'APPROVE',
+        expected_version: created.version,
+        items: [{ approved_quantity: 1, order_item_id: order.itemId }],
+        reason: 'Approve the refund after completing the required administrator review.',
+      },
+      idempotencyKey: `m63b6-${tag}-approve-${suffix}`,
+    });
+    return { afterSaleId: created.afterSaleId, order, version: approved.version };
+  }
+
   beforeAll(async () => {
     assertScratchName();
     await admin.$connect();
@@ -808,12 +836,17 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
         storeId: BEAUTY_STORE_ID,
       },
     });
-    await owner.storeRolePermission.create({
-      data: {
-        permissionCode: 'store.after-sales.review',
+    await owner.storeRolePermission.createMany({
+      data: [
+        'store.after-sales.read',
+        'store.after-sales.review',
+        'store.refunds.create',
+        'store.refunds.read',
+      ].map((permissionCode) => ({
+        permissionCode,
         roleId: fixture.adminRoleId,
         storeId: BEAUTY_STORE_ID,
-      },
+      })),
     });
     await owner.adminStoreRole.create({
       data: {
@@ -2527,6 +2560,276 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
         }),
       'AFTER_SALE_VERSION_CONFLICT',
     );
+  });
+
+  it('atomically requests one server-calculated ONLINE refund and converges success idempotently', async () => {
+    const approved = await createApprovedRefundCase('b6-success');
+    const idempotencyKey = `m63b6-success-refund-${suffix}`;
+    const reason = 'Issue the approved refund through the original online payment channel.';
+    const requested = await requestAfterSaleOnlineRefund(requiredRuntime(), adminContext(), {
+      afterSaleId: approved.afterSaleId,
+      expectedVersion: approved.version,
+      idempotencyKey,
+      reason,
+    });
+    expect(requested).toMatchObject({
+      afterSaleId: approved.afterSaleId,
+      replayed: false,
+      status: 'REFUND_PROCESSING',
+      version: approved.version + 2,
+    });
+
+    await expect(
+      requestAfterSaleOnlineRefund(requiredRuntime(), adminContext(), {
+        afterSaleId: approved.afterSaleId,
+        expectedVersion: approved.version,
+        idempotencyKey,
+        reason,
+      }),
+    ).resolves.toMatchObject({ refundId: requested.refundId, replayed: true });
+    await expect(
+      requestAfterSaleOnlineRefund(requiredRuntime(), adminContext(), {
+        afterSaleId: approved.afterSaleId,
+        expectedVersion: approved.version,
+        idempotencyKey,
+        reason: 'A different reason must conflict for the same after-sale refund key.',
+      }),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_IDEMPOTENCY_CONFLICT' });
+
+    const [sale, settlement, refund, links, createMessages, syncMessages] = await Promise.all([
+      requiredOwner().afterSale.findUniqueOrThrow({ where: { id: approved.afterSaleId } }),
+      requiredOwner().afterSaleSettlement.findFirstOrThrow({
+        where: { afterSaleId: approved.afterSaleId },
+      }),
+      requiredOwner().refund.findUniqueOrThrow({ where: { id: requested.refundId } }),
+      requiredOwner().afterSaleRefund.count({ where: { afterSaleId: approved.afterSaleId } }),
+      requiredOwner().outboxMessage.count({
+        where: { aggregateId: requested.refundId, eventType: 'refund.create.requested' },
+      }),
+      requiredOwner().outboxMessage.count({
+        where: { aggregateId: requested.refundId, eventType: 'after-sale.refund.sync' },
+      }),
+    ]);
+    expect(sale).toMatchObject({
+      approvedTotalVnd: BigInt(approved.order.payableVnd),
+      status: 'REFUND_PROCESSING',
+    });
+    expect(settlement).toMatchObject({
+      amountVnd: BigInt(approved.order.payableVnd),
+      method: 'ONLINE_ORIGINAL',
+      paymentAttemptId: refund.paymentAttemptId,
+      status: 'PROCESSING',
+    });
+    expect(refund).toMatchObject({ amountVnd: settlement.amountVnd, status: 'REQUESTED' });
+    expect({ createMessages, links, syncMessages }).toEqual({
+      createMessages: 1,
+      links: 1,
+      syncMessages: 1,
+    });
+
+    const applied = await applyRefundProviderFact(requiredRuntime(), adminContext(), {
+      fact: {
+        amountVnd: Number(refund.amountVnd),
+        providerRefundId: `m63b6-refund-${suffix}`,
+        providerStatus: 'SUCCEEDED',
+        status: 'SUCCEEDED',
+      },
+      refundId: refund.id,
+      source: 'SYSTEM',
+    });
+    await syncAfterSaleRefund(requiredRuntime(), adminContext(), {
+      refundId: refund.id,
+      refundVersion: applied.version,
+    });
+    await expect(
+      syncAfterSaleRefund(requiredRuntime(), adminContext(), {
+        refundId: refund.id,
+        refundVersion: refund.version,
+      }),
+    ).resolves.toBeUndefined();
+
+    const [completedSale, completedSettlement, transitions] = await Promise.all([
+      requiredOwner().afterSale.findUniqueOrThrow({ where: { id: approved.afterSaleId } }),
+      requiredOwner().afterSaleSettlement.findFirstOrThrow({
+        where: { afterSaleId: approved.afterSaleId },
+      }),
+      requiredOwner().afterSaleTransition.findMany({
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        where: { afterSaleId: approved.afterSaleId },
+      }),
+    ]);
+    expect(completedSale.status).toBe('REFUNDED');
+    expect(completedSettlement).toMatchObject({ status: 'SUCCEEDED' });
+    expect(completedSettlement.completedAt).not.toBeNull();
+    expect(transitions.at(-1)).toMatchObject({
+      actorType: 'SYSTEM',
+      event: 'REFUND_SUCCEEDED',
+      fromStatus: 'REFUND_PROCESSING',
+      toStatus: 'REFUNDED',
+    });
+  });
+
+  it('waits on the shared order scope before the case lock and rechecks direct refund RBAC', async () => {
+    const approved = await createApprovedRefundCase('b6-auth-race');
+    let announceLockAcquired!: () => void;
+    let releaseLock!: () => void;
+    const lockAcquired = new Promise<void>((resolve) => {
+      announceLockAcquired = resolve;
+    });
+    const lockRelease = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const holder = requiredOwner().$transaction(async (transaction) => {
+      await transaction.$executeRaw`
+        SELECT pg_catalog.pg_advisory_xact_lock(
+          pg_catalog.hashtextextended(
+            'm62-refund:' || (${BEAUTY_STORE_ID}::uuid)::text || ':' ||
+              (${approved.order.id}::uuid)::text,
+            0
+          )
+        )
+      `;
+      announceLockAcquired();
+      await lockRelease;
+    });
+    await lockAcquired;
+
+    const command = requestAfterSaleOnlineRefund(requiredRuntime(), adminContext(), {
+      afterSaleId: approved.afterSaleId,
+      expectedVersion: approved.version,
+      idempotencyKey: `m63b6-final-authorization-${suffix}`,
+      reason: 'Verify final direct permissions after waiting on the shared refund order scope.',
+    });
+    let permissionRemoved = false;
+    try {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const waiting = await requiredOwner().$queryRaw<Array<{ count: bigint }>>`
+          SELECT pg_catalog.count(*) AS count
+          FROM pg_catalog.pg_stat_activity
+          WHERE datname = pg_catalog.current_database()
+            AND wait_event = 'advisory'
+            AND query LIKE '%m62-refund:%'
+        `;
+        if ((waiting[0]?.count ?? 0n) > 0n) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        if (attempt === 99) throw new Error('B6 command did not wait on the shared order scope');
+      }
+
+      await expect(
+        requiredOwner().$transaction(
+          (transaction) =>
+            transaction.$queryRaw`
+            SELECT id FROM after_sales
+            WHERE store_id = ${BEAUTY_STORE_ID}::uuid
+              AND id = ${approved.afterSaleId}::uuid
+            FOR UPDATE NOWAIT
+          `,
+        ),
+      ).resolves.toHaveLength(1);
+      await requiredOwner().storeRolePermission.delete({
+        where: {
+          storeId_roleId_permissionCode: {
+            permissionCode: 'store.refunds.create',
+            roleId: fixture.adminRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+        },
+      });
+      permissionRemoved = true;
+      releaseLock();
+      await expect(command).rejects.toMatchObject({ code: 'AFTER_SALE_AUTHORIZATION_DENIED' });
+      expect(
+        await requiredOwner().afterSaleSettlement.count({
+          where: { afterSaleId: approved.afterSaleId },
+        }),
+      ).toBe(0);
+    } finally {
+      releaseLock();
+      await holder;
+      await command.catch(() => undefined);
+      if (permissionRemoved) {
+        await requiredOwner().storeRolePermission.create({
+          data: {
+            permissionCode: 'store.refunds.create',
+            roleId: fixture.adminRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+        });
+      }
+    }
+  });
+
+  it('fails closed for cross-store access, version conflicts and UNKNOWN provider facts', async () => {
+    const approved = await createApprovedRefundCase('b6-review');
+    const reason = 'Issue the approved refund and preserve uncertain provider results for review.';
+    await expect(
+      requestAfterSaleOnlineRefund(
+        requiredRuntime(),
+        context({
+          actorId: fixture.adminId,
+          actorType: 'admin',
+          store: 'fashion',
+        }),
+        {
+          afterSaleId: approved.afterSaleId,
+          expectedVersion: approved.version,
+          idempotencyKey: `m63b6-cross-store-${suffix}`,
+          reason,
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_NOT_FOUND' });
+    await expect(
+      requestAfterSaleOnlineRefund(requiredRuntime(), adminContext(), {
+        afterSaleId: approved.afterSaleId,
+        expectedVersion: approved.version + 1,
+        idempotencyKey: `m63b6-stale-version-${suffix}`,
+        reason,
+      }),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_VERSION_CONFLICT' });
+    expect(
+      await requiredOwner().afterSaleSettlement.count({
+        where: { afterSaleId: approved.afterSaleId },
+      }),
+    ).toBe(0);
+
+    const requested = await requestAfterSaleOnlineRefund(requiredRuntime(), adminContext(), {
+      afterSaleId: approved.afterSaleId,
+      expectedVersion: approved.version,
+      idempotencyKey: `m63b6-review-refund-${suffix}`,
+      reason,
+    });
+    const refund = await requiredOwner().refund.findUniqueOrThrow({
+      where: { id: requested.refundId },
+    });
+    const applied = await applyRefundProviderFact(requiredRuntime(), adminContext(), {
+      fact: {
+        amountVnd: Number(refund.amountVnd),
+        providerRefundId: `m63b6-unknown-${suffix}`,
+        providerStatus: 'UNKNOWN',
+        status: 'UNKNOWN',
+      },
+      refundId: refund.id,
+      source: 'SYSTEM',
+    });
+    expect(applied.status).toBe('REVIEW_REQUIRED');
+    await syncAfterSaleRefund(requiredRuntime(), adminContext(), {
+      refundId: refund.id,
+      refundVersion: applied.version,
+    });
+
+    const [sale, settlement, transition] = await Promise.all([
+      requiredOwner().afterSale.findUniqueOrThrow({ where: { id: approved.afterSaleId } }),
+      requiredOwner().afterSaleSettlement.findFirstOrThrow({
+        where: { afterSaleId: approved.afterSaleId },
+      }),
+      requiredOwner().afterSaleTransition.findFirstOrThrow({
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        where: { afterSaleId: approved.afterSaleId },
+      }),
+    ]);
+    expect(sale.status).toBe('REVIEW_REQUIRED');
+    expect(settlement.status).toBe('REVIEW_REQUIRED');
+    expect(transition).toMatchObject({ actorType: 'SYSTEM', event: 'REQUIRE_REVIEW' });
   });
 
   it('rejects incomplete, duplicate, all-zero and excessive approval decisions atomically', async () => {

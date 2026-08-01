@@ -10,6 +10,10 @@ import {
 
 import { appendOutboxMessageInTransaction, type OutboxMessageRecord } from './reliable-messaging';
 import { type StoreTransaction, withStoreTransaction } from './index';
+import {
+  AFTER_SALE_REFUND_SYNC_EVENT_TYPE,
+  AFTER_SALE_REFUND_SYNC_EVENT_VERSION,
+} from './after-sale-refund-events';
 
 export const REFUND_CREATE_EVENT_TYPE = 'refund.create.requested';
 export const REFUND_QUERY_EVENT_TYPE = 'refund.query.requested';
@@ -113,7 +117,7 @@ function result(refund: LockedRefund, replayed: boolean): RefundCommandResult {
   };
 }
 
-async function lockRefundOrderScope(
+export async function lockRefundOrderScope(
   transaction: StoreTransaction,
   storeId: string,
   orderId: string,
@@ -213,6 +217,204 @@ async function ensureQueryMessage(
   );
 }
 
+async function ensureAfterSaleRefundSyncMessage(
+  transaction: StoreTransaction,
+  context: StoreContext,
+  refund: LockedRefund,
+): Promise<void> {
+  const link = await transaction.afterSaleRefund.findFirst({
+    select: { afterSaleId: true },
+    where: { refundId: refund.id, storeId: refund.storeId },
+  });
+  if (!link) return;
+  await appendOutboxMessageInTransaction(
+    transaction,
+    { ...context, storeId: refund.storeId },
+    {
+      aggregateId: refund.id,
+      aggregateType: 'REFUND',
+      eventType: AFTER_SALE_REFUND_SYNC_EVENT_TYPE,
+      eventVersion: AFTER_SALE_REFUND_SYNC_EVENT_VERSION,
+      idempotencyKey: `${AFTER_SALE_REFUND_SYNC_EVENT_TYPE}:${refund.id}:${refund.version}`,
+      maxAttempts: 8,
+      payload: {
+        refund_id: refund.id,
+        refund_version: refund.version,
+        store_id: refund.storeId,
+      },
+    },
+  );
+}
+
+export async function createRefundInTransaction(
+  transaction: StoreTransaction,
+  context: StoreContext,
+  input: Readonly<{
+    amountVnd: number;
+    confirmation: string;
+    expectedPaymentVersion: number;
+    idempotencyKey: string;
+    paymentAttemptId: string;
+    reason: string;
+  }>,
+): Promise<RefundCommandResult> {
+  if (
+    context.actor.type !== 'admin' ||
+    input.confirmation !== 'CREATE_REFUND' ||
+    !Number.isSafeInteger(input.amountVnd) ||
+    input.amountVnd <= 0 ||
+    !Number.isSafeInteger(input.expectedPaymentVersion) ||
+    input.expectedPaymentVersion < 1 ||
+    input.reason.trim().length < 10 ||
+    input.reason.trim().length > 500
+  ) {
+    throw new RefundCommandError('REFUND_AMOUNT_INVALID');
+  }
+  const identity = await transaction.paymentAttempt.findFirst({
+    select: { orderId: true },
+    where: { id: input.paymentAttemptId, storeId: context.storeId },
+  });
+  if (!identity) throw new RefundCommandError('PAYMENT_NOT_REFUNDABLE');
+  await lockRefundOrderScope(transaction, context.storeId, identity.orderId);
+  await transaction.$queryRaw`
+        SELECT id FROM orders
+        WHERE store_id = ${context.storeId}::uuid AND id = ${identity.orderId}::uuid
+        FOR UPDATE
+      `;
+  await transaction.$queryRaw`
+        SELECT id FROM payment_attempts
+        WHERE store_id = ${context.storeId}::uuid AND id = ${input.paymentAttemptId}::uuid
+        FOR UPDATE
+      `;
+  const payment = await transaction.paymentAttempt.findFirst({
+    include: { order: true },
+    where: { id: input.paymentAttemptId, storeId: context.storeId },
+  });
+  if (
+    !payment ||
+    payment.status !== 'SUCCEEDED' ||
+    !payment.providerTransactionId ||
+    payment.order.paymentMethod !== 'ONLINE'
+  ) {
+    throw new RefundCommandError('PAYMENT_NOT_REFUNDABLE');
+  }
+  const keyHash = digest(`${payment.storeId}\u0000${payment.id}\u0000${input.idempotencyKey}`);
+  const replay = await transaction.refund.findUnique({
+    include: { order: true, paymentAttempt: { include: { channel: true } } },
+    where: {
+      storeId_paymentAttemptId_idempotencyKeyHash: {
+        idempotencyKeyHash: keyHash,
+        paymentAttemptId: payment.id,
+        storeId: context.storeId,
+      },
+    },
+  });
+  if (replay) {
+    if (
+      safePositiveAmount(replay.amountVnd) !== input.amountVnd ||
+      replay.reason !== input.reason
+    ) {
+      throw new RefundCommandError('REFUND_IDEMPOTENCY_CONFLICT');
+    }
+    return result(replay, true);
+  }
+  if (payment.version !== input.expectedPaymentVersion) {
+    throw new RefundCommandError('PAYMENT_VERSION_CONFLICT');
+  }
+  const totals = await transaction.refund.groupBy({
+    by: ['status'],
+    where: {
+      paymentAttemptId: payment.id,
+      status: { in: ['REQUESTED', 'PROCESSING', 'SUCCEEDED', 'REVIEW_REQUIRED'] },
+      storeId: context.storeId,
+    },
+    _sum: { amountVnd: true },
+  });
+  const amountFor = (statuses: readonly RefundStatus[]) =>
+    totals
+      .filter((item) => statuses.includes(item.status))
+      .reduce((sum, item) => sum + Number(item._sum.amountVnd ?? 0n), 0);
+  try {
+    assertRefundAmountAllowed({
+      capturedAmountVnd: safePositiveAmount(payment.amountVnd),
+      inFlightRefundAmountVnd: amountFor(['REQUESTED', 'PROCESSING', 'REVIEW_REQUIRED']),
+      requestedAmountVnd: input.amountVnd,
+      succeededRefundAmountVnd: amountFor(['SUCCEEDED']),
+    });
+  } catch (error) {
+    if (error instanceof PaymentInvariantError) {
+      throw new RefundCommandError(
+        error.code === 'REFUND_AMOUNT_EXCEEDS_AVAILABLE'
+          ? 'REFUND_AMOUNT_EXCEEDS_AVAILABLE'
+          : 'REFUND_AMOUNT_INVALID',
+      );
+    }
+    throw error;
+  }
+  const id = randomUUID();
+  const refund = await transaction.refund.create({
+    data: {
+      amountVnd: input.amountVnd,
+      id,
+      idempotencyKeyHash: keyHash,
+      orderId: payment.orderId,
+      paymentAttemptId: payment.id,
+      publicRefundNumber: `RFD-${id.replaceAll('-', '').toUpperCase()}`,
+      reason: input.reason,
+      requestedBy: context.actor.id,
+      status: 'REQUESTED',
+      storeId: context.storeId,
+    },
+    include: { order: true, paymentAttempt: { include: { channel: true } } },
+  });
+  await transaction.refundTransition.create({
+    data: {
+      actorId: context.actor.id,
+      actorType: 'ADMIN',
+      correlationId: context.correlationId,
+      event: 'CREATE',
+      fromStatus: null,
+      reason: input.reason,
+      refundId: refund.id,
+      source: 'ADMIN',
+      storeId: context.storeId,
+      toStatus: 'REQUESTED',
+    },
+  });
+  await appendOutboxMessageInTransaction(
+    transaction,
+    { ...context, storeId: refund.storeId },
+    {
+      aggregateId: refund.id,
+      aggregateType: 'REFUND',
+      eventType: REFUND_CREATE_EVENT_TYPE,
+      eventVersion: 1,
+      idempotencyKey: `${REFUND_CREATE_EVENT_TYPE}:${refund.id}`,
+      maxAttempts: 1,
+      payload: { refund_id: refund.id, store_id: refund.storeId },
+    },
+  );
+  await transaction.auditLog.create({
+    data: {
+      action: 'payment.refund.requested',
+      actorId: context.actor.id,
+      actorType: 'ADMIN',
+      afterData: {
+        amount_vnd: input.amountVnd,
+        payment_attempt_id: payment.id,
+        public_refund_number: refund.publicRefundNumber,
+        status: refund.status,
+      },
+      correlationId: context.correlationId,
+      reason: input.reason,
+      storeId: context.storeId,
+      targetId: refund.id,
+      targetType: 'refund',
+    },
+  });
+  return result(refund, false);
+}
+
 export function createRefundCommand(
   client: PrismaClient,
   context: StoreContext,
@@ -228,163 +430,7 @@ export function createRefundCommand(
   return withStoreTransaction(
     client,
     context,
-    async (transaction) => {
-      if (
-        context.actor.type !== 'admin' ||
-        input.confirmation !== 'CREATE_REFUND' ||
-        !Number.isSafeInteger(input.amountVnd) ||
-        input.amountVnd <= 0 ||
-        !Number.isSafeInteger(input.expectedPaymentVersion) ||
-        input.expectedPaymentVersion < 1 ||
-        input.reason.trim().length < 10 ||
-        input.reason.trim().length > 500
-      ) {
-        throw new RefundCommandError('REFUND_AMOUNT_INVALID');
-      }
-      const identity = await transaction.paymentAttempt.findFirst({
-        select: { orderId: true },
-        where: { id: input.paymentAttemptId, storeId: context.storeId },
-      });
-      if (!identity) throw new RefundCommandError('PAYMENT_NOT_REFUNDABLE');
-      await lockRefundOrderScope(transaction, context.storeId, identity.orderId);
-      await transaction.$queryRaw`
-        SELECT id FROM orders
-        WHERE store_id = ${context.storeId}::uuid AND id = ${identity.orderId}::uuid
-        FOR UPDATE
-      `;
-      await transaction.$queryRaw`
-        SELECT id FROM payment_attempts
-        WHERE store_id = ${context.storeId}::uuid AND id = ${input.paymentAttemptId}::uuid
-        FOR UPDATE
-      `;
-      const payment = await transaction.paymentAttempt.findFirst({
-        include: { order: true },
-        where: { id: input.paymentAttemptId, storeId: context.storeId },
-      });
-      if (
-        !payment ||
-        payment.status !== 'SUCCEEDED' ||
-        !payment.providerTransactionId ||
-        payment.order.paymentMethod !== 'ONLINE'
-      ) {
-        throw new RefundCommandError('PAYMENT_NOT_REFUNDABLE');
-      }
-      const keyHash = digest(`${payment.storeId}\u0000${payment.id}\u0000${input.idempotencyKey}`);
-      const replay = await transaction.refund.findUnique({
-        include: { order: true, paymentAttempt: { include: { channel: true } } },
-        where: {
-          storeId_paymentAttemptId_idempotencyKeyHash: {
-            idempotencyKeyHash: keyHash,
-            paymentAttemptId: payment.id,
-            storeId: context.storeId,
-          },
-        },
-      });
-      if (replay) {
-        if (
-          safePositiveAmount(replay.amountVnd) !== input.amountVnd ||
-          replay.reason !== input.reason
-        ) {
-          throw new RefundCommandError('REFUND_IDEMPOTENCY_CONFLICT');
-        }
-        return result(replay, true);
-      }
-      if (payment.version !== input.expectedPaymentVersion) {
-        throw new RefundCommandError('PAYMENT_VERSION_CONFLICT');
-      }
-      const totals = await transaction.refund.groupBy({
-        by: ['status'],
-        where: {
-          paymentAttemptId: payment.id,
-          status: { in: ['REQUESTED', 'PROCESSING', 'SUCCEEDED', 'REVIEW_REQUIRED'] },
-          storeId: context.storeId,
-        },
-        _sum: { amountVnd: true },
-      });
-      const amountFor = (statuses: readonly RefundStatus[]) =>
-        totals
-          .filter((item) => statuses.includes(item.status))
-          .reduce((sum, item) => sum + Number(item._sum.amountVnd ?? 0n), 0);
-      try {
-        assertRefundAmountAllowed({
-          capturedAmountVnd: safePositiveAmount(payment.amountVnd),
-          inFlightRefundAmountVnd: amountFor(['REQUESTED', 'PROCESSING', 'REVIEW_REQUIRED']),
-          requestedAmountVnd: input.amountVnd,
-          succeededRefundAmountVnd: amountFor(['SUCCEEDED']),
-        });
-      } catch (error) {
-        if (error instanceof PaymentInvariantError) {
-          throw new RefundCommandError(
-            error.code === 'REFUND_AMOUNT_EXCEEDS_AVAILABLE'
-              ? 'REFUND_AMOUNT_EXCEEDS_AVAILABLE'
-              : 'REFUND_AMOUNT_INVALID',
-          );
-        }
-        throw error;
-      }
-      const id = randomUUID();
-      const refund = await transaction.refund.create({
-        data: {
-          amountVnd: input.amountVnd,
-          id,
-          idempotencyKeyHash: keyHash,
-          orderId: payment.orderId,
-          paymentAttemptId: payment.id,
-          publicRefundNumber: `RFD-${id.replaceAll('-', '').toUpperCase()}`,
-          reason: input.reason,
-          requestedBy: context.actor.id,
-          status: 'REQUESTED',
-          storeId: context.storeId,
-        },
-        include: { order: true, paymentAttempt: { include: { channel: true } } },
-      });
-      await transaction.refundTransition.create({
-        data: {
-          actorId: context.actor.id,
-          actorType: 'ADMIN',
-          correlationId: context.correlationId,
-          event: 'CREATE',
-          fromStatus: null,
-          reason: input.reason,
-          refundId: refund.id,
-          source: 'ADMIN',
-          storeId: context.storeId,
-          toStatus: 'REQUESTED',
-        },
-      });
-      await appendOutboxMessageInTransaction(
-        transaction,
-        { ...context, storeId: refund.storeId },
-        {
-          aggregateId: refund.id,
-          aggregateType: 'REFUND',
-          eventType: REFUND_CREATE_EVENT_TYPE,
-          eventVersion: 1,
-          idempotencyKey: `${REFUND_CREATE_EVENT_TYPE}:${refund.id}`,
-          maxAttempts: 1,
-          payload: { refund_id: refund.id, store_id: refund.storeId },
-        },
-      );
-      await transaction.auditLog.create({
-        data: {
-          action: 'payment.refund.requested',
-          actorId: context.actor.id,
-          actorType: 'ADMIN',
-          afterData: {
-            amount_vnd: input.amountVnd,
-            payment_attempt_id: payment.id,
-            public_refund_number: refund.publicRefundNumber,
-            status: refund.status,
-          },
-          correlationId: context.correlationId,
-          reason: input.reason,
-          storeId: context.storeId,
-          targetId: refund.id,
-          targetType: 'refund',
-        },
-      });
-      return result(refund, false);
-    },
+    (transaction) => createRefundInTransaction(transaction, context, input),
     { isolationLevel: 'Serializable', timeout: 15_000 },
   );
 }
@@ -484,6 +530,7 @@ export function applyRefundProviderFact(
         source: input.source,
         toStatus: nextStatus,
       });
+      await ensureAfterSaleRefundSyncMessage(transaction, context, updated);
       return result(updated, false);
     }
     if (refund.status === 'SUCCEEDED') {
@@ -534,6 +581,7 @@ export function applyRefundProviderFact(
       source: input.source,
       toStatus: nextStatus,
     });
+    await ensureAfterSaleRefundSyncMessage(transaction, context, updated);
     if (nextStatus === 'PROCESSING') await ensureQueryMessage(transaction, context, updated);
     if (nextStatus === 'SUCCEEDED') {
       const aggregate = await transaction.refund.aggregate({
@@ -585,6 +633,7 @@ export function markRefundReviewRequired(
       source: 'SYSTEM',
       toStatus: nextStatus,
     });
+    await ensureAfterSaleRefundSyncMessage(transaction, context, updated);
     return result(updated, false);
   });
 }

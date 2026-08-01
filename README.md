@@ -2,7 +2,7 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5-M5.7 已加入 Zalo Checkout、GHN、退款及本地补偿底座，但真实凭据、沙箱、结算、COD 回款和真机仍未验收。M6.1/M6.2、M6.3-A/B0/B1/B2a 与 B2b-D0-D5 的各自 repository/local-test 边界已经完成。M6.3-B3 三条售后申请/取消/商家主动退款命令、B4 管理员审核/人工复核与 SYSTEM 寄回到期，以及 B5 会员返件登记/管理员可信物流事实与待验收读取也已完成 default-disabled repository implementation + local/test validation；这些能力只返回稳定 acknowledgement、读取投影或追加受限事实，production 配置与服务层均拒绝启用。B2/B2b 整体、B6-B7、M6.3、M6、M6 UI 与 P0 仍未完成；所有生产政策/enforcement、TTL、对象存储、真实供应商、部署和 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。当前没有真实物流 provider、返件验收、真实退款/COD 结算、库存恢复或换货履约运行时，不能把 B3-B5 的本地仓库完成状态表述为完整售后或生产就绪。生产依赖审计另保留 3 项 React Router moderate 公告，不得写成零漏洞。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5-M5.7 已加入 Zalo Checkout、GHN、退款及本地补偿底座，但真实凭据、沙箱、结算、COD 回款和真机仍未验收。M6.1/M6.2、M6.3-A/B0/B1/B2a 与 B2b-D0-D5 的各自 repository/local-test 边界已经完成。M6.3-B3 三条售后申请/取消/商家主动退款命令、B4 管理员审核/人工复核与 SYSTEM 寄回到期、B5 会员返件登记/管理员可信物流事实与待验收读取，以及 B6 ONLINE 售后退款权威协调也已完成 default-disabled repository implementation + local/test validation；这些能力只返回稳定投影或追加受限事实，production 配置与服务层均拒绝启用。B2/B2b 整体、B7、M6.3、M6、M6 UI 与 P0 仍未完成；所有生产政策/enforcement、TTL、对象存储、真实供应商、部署和 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。当前没有真实物流 provider、返件验收、真实支付商退款验收、COD 结算、库存恢复或换货履约运行时，不能把 B3-B6 的本地仓库完成状态表述为完整售后或生产就绪。生产依赖审计另保留 3 项 React Router moderate 公告，不得写成零漏洞。
 
 M6.3-B2b-D1 已完成专用 `AfterSaleEvidenceObjectStorageProvider`、默认失败关闭配置、本地/测试
 MinIO 独立 bucket 与 upload/read/delete 最小 IAM，以及真实对象长度、SHA-256、Content-Type 和
@@ -633,6 +633,24 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   `docs/reports/m6.3-b5-return-trust-completion-report.md`。B5 的局部完成不构成 B2/B2b、B6-B7、M6.3、
   M6、P0 或生产就绪。
 
+## M6.3-B6 ONLINE 售后退款权威协调
+
+- 已注册默认关闭的管理员 `POST /v1/admin/after-sales/{afterSaleId}/refund`。请求只接受确认词、
+  expected version 与 reason；退款金额、支付分支、商城和可退款容量均由服务端锁定并重算，客户端
+  `amount_vnd` 等附加字段由严格 DTO 拒绝。
+- 写入前要求目标商城直接 `store.after-sales.review`、`store.refunds.create`、
+  `store.after-sales.read` 和 `store.refunds.read` 以及近期 MFA；任一 cross-access-only 授权均不能替代
+  目标商城直接权限。共享订单退款锁等待后，同一事务以 `FOR SHARE` 锁定并最终重验商城、管理员、
+  session/MFA、Bearer、角色分配和四项直接权限；等待期间撤权必须在首笔业务写入前原子返回 403。
+- ONLINE settlement、transaction-scoped M5 refund、唯一售后 link、M5/售后 transition、审计和
+  `after-sale.refund.sync` outbox 在同一 `Serializable` 事务提交。服务端用 M5 权威退款状态把售后收敛到
+  成功、失败、取消或人工复核；重复、乱序、金额/商城/link/version 不一致和不确定结果均幂等或失败关闭。
+- B6 复用 M6.2/B0 既有表、RLS、SYSTEM transition 和完整性 guard，不新增迁移。应用回滚保持命令关闭并
+  继续收敛已提交退款事实，不能删除或逆转 settlement/refund/outbox。完整范围见
+  `docs/plans/m6.3-b6-online-refund-plan.md`，最终证据见
+  `docs/reports/m6.3-b6-online-refund-completion-report.md`。B6 不包含真实 provider、COD、返件验收、库存
+  恢复、换货、UI 或生产 rollout；B2/B2b、B7、M6.3、M6 与 P0 继续未完成。
+
 ## 环境与密钥
 
 - `.env.example` 和 `.env.test.example` 只包含本地开发占位凭据。
@@ -657,6 +675,8 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   和 interval 只控制 local/test worker，不是生产 SLA 或政策批准。
 - `AFTER_SALE_RETURN_COMMANDS_ENABLED` 独立默认 `false` 且 production 明确禁止开启；local/test 开启
   只允许验证会员返件登记和受审管理员物流事实，不代表真实物流、验收或库存/资金动作可用。
+- `AFTER_SALE_REFUND_COMMANDS_ENABLED` 独立默认 `false` 且 production 明确禁止开启；local/test 开启
+  只验证 B6 ONLINE settlement/M5 refund/outbox 协调，不代表真实支付商退款或生产结算已验收。
 - 日志默认遮盖认证、Cookie 和 Zalo Token 请求头。
 - `ZALO_IDENTITY_PROVIDER=test` 只允许 `NODE_ENV=test`；生产环境会拒绝启动该 provider。
 - `PAYMENT_PROVIDER=test` 同样只允许 `NODE_ENV=test` 且需要专用测试密钥；development/production 默认并应保持 `disabled`。真实适配器从商城 `private_key_secret_ref` 解析部署密钥，`env:ZALO_CHECKOUT_*` 只是受限的本地/部署 resolver 示例，不是把密钥写入仓库。

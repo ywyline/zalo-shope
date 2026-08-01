@@ -5,8 +5,8 @@
 > local/test scanner worker validation、B2b-D3 repository implementation + local/test member
 > evidence HTTP validation 与 B2b-D4 repository implementation + local/test deletion worker validation
 > 以及 B2b-D5 default-disabled repository implementation + local/test protected-read validation 已完成；
-> B3、B4 与 B5 default-disabled repository implementation + local/test validation 也已 `COMPLETE`。
-> B2/B2b、B6-B7、M6.3 与 UI 未完成；生产策略、TTL、对象存储、真实供应商、部署和 rollout 为
+> B3、B4、B5 与 B6 default-disabled repository implementation + local/test validation 也已 `COMPLETE`。
+> B2/B2b、B7、M6.3 与 UI 未完成；生产策略、TTL、对象存储、真实供应商、部署和 rollout 为
 > `NOT_AUTHORIZED / NOT_RUN` 并保持失败关闭
 >
 > 日期：2026-07-31
@@ -476,6 +476,8 @@ SCAN_TEMPORARY`。父表使用 `(store_id,evidence_file_id)` 复合外键，表�
 - 本节在 B0 仅冻结 B6/B7 的数据与协调设计。B0 不提取 M5 transaction-scoped refund 原语、不注册
   售后退款 coordinator，也不开放 ONLINE Refund 或 COD 到账确认运行时；表和 guard 存在不等于资金
   流程可用。
+- 后续 B6 已在 default-disabled repository/local-test 边界提取 transaction-scoped M5 refund 原语、注册
+  ONLINE 命令和权威同步 coordinator；B7 COD、真实 provider/凭据、部署和生产启用仍未完成。
 - `after_sale_settlements` 保存全局唯一且不可猜的 `public_settlement_number`、售后单、方式、批准金额、
   状态、版本、幂等 hash、申请/确认 actor 和时间；内部主键不作为管理工作台命令标识。
 - settlement 冗余不可变 `order_id`；部分唯一索引保证 `(store_id, after_sale_id, method)` 最多一个
@@ -690,8 +692,8 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   `GET/PUT /v1/admin/after-sale-policies/{policyCode}`、
   `GET /v1/admin/after-sale-policies/{policyCode}/versions`、
   `GET /v1/admin/after-sale-policies/{policyCode}/versions/{versionNumber}`、`POST .../publish` 和 `POST .../disable`。
-  B2b 其余能力和 B6-B7 路由仍为 contract-only 或失败关闭；B3 三条路由、B4 两条管理员审核路由和
-  B5 两条返件命令已在 repository/local-test 默认关闭条件下实现，当前边界见第 17-19 节。
+  B2b 其余能力和 B7 路由仍为 contract-only 或失败关闭；B3 三条路由、B4 两条管理员审核路由、
+  B5 两条返件命令与 B6 ONLINE 退款协调已在 repository/local-test 默认关闭条件下实现，当前边界见第 17-20 节。
 - head 列表固定 `(updated_at DESC,id DESC)`，version 列表固定 `(published_at DESC,id DESC)`。两者先读 `limit + 1` 个微秒 page key，
   再对白名单 ID 投影；游标绑定管理员、商城、资源、筛选及 policy code，不能跨资源/跨 policy 重放。
 - 草稿创建仅允许 `expected_version=0`；更新、发布和停用要求精确正版本。写命令的幂等 key 只保存 SHA-256，范围为
@@ -965,3 +967,20 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   `down.sql` 仅允许没有 B5 operation、可信返件状态、transition 或 audit 的 local/test；存在事实以
   SQLSTATE `55000` fail-fast。B5 不调用真实物流商，不实现验收、库存恢复、退款/COD、换货、UI、部署
   或 rollout；这些范围仍为 `NOT_AUTHORIZED / NOT_RUN`。
+
+## 20. M6.3-B6 ONLINE 退款协调数据边界
+
+- B6 不新增表、列、枚举或迁移，复用 `after_sale_settlements` 的 `ONLINE_ORIGINAL`、现有 M5
+  `refunds/refund_transitions` 和唯一 `after_sale_refunds` link。link 的商城、订单、payment attempt、
+  settlement、refund 与金额必须在同一事务内一致，不能把售后表当作第二套退款账。
+- `POST /v1/admin/after-sales/{afterSaleId}/refund` 只使用服务端 `approved_total_vnd`，不接受客户端金额、
+  payment branch、状态或 provider reference。请求通过 `QUEUE_REFUND -> REFUND_REQUESTED` 后创建/链接
+  M5 refund，settlement 先 `PENDING` 再投影 `PROCESSING`，并追加 versioned `after-sale.refund.sync` outbox。
+- 命令只读取得售后所属订单后，先取得既有 `m62-refund:{store}:{order}` advisory lock，再依次锁订单、
+  唯一成功支付与售后聚合；不得先持有售后行再等待 M5 订单退款锁。商城、管理员、session/MFA、角色分配和
+  四项直接权限在同一事务以 `FOR SHARE` 锁定并于首笔业务写入前最终重验，权限撤销与命令提交形成明确串行顺序。
+- sync payload 仅包含 `store_id/refund_id/refund_version`；worker 重读并锁定 M5 refund/link/settlement，
+  以最新 M5 status 收敛 `SUCCEEDED/FAILED/CANCELLED/REVIEW_REQUIRED`。UNKNOWN、未来版本、金额/link/
+  payment/store 不一致不标记成功；缺少最新版本消息可由命令 replay 或 M5 provider fact 补发。
+- B6 的 settlement/refund/outbox/transition/audit 是不可逆资金事实。能力回滚只关闭新命令并保留兼容
+  worker；local/test 之外不执行 down 清理，真实 provider、COD、验收、库存恢复和换货仍不属于本阶段。

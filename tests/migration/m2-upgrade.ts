@@ -305,7 +305,12 @@ async function expectSqlState(
       ? (candidate.meta as Record<string, unknown>)
       : undefined;
   if (candidate.code !== 'P2010' || metadata?.code !== expectedSqlState) {
-    fail(`${context} did not return SQLSTATE ${expectedSqlState}`);
+    fail(
+      `${context} did not return SQLSTATE ${expectedSqlState}: ${JSON.stringify({
+        code: candidate.code,
+        meta: candidate.meta,
+      })}`,
+    );
   }
 }
 

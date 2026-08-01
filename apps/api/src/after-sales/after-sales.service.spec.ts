@@ -3,7 +3,11 @@ import { createHash } from 'node:crypto';
 import { ServiceUnavailableException } from '@nestjs/common';
 import type { RuntimeConfig } from '@zalo-shop/config';
 import type * as DatabaseModule from '@zalo-shop/database';
-import { AfterSaleCommandDatabaseError, type PrismaClient } from '@zalo-shop/database';
+import {
+  AfterSaleCommandDatabaseError,
+  AfterSaleRefundCommandError,
+  type PrismaClient,
+} from '@zalo-shop/database';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminService } from '../admin/admin.service';
@@ -17,6 +21,7 @@ const commandMocks = vi.hoisted(() => ({
   createMember: vi.fn(),
   createMerchant: vi.fn(),
   recordReturnFact: vi.fn(),
+  requestOnlineRefund: vi.fn(),
   resolveReview: vi.fn(),
   review: vi.fn(),
   submitReturn: vi.fn(),
@@ -31,6 +36,7 @@ vi.mock('@zalo-shop/database', async () => {
     createMemberAfterSaleCommand: commandMocks.createMember,
     createMerchantRefundAfterSaleCommand: commandMocks.createMerchant,
     recordAfterSaleReturnFact: commandMocks.recordReturnFact,
+    requestAfterSaleOnlineRefund: commandMocks.requestOnlineRefund,
     resolveAfterSaleReviewCommand: commandMocks.resolveReview,
     reviewAfterSaleCommand: commandMocks.review,
     submitMemberAfterSaleReturn: commandMocks.submitReturn,
@@ -62,6 +68,7 @@ function acknowledgement(
     | 'CANCELLED'
     | 'INSPECTION_PENDING'
     | 'PENDING_REVIEW'
+    | 'REFUND_PROCESSING'
     | 'REJECTED'
     | 'RETURN_IN_TRANSIT'
     | 'RETURN_PENDING'
@@ -82,6 +89,7 @@ function commandResult(
     | 'CANCELLED'
     | 'INSPECTION_PENDING'
     | 'PENDING_REVIEW'
+    | 'REFUND_PROCESSING'
     | 'REJECTED'
     | 'RETURN_IN_TRANSIT'
     | 'RETURN_PENDING'
@@ -104,6 +112,7 @@ function enabledConfig(): RuntimeConfig {
     AFTER_SALE_COMMANDS_ENABLED: true,
     AFTER_SALE_REVIEW_COMMANDS_ENABLED: true,
     AFTER_SALE_RETURN_COMMANDS_ENABLED: true,
+    AFTER_SALE_REFUND_COMMANDS_ENABLED: true,
     AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: true,
     AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: true,
     AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS: 30 * 24 * 60 * 60,
@@ -122,6 +131,7 @@ function commandOnlyConfig(): RuntimeConfig {
     AFTER_SALE_COMMANDS_ENABLED: true,
     AFTER_SALE_REVIEW_COMMANDS_ENABLED: true,
     AFTER_SALE_RETURN_COMMANDS_ENABLED: true,
+    AFTER_SALE_REFUND_COMMANDS_ENABLED: true,
     AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: false,
     AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: false,
     AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED: false,
@@ -157,7 +167,15 @@ function harness(config = enabledConfig()) {
     storeCode: 'beauty-local',
     storeId: STORE_ID,
   });
-  const admin = { authorizeSensitive } as unknown as AdminService;
+  const authorize = vi.fn().mockResolvedValue({
+    adminAuthorizationScope: 'STORE',
+    actor: { id: ADMIN_ID, type: 'admin' },
+    correlationId: 'admin-command-correlation',
+    locale: 'vi',
+    storeCode: 'beauty-local',
+    storeId: STORE_ID,
+  });
+  const admin = { authorize, authorizeSensitive } as unknown as AdminService;
   const project = vi.fn();
   const projector = { project } as unknown as AfterSalesProjector;
   const consume = vi.fn();
@@ -171,7 +189,7 @@ function harness(config = enabledConfig()) {
     rateLimiter,
     config,
   );
-  return { admin, auth, authorizeSensitive, consume, project, rateLimiter, service };
+  return { admin, auth, authorize, authorizeSensitive, consume, project, rateLimiter, service };
 }
 
 describe('AfterSalesService B3 commands', () => {
@@ -184,6 +202,11 @@ describe('AfterSalesService B3 commands', () => {
     commandMocks.review.mockResolvedValue(commandResult('APPROVED', 2));
     commandMocks.submitReturn.mockResolvedValue(commandResult('RETURN_PENDING', 3));
     commandMocks.recordReturnFact.mockResolvedValue(commandResult('RETURN_IN_TRANSIT', 4));
+    commandMocks.requestOnlineRefund.mockResolvedValue({
+      ...commandResult('REFUND_PROCESSING', 3),
+      refundId: '90000000-0000-4000-8000-000000000001',
+      settlementId: '91000000-0000-4000-8000-000000000001',
+    });
   });
 
   it('creates a member case with stable detail digest, encrypted detail and all capabilities', async () => {
@@ -714,5 +737,125 @@ describe('AfterSalesService B3 commands', () => {
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(commandMocks.submitReturn).not.toHaveBeenCalled();
     expect(commandMocks.recordReturnFact).not.toHaveBeenCalled();
+  });
+
+  it('requires direct target-store refund and read scopes before projecting an ONLINE refund', async () => {
+    const { authorize, authorizeSensitive, project, service } = harness(commandOnlyConfig());
+    commandMocks.withStoreTransaction.mockImplementation(
+      (_client: unknown, _context: unknown, callback: (transaction: unknown) => unknown) =>
+        callback({
+          afterSale: {
+            findFirst: vi.fn().mockResolvedValue({ storeId: STORE_ID }),
+          },
+        }),
+    );
+    project.mockReturnValue({ id: AFTER_SALE_ID });
+
+    await expect(
+      service.adminRequestOnlineRefund({
+        afterSaleId: AFTER_SALE_ID,
+        body: {
+          confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
+          expected_version: 2,
+          reason: 'Issue the approved online refund after the final review.',
+        },
+        headers: {
+          accessToken: 'admin-token',
+          correlationId: 'online-refund-correlation',
+          storeCode: 'beauty-local',
+        },
+        idempotencyKey: 'online-refund-idempotency-key',
+        query: { store_id: STORE_ID },
+      }),
+    ).resolves.toEqual({ body: { id: AFTER_SALE_ID }, replayed: false });
+
+    expect(authorizeSensitive).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      STORE_ID,
+      'store.after-sales.review',
+    );
+    expect(authorizeSensitive).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      STORE_ID,
+      'store.refunds.create',
+    );
+    expect(authorize).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      STORE_ID,
+      'store.after-sales.read',
+    );
+    expect(authorize).toHaveBeenNthCalledWith(2, expect.anything(), STORE_ID, 'store.refunds.read');
+    expect(commandMocks.requestOnlineRefund).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ adminAuthorizationScope: 'STORE' }),
+      expect.objectContaining({ afterSaleId: AFTER_SALE_ID, expectedVersion: 2 }),
+    );
+  });
+
+  it('rejects a cross-store refund-create authorization even when review is direct', async () => {
+    const { authorizeSensitive, service } = harness(commandOnlyConfig());
+    authorizeSensitive.mockResolvedValueOnce({
+      adminAuthorizationScope: 'STORE',
+      actor: { id: ADMIN_ID, type: 'admin' },
+      correlationId: 'admin-command-correlation',
+      locale: 'vi',
+      storeCode: 'beauty-local',
+      storeId: STORE_ID,
+    });
+    authorizeSensitive.mockResolvedValueOnce({
+      adminAuthorizationScope: 'CROSS_STORE',
+      actor: { id: ADMIN_ID, type: 'admin' },
+      correlationId: 'admin-command-correlation',
+      locale: 'vi',
+      storeCode: 'beauty-local',
+      storeId: STORE_ID,
+    });
+
+    await expect(
+      service.adminRequestOnlineRefund({
+        afterSaleId: AFTER_SALE_ID,
+        body: {
+          confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
+          expected_version: 2,
+          reason: 'Issue the approved online refund after the final review.',
+        },
+        headers: {
+          accessToken: 'admin-token',
+          correlationId: 'online-refund-cross-scope',
+          storeCode: 'beauty-local',
+        },
+        idempotencyKey: 'online-refund-cross-scope-key',
+        query: { store_id: STORE_ID },
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(commandMocks.requestOnlineRefund).not.toHaveBeenCalled();
+  });
+
+  it('maps a final ONLINE refund authorization recheck failure to the public 403 boundary', async () => {
+    const { service } = harness(commandOnlyConfig());
+    commandMocks.requestOnlineRefund.mockRejectedValueOnce(
+      new AfterSaleRefundCommandError('AFTER_SALE_AUTHORIZATION_DENIED'),
+    );
+
+    await expect(
+      service.adminRequestOnlineRefund({
+        afterSaleId: AFTER_SALE_ID,
+        body: {
+          confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
+          expected_version: 2,
+          reason: 'Issue the approved online refund after the final review.',
+        },
+        headers: {
+          accessToken: 'admin-token',
+          correlationId: 'online-refund-final-authorization',
+          storeCode: 'beauty-local',
+        },
+        idempotencyKey: 'online-refund-final-authorization-key',
+        query: { store_id: STORE_ID },
+      }),
+    ).rejects.toMatchObject({ status: 403 });
   });
 });

@@ -7,8 +7,8 @@
 > local/test deletion worker validation、B2b-D5 default-disabled repository implementation +
 > local/test protected-read validation `COMPLETE`，适用 repository/local-test 门禁 `PASS`；
 > B3 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且适用门禁
-> `PASS`；B4 与 B5 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且
-> 适用门禁 `PASS`；B2/B2b、B6-B7、M6.3、UI 与生产启用仍未完成。生产策略、TTL、对象存储、真实供应商、部署和 rollout 均为
+> `PASS`；B4、B5 与 B6 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且
+> 适用门禁 `PASS`；B2/B2b、B7、M6.3、UI 与生产启用仍未完成。生产策略、TTL、对象存储、真实供应商、部署和 rollout 均为
 > `NOT_AUTHORIZED / NOT_RUN` 并保持失败关闭
 >
 > 日期：2026-07-31
@@ -36,10 +36,13 @@ B4 随后复用同一目标商城直接 `store.after-sales.review`、近期 MFA 
 初审和 manual/legacy review 解决；商家主动退款要求不同管理员复核。独立 SYSTEM 到期 worker 不增加
 STORE 权限或生产角色授权，只能使用固定 `after-sale-transition` scope 追加 `RETURN_EXPIRED`。
 B5 再复用会员 owner scope 与目标商城直接 review 权限，开放默认关闭的会员返件登记和管理员可信
-`IN_TRANSIT/DELIVERED` 事实；它不新增权限 code 或生产角色授权。
+`IN_TRANSIT/DELIVERED` 事实；B6 随后在独立退款命令开关下完成 ONLINE settlement、M5 refund/link、
+transition/audit/outbox 原子协调与 provider 结果同步。B6 要求四项目标商城直接权限：
+`store.after-sales.review`、`store.refunds.create`、`store.after-sales.read` 和 `store.refunds.read`，
+cross-access-only 不能替代任一项；它不新增权限 code 或生产角色授权。
 本矩阵中除明确标为 M6.3-A、B1、B2a、D0 数据层、D1 local/test storage、D2 local/test 内部扫描、
 D3 local/test 会员 HTTP、D4 local/test 内部删除 worker、D5 local/test 保护读取、B3 默认关闭写命令、
-B4 默认关闭审核/到期或 B5 默认关闭返件可信事实的动作外，其余动作行是 B0 已冻结、等待完整 B2b/B6-B7 或后续里程碑另行授权
+B4 默认关闭审核/到期、B5 默认关闭返件可信事实或 B6 默认关闭 ONLINE 退款协调的动作外，其余动作行是 B0 已冻结、等待完整 B2b/B7 或后续里程碑另行授权
 实施的契约，不代表按钮、
 API、worker 或生产角色授权已经交付。
 B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transaction actor，不是可授予管理员
@@ -67,28 +70,29 @@ B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transac
 
 ## 2. 售后动作矩阵
 
-| 动作                 | 必要权限                                                | 额外控制                                                                                                                                    |
-| -------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| 管理售后列表/详情    | `store.after-sales.read`                                | B1 已实现；中央商城授权 + 显式 store scope + FORCE RLS、签名游标/locale/限流、严格 select/no-store                                          |
-| 查看凭证             | `store.after-sales.evidence.read`                       | D5 default-disabled repository/local-test `COMPLETE`；admin 当前商城 scope、跨商城 AccessReason、READ 限流、提交截止重验和逐次审计          |
-| 审批/拒绝            | `store.after-sales.review`                              | B4 契约；近期 MFA、确认词、reason、expected version、幂等键、逐行 approved_quantity                                                         |
-| 旧订单一次性例外决定 | `store.after-sales.review`                              | 当前管理员、未污染初态、policy basis、无副作用且只能一次                                                                                    |
-| 创建商家主动退款售后 | 目标商城直接 `store.after-sales.review`                 | B3 default-disabled repository/local-test `COMPLETE`；cross-access-only 失败关闭；同政策/权威 ONLINE 收款、服务端金额、近期 MFA、幂等和审计 |
-| 解决人工复核         | 原动作权限 + `store.after-sales.review`                 | 恢复同类型记录状态；仅无任何副作用的早期状态可拒绝                                                                                          |
-| 发起 ONLINE 退款     | `store.after-sales.review` + `store.refunds.create`     | 仅 B6 设计；复用 M5 transaction/capacity/outbox，B0 不开放运行时                                                                            |
-| 查询 ONLINE 退款     | `store.after-sales.read` + `store.refunds.read`         | 仅 B6 设计；不返回完整供应商引用或原始响应                                                                                                  |
-| 返件验收             | `store.after-sales.inspect`                             | 整体延至 M6.4；须与 exactly-once 库存恢复一并授权，B 不开放写路由                                                                           |
-| 恢复可售库存         | `store.after-sales.inspect` + `store.inventory.adjust`  | M6.4；仅验收可售数量、稳定 operation key、同事务审计                                                                                        |
-| 创建换货             | `store.after-sales.exchange`                            | 同 SPU 等量 SKU、库存预留、近期 MFA、幂等                                                                                                   |
-| 换货运单             | `store.after-sales.exchange` + `store.shipments.create` | purpose=EXCHANGE_OUTBOUND，不推进原订单                                                                                                     |
-| COD 退款申请         | `store.after-sales.cod-refunds.request`                 | 仅 B7 设计；近期 MFA、服务端金额、真实转账证明入口缺失时保持 PENDING/REVIEW_REQUIRED                                                        |
-| COD 退款确认         | `store.after-sales.cod-refunds.confirm`                 | 仅 B7 设计；公开号、异人复核、近期 MFA；真实证明适配入口前不开放成功按钮                                                                    |
-| 政策/历史查看        | `store.after-sales.policy.read`                         | B2a 已实现；当前商城、签名微秒游标、不可变版本复验、ADMIN READ 限流/no-store                                                                |
-| 设置/readiness 查看  | `store.after-sales.policy.read`                         | M6.3-A 已实现；令牌/Header/查询一致；平台跨商城需 AccessReason                                                                              |
-| 政策草稿             | `store.after-sales.policy.manage`                       | B2a 已实现；严格三语/规范 hash、商城目标、expected version、24h 幂等、ADMIN WRITE 限流与审计                                                |
-| 政策发布             | `store.after-sales.policy.publish`                      | B2a 已实现；近期 MFA、确认词/reason、不可变版本、目标冲突与 enforcement readiness 同事务                                                    |
-| 政策停用             | `store.after-sales.policy.disable`                      | B2a 已实现；近期 MFA、确认词/reason、只移除当前投影，历史版本/快照保持可读且 readiness 失败回滚                                             |
-| 快照强制开关         | `store.after-sales.policy.enforce`                      | M6.3-A；MFA/确认/reason/expected version；跨店 AccessReason；24h 商城幂等；精确 before/after 审计                                           |
+| 动作                 | 必要权限                                                                                                           | 额外控制                                                                                                                                    |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 管理售后列表/详情    | `store.after-sales.read`                                                                                           | B1 已实现；中央商城授权 + 显式 store scope + FORCE RLS、签名游标/locale/限流、严格 select/no-store                                          |
+| 查看凭证             | `store.after-sales.evidence.read`                                                                                  | D5 default-disabled repository/local-test `COMPLETE`；admin 当前商城 scope、跨商城 AccessReason、READ 限流、提交截止重验和逐次审计          |
+| 审批/拒绝            | `store.after-sales.review`                                                                                         | B4 契约；近期 MFA、确认词、reason、expected version、幂等键、逐行 approved_quantity                                                         |
+| 旧订单一次性例外决定 | `store.after-sales.review`                                                                                         | 当前管理员、未污染初态、policy basis、无副作用且只能一次                                                                                    |
+| 创建商家主动退款售后 | 目标商城直接 `store.after-sales.review`                                                                            | B3 default-disabled repository/local-test `COMPLETE`；cross-access-only 失败关闭；同政策/权威 ONLINE 收款、服务端金额、近期 MFA、幂等和审计 |
+| 解决人工复核         | 原动作权限 + `store.after-sales.review`                                                                            | 恢复同类型记录状态；仅无任何副作用的早期状态可拒绝                                                                                          |
+| 记录可信返件物流事实 | 目标商城直接 `store.after-sales.review`                                                                            | B5 default-disabled repository/local-test `COMPLETE`；近期 MFA、确认词/reason、aggregate/返件双版本、幂等/审计；只接受 IN_TRANSIT/DELIVERED |
+| 发起 ONLINE 退款     | 目标商城直接 `store.after-sales.review` + `store.refunds.create` + `store.after-sales.read` + `store.refunds.read` | B6 default-disabled repository/local-test `COMPLETE`；近期 MFA、严格 DTO、服务端金额、M5 capacity/outbox；cross-access-only 失败关闭        |
+| 查询 ONLINE 退款     | `store.after-sales.read` + `store.refunds.read`                                                                    | B6 复用售后完整投影；只返回受限供应商状态摘要，不返回完整供应商引用或原始响应                                                               |
+| 返件验收             | `store.after-sales.inspect`                                                                                        | 整体延至 M6.4；须与 exactly-once 库存恢复一并授权，B 不开放写路由                                                                           |
+| 恢复可售库存         | `store.after-sales.inspect` + `store.inventory.adjust`                                                             | M6.4；仅验收可售数量、稳定 operation key、同事务审计                                                                                        |
+| 创建换货             | `store.after-sales.exchange`                                                                                       | 同 SPU 等量 SKU、库存预留、近期 MFA、幂等                                                                                                   |
+| 换货运单             | `store.after-sales.exchange` + `store.shipments.create`                                                            | purpose=EXCHANGE_OUTBOUND，不推进原订单                                                                                                     |
+| COD 退款申请         | `store.after-sales.cod-refunds.request`                                                                            | 仅 B7 设计；近期 MFA、服务端金额、真实转账证明入口缺失时保持 PENDING/REVIEW_REQUIRED                                                        |
+| COD 退款确认         | `store.after-sales.cod-refunds.confirm`                                                                            | 仅 B7 设计；公开号、异人复核、近期 MFA；真实证明适配入口前不开放成功按钮                                                                    |
+| 政策/历史查看        | `store.after-sales.policy.read`                                                                                    | B2a 已实现；当前商城、签名微秒游标、不可变版本复验、ADMIN READ 限流/no-store                                                                |
+| 设置/readiness 查看  | `store.after-sales.policy.read`                                                                                    | M6.3-A 已实现；令牌/Header/查询一致；平台跨商城需 AccessReason                                                                              |
+| 政策草稿             | `store.after-sales.policy.manage`                                                                                  | B2a 已实现；严格三语/规范 hash、商城目标、expected version、24h 幂等、ADMIN WRITE 限流与审计                                                |
+| 政策发布             | `store.after-sales.policy.publish`                                                                                 | B2a 已实现；近期 MFA、确认词/reason、不可变版本、目标冲突与 enforcement readiness 同事务                                                    |
+| 政策停用             | `store.after-sales.policy.disable`                                                                                 | B2a 已实现；近期 MFA、确认词/reason、只移除当前投影，历史版本/快照保持可读且 readiness 失败回滚                                             |
+| 快照强制开关         | `store.after-sales.policy.enforce`                                                                                 | M6.3-A；MFA/确认/reason/expected version；跨店 AccessReason；24h 商城幂等；精确 before/after 审计                                           |
 
 任何退款、库存恢复或换货命令都不能仅凭前端隐藏按钮保护。权限不足、令牌/Header 商城不一致或
 跨商城对象统一失败，不能泄漏对象是否存在于其他商城。
@@ -336,8 +340,8 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
 - B2a 不改变会员权限。B1 会员仍仅能通过本人售后投影读取已绑定历史政策；不得访问管理草稿路由。新迁移没有改写 RLS，
   不会因政策停用或新版本发布而让历史售后不可读。
 - 定向权限/限流/契约单测、完整 integration 29 个文件/234 项、M2→current 42 段迁移、`verify`、OpenAPI 结构检查、生产依赖/Gitleaks 与
-  独立高风险复审均通过，因此 B2a 仓库实施为 `COMPLETE`。目标库仍须逐库 preflight；后续 B3/B4
-  default-disabled repository/local-test 边界已完成，但 B2/B2b、B5-B7、M6.3、UI、生产政策/
+  独立高风险复审均通过，因此 B2a 仓库实施为 `COMPLETE`。目标库仍须逐库 preflight；后续 B3/B4/B5/B6
+  default-disabled repository/local-test 边界已完成，但 B2/B2b、B7、M6.3、UI、生产政策/
   enforcement/部署继续未完成或未授权且失败关闭。
 
 ## 10. B2b-D0 授权与当前边界
@@ -551,3 +555,21 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
 - `AFTER_SALE_RETURN_COMMANDS_ENABLED=false` 是独立默认关闭门禁，production 配置与 service 双重拒绝
   启用。真实物流 provider、验收、库存恢复、退款/COD、换货履约、UI、部署与 rollout 均为
   `NOT_AUTHORIZED / NOT_RUN`。
+
+## 19. B6 ONLINE 退款协调授权边界
+
+- `POST /v1/admin/after-sales/{afterSaleId}/refund` 在写入前同时校验目标商城直接
+  `store.after-sales.review`、`store.refunds.create`、`store.after-sales.read` 和 `store.refunds.read`，
+  并要求近期 MFA、有效 session/Bearer 和 ADMIN WRITE 限流。四项权限互不隐含，任一项只有
+  `platform.stores.cross_access` 时均拒绝；写入后使用已校验的 store context 投影，避免事实提交后才失败。
+- 服务层预检不是最终授权。命令在共享订单退款锁以及订单、支付和售后锁之后，于同一 Serializable 事务用
+  `FOR SHARE` 锁定并重验 ACTIVE 商城/管理员、session、近期 MFA、Bearer 到期、商城角色分配和四项直接权限。
+  等待期间撤销任一权限必须在首笔业务写入前返回 `403`，且不留下 settlement/refund/transition/audit。
+- 管理员不能提交金额、支付分支、状态或 provider reference。数据库服务端锁定订单/支付/售后/settlement/link，
+  复用 M5 refund capacity；审计只记录稳定身份、金额、settlement/refund 内部关联和 correlation，不记录密钥或上游原始响应。
+- 无条件注册的 worker 只消费商城隔离的 `after-sale.refund.sync` v1 消息，并按最新 M5 refund 事实收敛；
+  provider UNKNOWN、金额/link/version/store 不一致、未来版本和重复不确定事实均失败关闭或进入
+  `REVIEW_REQUIRED`，不能由 worker 或管理员权限绕过。
+- `AFTER_SALE_REFUND_COMMANDS_ENABLED=false` 默认关闭且 production 配置/服务层拒绝启用。B6 不新增
+  permission code、迁移或生产角色扩权；真实 provider、COD 双人结算、库存恢复、验收、换货、UI、部署和
+  rollout 为 `NOT_AUTHORIZED / NOT_RUN`。

@@ -850,6 +850,7 @@ export type MerchantAfterSaleCreateRequest = z.infer<typeof merchantAfterSaleCre
 export type AfterSaleCancelRequest = z.infer<typeof afterSaleCancelRequestSchema>;
 export type AfterSaleReturnShipmentRequest = z.infer<typeof afterSaleReturnShipmentRequestSchema>;
 export type AfterSaleReturnFactRequest = z.infer<typeof afterSaleReturnFactRequestSchema>;
+export type AfterSaleRefundRequest = z.infer<typeof afterSaleRefundRequestSchema>;
 export type AfterSaleReviewRequest = z.infer<typeof afterSaleReviewRequestSchema>;
 export type AfterSaleReviewResolveRequest = z.infer<typeof afterSaleReviewResolveRequestSchema>;
 export type AfterSaleCommandAcknowledgementResponse = z.infer<

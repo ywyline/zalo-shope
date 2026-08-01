@@ -7,11 +7,11 @@
 > evidence HTTP validation、B2b-D4 repository implementation + local/test deletion worker validation 与
 > B2b-D5 default-disabled repository implementation + local/test protected-read validation 已完成且适用
 > 仓库门禁通过；B3 default-disabled repository implementation + local/test validation 也已完成且适用
-> 仓库门禁通过；B4 与 B5 default-disabled repository implementation + local/test validation 也已完成且适用
-> 仓库门禁通过；B2/B2b、B6-B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭；生产策略、TTL、对象存储、真实供应商、
+> 仓库门禁通过；B4、B5 与 B6 default-disabled repository implementation + local/test validation 也已完成且适用
+> 仓库门禁通过；B2/B2b、B7、M6.3、UI 与生产启用未完成或未授权并保持失败关闭；生产策略、TTL、对象存储、真实供应商、
 > 部署和 rollout 为 `NOT_AUTHORIZED / NOT_RUN`；P0 整体未完成
 >
-> 版本：0.15
+> 版本：0.16
 >
 > 日期：2026-07-31
 >
@@ -375,10 +375,11 @@ repository implementation + local/test validation `COMPLETE` 状态交付 member
 管理员逐次审计。B3 已在独立授权下增加默认关闭的会员申请/取消与管理员商家主动退款 repository/local-test
 写命令，并在创建事务中按条件接入 D0 evidence claim；B4 随后完成默认关闭的管理员初审、人工/legacy
 复核和 SYSTEM 寄回到期；B5 再完成默认关闭的会员返件登记、管理员可信 `IN_TRANSIT/DELIVERED` 事实
-与 B1 待验收读取复用。B3-B5 repository-local-test 验收已完成。B2a 不改写政策 RLS，保留会员历史
-政策读取；B5 的 `INSPECTION_PENDING` 不表示验收完成，也不提供真实物流、退款/COD、库存恢复、换货履约或 UI。只读摘要、政策
+与 B1 待验收读取复用；B6 已完成默认关闭的 ONLINE settlement、M5 refund/link 原子协调和 provider
+结果向售后同步。B3-B6 repository-local-test 验收已完成。B2a 不改写政策 RLS，保留会员历史政策读取；
+B3-B6 仍不提供真实物流/支付 provider、COD、验收、库存恢复、换货履约或 UI。只读摘要、政策
 控制面、凭证链路和默认关闭写命令存在，仍不能解释为完整售后产品或生产可用。
-完整 B2b、B6-B7、生产政策与 enforcement、TTL、对象存储、真实供应商、部署和 rollout 均
+完整 B2b、B7、生产政策与 enforcement、TTL、对象存储、真实供应商、部署和 rollout 均
 未完成或为 `NOT_AUTHORIZED / NOT_RUN`，继续失败关闭。
 
 D5 的第 44-48 段迁移只建立数据库保护读取边界，不增加业务表、列、枚举或 STORE 权限代码：第 44 段

@@ -1523,7 +1523,6 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           actorType: 'member',
           storeId: BEAUTY_STORE_ID,
         });
-
         await expectDatabaseFailure(
           transaction,
           () => transaction.$executeRaw`INSERT INTO after_sales
@@ -4329,27 +4328,50 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         expectedVersion: 1,
       });
 
-      const confirmedAt = new Date();
-      await transaction.$executeRaw`UPDATE after_sale_evidence_files
-        SET confirmed_at = ${confirmedAt}, scan_requested_at = ${confirmedAt},
-          scan_generation = 1, version = version + 1, updated_at = ${confirmedAt}
-        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
+      const [confirmed] = await transaction.$queryRaw<Array<{ confirmedAt: Date }>>`
+        WITH evidence_clock AS MATERIALIZED (
+          SELECT pg_catalog.clock_timestamp() AS confirmed_at
+        )
+        UPDATE after_sale_evidence_files evidence
+        SET confirmed_at = evidence_clock.confirmed_at,
+          scan_requested_at = evidence_clock.confirmed_at,
+          scan_generation = 1,
+          version = evidence.version + 1,
+          updated_at = evidence_clock.confirmed_at
+        FROM evidence_clock
+        WHERE evidence.store_id = ${BEAUTY_STORE_ID}::uuid
+          AND evidence.id = ${evidenceId}::uuid
+        RETURNING evidence.confirmed_at AS "confirmedAt"
+      `;
+      if (!confirmed) throw new Error('Expected evidence confirmation to update one row');
+      const confirmedAt = confirmed.confirmedAt;
       await appendEvidenceOutbox({
-        availableAt: confirmedAt,
+        // PostgreSQL retains sub-millisecond precision that JavaScript Date drops on return.
+        availableAt: new Date(confirmedAt.getTime() + 1),
         eventType: 'after-sale.evidence.scan.requested',
         expectedVersion: 2,
       });
 
       await setEvidenceSystemContext(transaction, BEAUTY_STORE_ID);
-      const scanCompletedAt = new Date();
       const claimDeadlineAt = new Date(Date.now() + 60 * 60 * 1_000);
-      await transaction.$executeRaw`UPDATE after_sale_evidence_files
-        SET status = 'READY_UNCLAIMED', scan_result_code = 'CLEAN',
-          scan_completed_at = ${scanCompletedAt}, scanner_engine = 'm62-regression-scanner',
-          scanner_engine_version = '1.0.0', scanner_signature_version = '2026.07.29',
-          claim_deadline_at = ${claimDeadlineAt}, version = version + 1,
-          updated_at = ${scanCompletedAt}
-        WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${evidenceId}::uuid`;
+      await transaction.$executeRaw`
+        WITH evidence_clock AS MATERIALIZED (
+          SELECT pg_catalog.clock_timestamp() AS completed_at
+        )
+        UPDATE after_sale_evidence_files evidence
+        SET status = 'READY_UNCLAIMED',
+          scan_result_code = 'CLEAN',
+          scan_completed_at = evidence_clock.completed_at,
+          scanner_engine = 'm62-regression-scanner',
+          scanner_engine_version = '1.0.0',
+          scanner_signature_version = '2026.07.29',
+          claim_deadline_at = ${claimDeadlineAt},
+          version = evidence.version + 1,
+          updated_at = evidence_clock.completed_at
+        FROM evidence_clock
+        WHERE evidence.store_id = ${BEAUTY_STORE_ID}::uuid
+          AND evidence.id = ${evidenceId}::uuid
+      `;
       await appendEvidenceOutbox({
         availableAt: claimDeadlineAt,
         eventType: 'after-sale.evidence.expire.requested',

@@ -329,6 +329,71 @@ describe('AfterSalesAdminController B4 commands', () => {
   });
 });
 
+describe('AfterSalesAdminController B6 commands', () => {
+  it('strictly binds the server-calculated ONLINE refund request', async () => {
+    const adminRequestOnlineRefund = vi.fn().mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'REFUND_PROCESSING', version: 4 },
+      replayed: false,
+    });
+    const controller = new AfterSalesAdminController({
+      adminRequestOnlineRefund,
+    } as unknown as AfterSalesService);
+    const httpResponse = response();
+    const request = { id: 'client-correlation', ip: '::ffff:127.0.0.1' };
+
+    await expect(
+      controller.requestRefund(
+        'Bearer admin-token',
+        `${IDEMPOTENCY_KEY}-refund`,
+        'beauty-store',
+        'Refund approved after final settlement review',
+        { afterSaleId: AFTER_SALE_ID },
+        {
+          confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
+          expected_version: 3,
+          reason: 'Issue the approved online refund after the final review.',
+        },
+        { store_id: STORE_ID },
+        request,
+        httpResponse,
+      ),
+    ).resolves.toMatchObject({ status: 'REFUND_PROCESSING', version: 4 });
+
+    expect(adminRequestOnlineRefund).toHaveBeenCalledWith(
+      expect.objectContaining({
+        afterSaleId: AFTER_SALE_ID,
+        body: {
+          confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
+          expected_version: 3,
+          reason: 'Issue the approved online refund after the final review.',
+        },
+        idempotencyKey: `${IDEMPOTENCY_KEY}-refund`,
+        query: { store_id: STORE_ID },
+      }),
+    );
+    expect(httpResponse.setHeader).toHaveBeenCalledWith('Idempotency-Replayed', 'false');
+
+    await expect(
+      controller.requestRefund(
+        'Bearer admin-token',
+        `${IDEMPOTENCY_KEY}-refund-invalid`,
+        'beauty-store',
+        undefined,
+        { afterSaleId: AFTER_SALE_ID },
+        {
+          confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
+          expected_version: 3,
+          reason: 'Issue the approved online refund after the final review.',
+          amount_vnd: 1,
+        },
+        { store_id: STORE_ID },
+        { id: 'server-correlation-id', ip: '127.0.0.1' },
+        response(),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
 describe('B3 command HTTP routes', () => {
   let app: INestApplication;
   const service = {
@@ -336,6 +401,7 @@ describe('B3 command HTTP routes', () => {
     adminDetail: vi.fn(),
     adminList: vi.fn(),
     adminRecordReturnFact: vi.fn(),
+    adminRequestOnlineRefund: vi.fn(),
     adminResolveReview: vi.fn(),
     adminReview: vi.fn(),
     memberCancel: vi.fn(),
@@ -370,6 +436,10 @@ describe('B3 command HTTP routes', () => {
     service.adminRecordReturnFact.mockResolvedValue({
       body: { ...ACKNOWLEDGEMENT, status: 'INSPECTION_PENDING', version: 5 },
       replayed: true,
+    });
+    service.adminRequestOnlineRefund.mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'REFUND_PROCESSING', version: 4 },
+      replayed: false,
     });
     const module = await Test.createTestingModule({
       controllers: [
@@ -564,6 +634,41 @@ describe('B3 command HTTP routes', () => {
         expected_version: 2,
         status: 'DELIVERED',
         tracking_number: 'GHN-RETURN-000012345678',
+      });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body).toMatchObject({ code: 'INPUT_INVALID' });
+  });
+
+  it('registers the ONLINE refund route and rejects client-owned amount fields', async () => {
+    const refund = await api()
+      .post(`/v1/admin/after-sales/${AFTER_SALE_ID}/refund?store_id=${STORE_ID}`)
+      .set({
+        Authorization: 'Bearer admin-token',
+        'Idempotency-Key': `${IDEMPOTENCY_KEY}-online-refund`,
+        'X-Access-Reason': 'Refund approved after final settlement review',
+        'X-Store-Code': 'beauty-store',
+      })
+      .send({
+        confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
+        expected_version: 3,
+        reason: 'Issue the approved online refund after the final review.',
+      });
+    expect(refund.status).toBe(202);
+    expect(refund.headers['idempotency-replayed']).toBe('false');
+    expect(refund.body).toMatchObject({ status: 'REFUND_PROCESSING', version: 4 });
+
+    const invalid = await api()
+      .post(`/v1/admin/after-sales/${AFTER_SALE_ID}/refund?store_id=${STORE_ID}`)
+      .set({
+        Authorization: 'Bearer admin-token',
+        'Idempotency-Key': `${IDEMPOTENCY_KEY}-online-refund-invalid`,
+        'X-Store-Code': 'beauty-store',
+      })
+      .send({
+        amount_vnd: 1,
+        confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
+        expected_version: 3,
+        reason: 'Issue the approved online refund after the final review.',
       });
     expect(invalid.status).toBe(400);
     expect(invalid.body).toMatchObject({ code: 'INPUT_INVALID' });

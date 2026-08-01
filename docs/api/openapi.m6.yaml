@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M6 incremental API contract
-  version: 0.6.3-b5
+  version: 0.6.3-b6
   description: >-
     M6 incremental contract combined with the M1-M5 contracts. M6.3-A implements the after-sale
     settings GET/PUT routes, M6.3-B1 implements the member/admin after-sale list and detail GET
@@ -13,18 +13,20 @@ info:
     commit-deadline revalidation. M6.3-B3 implements the three after-sale create/cancel commands.
     M6.3-B4 implements administrator review, one-time legacy/manual review resolution and the
     return-expiration worker. M6.3-B5 implements member return registration, audited trusted
-    return-logistics facts and reuse of the B1 inspection-pending read projection. These capabilities
-    remain behind independent repository/local-test-only, default-disabled gates. This does not
+    return-logistics facts and reuse of the B1 inspection-pending read projection. M6.3-B6 implements
+    the server-calculated ONLINE settlement, M5 refund/link atomic coordinator and versioned
+    after-sale refund synchronization worker. These capabilities remain behind independent
+    repository/local-test-only, default-disabled gates. This does not
     establish production readiness: legal-hold/dead-letter management, external alerting,
     production TTL policy, IAM/KMS/versioning/Object
     Lock/lifecycle certification, bearer-URL risk acceptance, deployment and rollout remain
-    NOT_AUTHORIZED / NOT_RUN. Operations assigned to B6 and B7 remain contract-only.
+    NOT_AUTHORIZED / NOT_RUN. Operations assigned to B7 and later milestones remain contract-only.
     Buyer store ownership comes from the authenticated member and X-Store-Code. Admin routes
     additionally require the matching store_id query parameter. D5 protected-read routes generate
     X-Correlation-Id on the server and do not accept a client correlation identifier; the generated
     value is propagated through authorization, audit, logs and error bodies.
 x-after-sale-b0-contract:
-  runtime_status: m6_3_a_b1_b2a_d3_d5_b3_b4_and_b5_repository_local_test_implemented
+  runtime_status: m6_3_a_b1_b2a_d3_d5_b3_b4_b5_and_b6_repository_local_test_implemented
   runtime_operations:
     implemented_m6_3_a: [getAfterSaleSettings, setAfterSalePolicyEnforcement]
     implemented_m6_3_b1:
@@ -49,7 +51,8 @@ x-after-sale-b0-contract:
     implemented_m6_3_b3: [createAfterSale, cancelMemberAfterSale, createMerchantAfterSale]
     implemented_m6_3_b4: [reviewAfterSale, resolveAfterSaleManualReview]
     implemented_m6_3_b5: [submitAfterSaleReturnShipment, recordAfterSaleReturnFact]
-    contract_only_m6_3_b2_to_b7: all_after_sale_operations_not_listed_as_implemented_above
+    implemented_m6_3_b6: [requestAfterSaleRefund]
+    contract_only_m6_3_b2_b7: all_after_sale_operations_not_listed_as_implemented_above
   protected_evidence_read:
     status: complete_repository_local_test_default_disabled
     repository_gates: pass
@@ -82,7 +85,7 @@ x-after-sale-b0-contract:
       member_read: implemented_m6_3_b1_m6_3_b2b_d3_and_d5
       admin_read: implemented_m6_3_b1_m6_3_b2a_and_m6_3_b2b_d5
       member_write: implemented_m6_3_b2b_d3_b3_and_b5
-      admin_write: implemented_m6_3_b2a_b3_b4_and_b5
+      admin_write: implemented_m6_3_b2a_b3_b4_b5_and_b6
     read_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
     write_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
   b3_commands:
@@ -121,6 +124,17 @@ x-after-sale-b0-contract:
     delivered_projection: INSPECTION_PENDING_not_inspection_completed
     command_response: immutable_operation_acknowledgement_get_reads_current_aggregate
     excluded_side_effects: provider_calls_inspection_inventory_refund_cod_exchange
+  b6_online_refund:
+    status: complete_repository_local_test_default_disabled
+    repository_gates: pass
+    migration_range: none_reuses_m6_2_and_b0_guards
+    production_status: not_authorized_not_run_and_rejected_by_runtime_configuration
+    command_gate: AFTER_SALE_REFUND_COMMANDS_ENABLED_false
+    admin_authorization: direct_target_store_after_sale_review_refund_create_after_sale_read_refund_read_recent_mfa_cross_access_only_forbidden
+    amount_authority: server_approved_total_vnd_and_m5_remaining_capacity
+    transaction: serializable_settlement_m5_refund_unique_link_transitions_audit_and_sync_outbox
+    provider_projection: succeeded_failed_cancelled_or_review_required_from_locked_m5_refund
+    excluded_side_effects: real_provider_cod_inspection_inventory_exchange_ui_rollout
   system_principal:
     scope: after-sale-transition
     events:
@@ -653,18 +667,19 @@ paths:
   /v1/admin/after-sales/{afterSaleId}/refund:
     post:
       operationId: requestAfterSaleRefund
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b6_repository_local_test_default_disabled
       x-rate-limit-tier: admin_write
-      summary: Request server-calculated ONLINE or COD settlement
+      summary: Request a server-calculated ONLINE refund settlement
       description: >-
-        ONLINE reuses the M5 refund capacity and outbox. COD creates a pending dual-control
-        settlement and is never immediately marked successful. The server branches only from the
-        trusted order payment method: ONLINE requires after-sales review plus M5 refund-create
-        permission; COD requires the independent COD-refund-request permission. The client cannot
-        select the payment branch. From APPROVED, both branches first append QUEUE_REFUND. ONLINE
-        then atomically creates the M5 refund/outbox fact and appends REFUND_REQUESTED; a
-        return-refund already at REFUND_PENDING appends only REFUND_REQUESTED. COD remains at
-        REFUND_PENDING until independently confirmed. Idempotent replay appends no duplicate event.
+        This B6 repository/local-test route accepts only a trusted ONLINE order and reuses the M5
+        refund capacity, provider workflow and outbox. It requires direct target-store after-sales
+        review, refund-create, after-sales-read and refund-read permissions plus recent MFA;
+        cross-access-only cannot substitute for any of the four direct permissions. The amount is the server-approved
+        after-sale total; no client amount or payment branch is accepted. From APPROVED it appends
+        QUEUE_REFUND, creates the pending settlement, then atomically creates and links the M5 refund
+        before projecting REFUND_REQUESTED. A case already at REFUND_PENDING appends only
+        REFUND_REQUESTED. Provider uncertainty converges to REVIEW_REQUIRED. The capability is
+        disabled by default, forbidden in production, and does not represent a live provider rollout.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
@@ -679,10 +694,11 @@ paths:
       responses:
         '202':
           description: >-
-            Refund or COD settlement is pending; no client amount is accepted. The returned
-            settlements include the public_number required by the separate COD confirmation route.
+            The ONLINE refund and linked settlement are processing; no client amount is accepted.
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
@@ -691,11 +707,13 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/admin/after-sales/{afterSaleId}/exchange:
     post:
       operationId: createAfterSaleExchange
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: contract_only_m6_3_b2_b7
       x-rate-limit-tier: admin_write
       summary: Reserve and start an equal-quantity replacement SKU fulfillment
       security: [{ AdminBearer: [] }]
@@ -726,7 +744,7 @@ paths:
   /v1/admin/after-sales/{afterSaleId}/convert-exchange-to-refund:
     post:
       operationId: convertAfterSaleExchangeToRefund
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: contract_only_m6_3_b2_b7
       x-rate-limit-tier: admin_write
       summary: Convert an inspected exchange to a refund before replacement fulfillment starts
       description: >-
@@ -811,7 +829,7 @@ paths:
   /v1/admin/after-sales/{afterSaleId}/cod-refunds/{settlementNumber}/confirm:
     post:
       operationId: confirmAfterSaleCodRefund
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: contract_only_m6_3_b2_b7
       x-rate-limit-tier: admin_write
       summary: Independently confirm a COD refund without accepting client amount or payout reference
       description: >-

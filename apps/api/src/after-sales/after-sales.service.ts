@@ -21,6 +21,7 @@ import type {
   AfterSaleCreateRequest,
   AfterSaleListQuery,
   AfterSalePageResponse,
+  AfterSaleRefundRequest,
   AfterSaleReviewRequest,
   AfterSaleReviewResolveRequest,
   AfterSaleReturnFactRequest,
@@ -34,11 +35,13 @@ import {
 } from '@zalo-shop/contracts';
 import {
   AfterSaleCommandDatabaseError,
+  AfterSaleRefundCommandError,
   Prisma,
   cancelMemberAfterSaleCommand,
   createMemberAfterSaleCommand,
   createMerchantRefundAfterSaleCommand,
   recordAfterSaleReturnFact,
+  requestAfterSaleOnlineRefund,
   resolveAfterSaleReviewCommand,
   reviewAfterSaleCommand,
   submitMemberAfterSaleReturn,
@@ -342,6 +345,65 @@ export class AfterSalesService {
     return { body: this.acknowledgeCommand(command), replayed: command.replayed };
   }
 
+  public async adminRequestOnlineRefund(input: {
+    afterSaleId: string;
+    body: AfterSaleRefundRequest;
+    headers: AdminHeaders;
+    idempotencyKey: string;
+    query: AfterSaleAdminStoreQuery;
+  }): Promise<{ body: AfterSaleResponse; replayed: boolean }> {
+    const context = await this.admin.authorizeSensitive(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.review',
+    );
+    this.assertDirectReviewAuthorization(context);
+    const refundContext = await this.admin.authorizeSensitive(
+      input.headers,
+      input.query.store_id,
+      'store.refunds.create',
+    );
+    this.assertDirectReviewAuthorization(refundContext);
+    if (refundContext.actor.id !== context.actor.id || refundContext.storeId !== context.storeId) {
+      throw new ForbiddenException('Refund authorization scope is invalid');
+    }
+    const readContext = await this.admin.authorize(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.read',
+    );
+    this.assertDirectReviewAuthorization(readContext);
+    const refundReadContext = await this.admin.authorize(
+      input.headers,
+      input.query.store_id,
+      'store.refunds.read',
+    );
+    this.assertDirectReviewAuthorization(refundReadContext);
+    if (
+      readContext.actor.id !== context.actor.id ||
+      readContext.storeId !== context.storeId ||
+      refundReadContext.actor.id !== context.actor.id ||
+      refundReadContext.storeId !== context.storeId
+    ) {
+      throw new ForbiddenException('Refund authorization scope is invalid');
+    }
+    await this.consumeWriteLimit(context, 'ADMIN');
+    this.assertRefundCommandsEnabled();
+    let command: Awaited<ReturnType<typeof requestAfterSaleOnlineRefund>>;
+    try {
+      command = await requestAfterSaleOnlineRefund(this.database, context, {
+        afterSaleId: input.afterSaleId,
+        expectedVersion: input.body.expected_version,
+        idempotencyKey: input.idempotencyKey,
+        reason: input.body.reason,
+      });
+    } catch (error) {
+      this.throwRefundCommandError(error);
+    }
+    const body = await this.projectAdminDetail(context, input.afterSaleId);
+    return { body, replayed: command.replayed };
+  }
+
   public async memberList(input: {
     authorization?: string;
     correlationId: string;
@@ -506,14 +568,22 @@ export class AfterSalesService {
       actorType: 'ADMIN',
       storeId: context.storeId,
     });
-    const locale = input.query.locale ?? context.locale ?? 'vi';
+    return this.projectAdminDetail(context, input.afterSaleId, input.query.locale);
+  }
+
+  private async projectAdminDetail(
+    context: StoreContext,
+    afterSaleId: string,
+    localeInput?: AfterSaleLocale,
+  ): Promise<AfterSaleResponse> {
+    const locale = localeInput ?? context.locale ?? 'vi';
     return withStoreTransaction(
       this.database,
       context,
       async (transaction) => {
         const record = await transaction.afterSale.findFirst({
           select: createAfterSaleReadSelect(locale),
-          where: { id: input.afterSaleId, storeId: context.storeId },
+          where: { id: afterSaleId, storeId: context.storeId },
         });
         if (!record) throw new NotFoundException('Resource not found');
         this.assertScope(record, context.storeId);
@@ -554,6 +624,12 @@ export class AfterSalesService {
   private assertReturnCommandsEnabled(): void {
     if (!this.config.AFTER_SALE_RETURN_COMMANDS_ENABLED || this.config.NODE_ENV === 'production') {
       throw new ServiceUnavailableException('After-sale return commands are unavailable');
+    }
+  }
+
+  private assertRefundCommandsEnabled(): void {
+    if (!this.config.AFTER_SALE_REFUND_COMMANDS_ENABLED || this.config.NODE_ENV === 'production') {
+      throw new ServiceUnavailableException('After-sale refund commands are unavailable');
     }
   }
 
@@ -654,6 +730,25 @@ export class AfterSalesService {
         throw new ServiceUnavailableException('AFTER_SALE_EVIDENCE_CAPABILITY_UNAVAILABLE');
       default:
         throw error;
+    }
+  }
+
+  private throwRefundCommandError(error: unknown): never {
+    if (!(error instanceof AfterSaleRefundCommandError)) throw error;
+    switch (error.code) {
+      case 'AFTER_SALE_AUTHORIZATION_DENIED':
+        throw new ForbiddenException('Authorization is no longer valid');
+      case 'AFTER_SALE_NOT_FOUND':
+        throw new NotFoundException('Resource not found');
+      case 'AFTER_SALE_PAYMENT_NOT_PROVEN':
+        throw new UnprocessableEntityException('AFTER_SALE_PAYMENT_NOT_PROVEN');
+      case 'AFTER_SALE_INPUT_INVALID':
+        throw new BadRequestException('Input is invalid');
+      case 'AFTER_SALE_IDEMPOTENCY_CONFLICT':
+      case 'AFTER_SALE_REFUND_FACT_INVALID':
+      case 'AFTER_SALE_STATE_CONFLICT':
+      case 'AFTER_SALE_VERSION_CONFLICT':
+        throw new ConflictException(error.code);
     }
   }
 

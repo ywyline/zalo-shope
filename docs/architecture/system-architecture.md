@@ -52,10 +52,11 @@ B3 default-disabled repository implementation + local/test validation 已完成�
 真实供应商、部署和 rollout 均保持
 `NOT_AUTHORIZED / NOT_RUN`，不因仓库实现而改变既有外部上线门禁。
 
-用户随后按相邻切片授权 B4 与 B5。B4 已完成默认关闭的管理员审核/人工复核和 SYSTEM 寄回到期；
-B5 已完成默认关闭的会员返件登记、管理员可信 `IN_TRANSIT/DELIVERED` 物流事实与 B1 待验收读取复用。
-两者均只完成 repository implementation + local/test validation；真实物流、验收、库存恢复、退款/COD、
-换货、UI、生产配置、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`，B2/B2b、B6-B7、M6.3、M6 和 P0
+用户随后按相邻切片授权 B4、B5 与 B6。B4 已完成默认关闭的管理员审核/人工复核和 SYSTEM 寄回到期；
+B5 已完成默认关闭的会员返件登记、管理员可信 `IN_TRANSIT/DELIVERED` 物流事实与 B1 待验收读取复用；
+B6 已完成默认关闭的 ONLINE settlement、M5 refund/link 原子协调和 provider 结果向售后同步。
+三者均只完成 repository implementation + local/test validation；真实物流/支付商、验收、库存恢复、COD、
+换货、UI、生产配置、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`，B2/B2b、B7、M6.3、M6 和 P0
 仍未完成。
 
 ## 1. 决策范围
@@ -424,8 +425,8 @@ docs/
   `(store_id, updated_at DESC, id DESC)` 前向索引；Prisma 仅补记数据库原有
   `after_sale_refunds(store_id, settlement_id)` 唯一约束以修复 schema drift，不重复创建索引。
 - B1 本身不开放申请、取消、审核、凭证访问、返件、退款、COD 结算或任何写路径，也不交付 UI、worker、生产政策/启用或外部调用。
-  随后增加并完成下节 B2a 政策控制面，并在独立授权下完成默认关闭的 B3-B5 repository-local-test
-  写命令与 worker；这不改变 B1 的历史只读结论。完整 B2b、B6-B7、返件验收与库存恢复 M6.4、生产 rollout、
+  随后增加并完成下节 B2a 政策控制面，并在独立授权下完成默认关闭的 B3-B6 repository-local-test
+  写命令与 worker；这不改变 B1 的历史只读结论。完整 B2b、B7、返件验收与库存恢复 M6.4、生产 rollout、
   部署和发布仍需独立授权。
   B1 可读不代表整个 M6.3、M6、M5 或 P0 完成。
 
@@ -453,7 +454,7 @@ docs/
   这一历史读，又无法隐藏 ACTIVE head 行内草稿列；管理操作由应用层独立 RBAC 和显式 store scope 叠加 FORCE RLS 保护。
 - 旧数据库允许下划线 code 与非严格 object payload，新 API 不接受这些事实。仓库的只读分批预检已在本地测试库通过
   （`policies=0, versions=0`）；适用仓库门禁均已通过，B2a 仓库实施为 `COMPLETE`。每个目标库在 rollout 前仍必须重新执行并留证；
-  B2/B2b、B6-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭；B3-B5 的局部完成
+  B2/B2b、B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭；B3-B6 的局部完成
   不构成 M6.3 或生产启用。
 
 ### M6.3-B2b-D0 凭证数据库生命周期与可靠排队边界
@@ -720,7 +721,29 @@ docs/
 - `AFTER_SALE_RETURN_COMMANDS_ENABLED` 默认 `false`，production 配置解析与 service 双重拒绝启用。
   第 52 段 `down.sql` 仅允许无 B5 operation/可信状态/transition/audit 的 local/test，以 `55000` 阻止
   有事实回滚。B5 不调用 provider，不执行 inspection、库存恢复、退款/COD、换货或 UI；完整 B2/B2b、
-  B6-B7、M6.3、M6、P0、部署和 rollout 继续未完成。
+  B7、M6.3、M6、P0、部署和 rollout 继续未完成。
+
+### M6.3-B6 默认关闭的 ONLINE 售后退款权威协调边界
+
+- B6 只注册管理员 ONLINE 退款路由和退款同步 worker。HTTP 请求严格只接受确认词、expected version
+  与 reason；服务端先取得共享 M5 订单退款锁，再锁订单、成功支付和售后聚合，以 `approved_total_vnd` 重算整数 VND 金额和
+  M5 剩余退款容量，不信任客户端金额、支付分支或商城身份。
+- 写入前要求目标商城直接 `store.after-sales.review`、`store.refunds.create`、
+  `store.after-sales.read`、`store.refunds.read` 与近期 MFA；四项均拒绝 cross-access-only。同一事务在锁
+  等待后以 `FOR SHARE` 锁定 ACTIVE 商城、管理员、有效 session/MFA、商城角色和四项直接权限，并在首笔
+  业务写入前按数据库时钟最终重验，避免权限撤销竞态或资金事实提交后才发现读取权限不足。
+- 售后命令幂等 advisory lock 后按共享 M5 order-refund advisory lock、order、成功 payment、after-sale、
+  settlement/link 固定锁序，在同一
+  `Serializable` 事务创建 `ONLINE_ORIGINAL` settlement、transaction-scoped M5 refund、唯一 link、
+  M5/售后 transition、audit 和版本化 `after-sale.refund.sync` outbox。相同键重放冻结结果，同键异参
+  冲突，客户端金额篡改在 DTO 层拒绝。
+- worker 以锁定后的 M5 refund 为权威事实，将 `SUCCEEDED/FAILED/CANCELLED` 收敛到售后成功、失败或
+  可重试待处理；UNKNOWN、金额/商城/payment/link/version 不一致和未来消息版本进入人工复核或失败关闭。
+  重放缺少当前版本 sync 消息时补发，不把 outbox payload 或 provider 回调直接当成授权/金额依据。
+- B6 不新增迁移，复用 M6.2/B0 settlement/link、RLS、SYSTEM allowlist 和完整性 guard。
+  `AFTER_SALE_REFUND_COMMANDS_ENABLED` 默认 `false` 且 production 配置与 service 双重拒绝开启。应用回滚
+  保持命令关闭并继续收敛已提交 M5 退款，不能删除或逆转资金事实。真实支付商、COD、inspection、库存
+  恢复、换货、UI、部署与 rollout 未交付；B2/B2b、B7、M6.3、M6 和 P0 继续未完成。
 
 ## 7. 身份、安全与隐私
 

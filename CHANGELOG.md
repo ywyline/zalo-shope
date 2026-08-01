@@ -158,6 +158,7 @@ This file records completed repository changes. Each entry uses `Date`, `Added`,
 
 - Added `docs/reports/m6.3-b6-online-refund-completion-report.md` and synchronized architecture, data, permission, plan and Task Tree evidence.
 - Recorded that B7 remains dependency-blocked and selected the buyer online-payment experience as the next eligible internal slice.
+- Git Recovery reconciled B6 to `feat(P0-M6-006): authoritative online after-sale refunds` after typecheck, lint, unit, affected integration, build, format and staged-diff verification, without mixing D2 or P0-M6-009 changes.
 
 ## 2026-08-01 - Recovered Project Baseline (`0.1.0`)
 

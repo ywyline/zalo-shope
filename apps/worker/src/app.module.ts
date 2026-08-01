@@ -36,6 +36,7 @@ import {
   RefundCreateRequestedHandler,
   RefundQueryRequestedHandler,
 } from './payments/refund-requested.handlers';
+import { AfterSaleRefundSyncHandler } from './payments/after-sale-refund-sync.handler';
 import { ShipmentCreateRequestedHandler } from './shipments/shipment-create-requested.handler';
 import { ShipmentProviderOperationHandler } from './shipments/shipment-provider-operation.handler';
 import { SHIPMENT_CANCEL_EVENT_TYPE, SHIPMENT_QUERY_EVENT_TYPE } from '@zalo-shop/database';
@@ -148,6 +149,7 @@ function createEvidenceScanner(config: RuntimeConfig): AfterSaleEvidenceScanner 
         shippingProviderResolver: ShippingProviderResolver,
       ) => [
         ...(config.NODE_ENV === 'test' ? [new TestOnlyOutboxHandler(config.NODE_ENV)] : []),
+        new AfterSaleRefundSyncHandler(database),
         ...(config.EVIDENCE_SCANNER_PROVIDER === 'clamav'
           ? [
               new AfterSaleEvidenceScanRequestedHandler(
