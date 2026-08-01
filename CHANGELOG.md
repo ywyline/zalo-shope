@@ -29,6 +29,7 @@ This file records completed repository changes. Each entry uses `Date`, `Added`,
 
 - Added the P0-M6-008 plan and Slice A completion report; kept the Task `In Progress` because replacement reservation and `EXCHANGE_OUTBOUND` remain pending in Slice B.
 - Verified 641/641 unit, 362/362 integration, 26/26 browser E2E after one disclosed WebKit timing rerun, and the 57-migration guarded exercise; OpenAPI, Compose, Gitleaks and diff/security gates passed. Audit remains 3 moderate and 0 high/critical.
+- Recorded Slice A commit `c7d288e` and local `main` merge `8e6cc13`; the feature branch was synchronized to that merge without a remote push.
 - This is repository/local-test completion only. Real warehouse/provider/Zalo host, staging, deployment, production enablement and rollout remain `NOT_AUTHORIZED / NOT_RUN`; the project is not Production Ready.
 
 ## 2026-08-01 - P0-M6-007 COD Refund Settlement (`0.1.0`)
