@@ -385,6 +385,14 @@ protected-read validation 已完成。B3、B4、B5 与 B6 计划及建议默认�
 - 提供真实同意撤回和结构化隐私请求受理/查询入口；提交只返回 `SUBMITTED`，不伪装访问、删除、
   匿名化或注销履约已完成。
 
+M6.5 repository/local-test 完成记录（2026-08-01）：已实现商城/会员隔离的收藏、单商品收藏状态、
+最近 100 个商品浏览历史、轻量交易汇总、最新同意事实和加密隐私请求创建/查询/取消 API，并交付
+越南语、中文、英文 Mini App 会员中心、收藏、历史与隐私页面。列表消费 HMAC opaque cursor，读写
+使用 Redis 分级限流，所有数据访问叠加显式商城/会员条件、`StoreContext` 与 FORCE RLS。完整
+integration 38 文件/337 项、`verify` 76 文件/627 项单元测试、25/25 Chromium/WebKit E2E 及适用安全
+门禁通过。该完成不包含隐私履约、法律决定、M6.6 分享、M6.7 完整售后 UI、Zalo 真机或 production
+rollout；详见 `docs/reports/p0-m6-009-member-runtime-completion-report.md`。
+
 ### M6.6：Deep Link、三语分享卡和浏览器兜底
 
 - 六类目标的权威解析、稳定卡片、短码、兜底页、入站 allowlist 路由和粗粒度交互记录。

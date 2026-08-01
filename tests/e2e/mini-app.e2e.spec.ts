@@ -793,3 +793,247 @@ test('profile phone controls expose clear selected and fallback states', async (
   await expect(page.locator('.feedback')).toHaveCount(0);
   await expect(manualButton).toHaveAttribute('aria-pressed', 'true');
 });
+
+test('member center manages favorites, history, consent and privacy in three languages', async ({
+  page,
+}, testInfo) => {
+  const browserErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+  page.on('dialog', (dialog) => void dialog.accept());
+  await installZaloBridge(page, testInfo.project.name);
+
+  const store = storefronts[0];
+  const now = new Date().toISOString();
+  const memberProduct = {
+    available: true,
+    last_interaction_at: now,
+    name: store.product,
+    primary_media_url: null,
+    product_code: store.productCode,
+  };
+  const unavailableProduct = {
+    ...memberProduct,
+    available: false,
+    name: 'Sản phẩm đã ngừng bán',
+    product_code: 'archived-member-product',
+  };
+  let favorites: Array<typeof memberProduct> = [unavailableProduct];
+  let history: Array<typeof memberProduct> = [memberProduct];
+  let consents = [
+    {
+      occurred_at: now,
+      policy_version: 'privacy-v1',
+      purpose: 'PRIVACY',
+      source: 'MANUAL',
+      status: 'GRANTED',
+    },
+  ];
+  let privacyRequests: Array<{
+    created_at: string;
+    description: string;
+    public_number: string;
+    request_type: string;
+    status: string;
+    updated_at: string;
+    version: number;
+  }> = [];
+  let privacyCreateIdempotencyKey = '';
+  let privacyCancelIdempotencyKey = '';
+
+  await page.route('**/v1/members/me/commerce-summary', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        address_count: 1,
+        favorite_count: favorites.length,
+        order_status_counts: {},
+        product_history_count: history.length,
+        usable_coupon_count: 0,
+      },
+      status: 200,
+    });
+  });
+  await page.route(/\/v1\/members\/me\/favorites(?:\/[^?]+)?(?:\?.*)?$/u, async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const pathname = url.pathname;
+    const productCode = pathname.split('/').at(-1);
+    if (request.method() === 'PUT') {
+      if (!favorites.some((item) => item.product_code === productCode)) {
+        favorites = [...favorites, memberProduct];
+      }
+      await route.fulfill({ status: 204 });
+      return;
+    }
+    if (request.method() === 'DELETE') {
+      favorites = favorites.filter((item) => item.product_code !== productCode);
+      await route.fulfill({ status: 204 });
+      return;
+    }
+    if (!pathname.endsWith('/favorites')) {
+      await route.fulfill({
+        contentType: 'application/json',
+        json: { favorited: favorites.some((item) => item.product_code === productCode) },
+        status: 200,
+      });
+      return;
+    }
+    const cursor = url.searchParams.get('cursor');
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        items: cursor ? favorites.slice(1) : favorites.slice(0, 1),
+        next_cursor: !cursor && favorites.length > 1 ? 'c1_E2EFavoritesCursor0001' : null,
+      },
+      status: 200,
+    });
+  });
+  await page.route(/\/v1\/members\/me\/product-history(?:\/[^?]+)?(?:\?.*)?$/u, async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === 'PUT') {
+      history = [memberProduct];
+      await route.fulfill({ status: 204 });
+      return;
+    }
+    if (request.method() === 'DELETE') {
+      history = pathname.endsWith('/product-history') ? [] : history;
+      await route.fulfill({ status: 204 });
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      json: { items: history, next_cursor: null },
+      status: 200,
+    });
+  });
+  await page.route('**/v1/members/me/consents', async (route) => {
+    if (route.request().method() === 'POST') {
+      const body = route.request().postDataJSON() as { purpose: string; status: string };
+      consents = consents.map((consent) =>
+        consent.purpose === body.purpose
+          ? { ...consent, occurred_at: new Date().toISOString(), status: body.status }
+          : consent,
+      );
+      await route.fulfill({
+        contentType: 'application/json',
+        json: { recorded: true },
+        status: 201,
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      json: { items: consents },
+      status: 200,
+    });
+  });
+  await page.route(/\/v1\/members\/me\/privacy-requests(?:\/[^?]+)*(?:\?.*)?$/u, async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === 'POST' && pathname.endsWith('/cancel')) {
+      privacyCancelIdempotencyKey = request.headers()['idempotency-key'] ?? '';
+      const requestNumber = pathname.split('/').at(-2);
+      const item = privacyRequests.find((candidate) => candidate.public_number === requestNumber)!;
+      const cancelled = {
+        ...item,
+        status: 'CANCELLED',
+        updated_at: new Date().toISOString(),
+        version: item.version + 1,
+      };
+      privacyRequests = privacyRequests.map((candidate) =>
+        candidate.public_number === requestNumber ? cancelled : candidate,
+      );
+      await route.fulfill({ contentType: 'application/json', json: cancelled, status: 200 });
+      return;
+    }
+    if (request.method() === 'POST') {
+      privacyCreateIdempotencyKey = request.headers()['idempotency-key'] ?? '';
+      const body = request.postDataJSON() as {
+        description: string;
+        request_type: string;
+      };
+      const created = {
+        created_at: new Date().toISOString(),
+        description: body.description,
+        public_number: 'PRV-E2EMEMBER0000001',
+        request_type: body.request_type,
+        status: 'SUBMITTED',
+        updated_at: new Date().toISOString(),
+        version: 1,
+      };
+      privacyRequests = [created, ...privacyRequests];
+      await route.fulfill({ contentType: 'application/json', json: created, status: 201 });
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      json: { items: privacyRequests, next_cursor: null },
+      status: 200,
+    });
+  });
+
+  await page.goto(`${store.url}#/products/${store.productCode}`);
+  await expect(page.getByRole('heading', { name: store.product })).toBeVisible();
+  const favorite = page.getByRole('button', { name: 'Thêm vào yêu thích' });
+  await expect(favorite).toBeVisible();
+  const favoriteResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'PUT' &&
+      response.url().includes(`/v1/members/me/favorites/${store.productCode}`),
+  );
+  await favorite.click();
+  expect((await favoriteResponse).status()).toBe(204);
+  await expect(page.getByRole('button', { name: 'Bỏ khỏi yêu thích' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect(favorites).toHaveLength(2);
+  expect(history).toHaveLength(1);
+
+  await page.goto(`${store.url}#/profile`);
+  await expect(page.getByRole('heading', { name: 'Của tôi', exact: true }).first()).toBeVisible();
+  await page.getByRole('link', { name: /Sản phẩm yêu thích/ }).click();
+  await expect(page.getByRole('heading', { name: 'Sản phẩm yêu thích' })).toBeVisible();
+  const unavailableRow = page.locator('.member-product.unavailable');
+  await expect(unavailableRow).toContainText(unavailableProduct.name);
+  await expect(unavailableRow.getByRole('link')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Xem thêm' }).click();
+  await expect(page.locator('.member-product')).toHaveCount(2);
+  const availableRow = page.locator('.member-product').filter({ hasText: store.product });
+  await expect(availableRow).toContainText(store.product);
+  await availableRow.getByRole('button', { name: /Xóa/ }).click();
+  await expect(page.locator('.member-product')).toHaveCount(1);
+  expect(favorites).toEqual([unavailableProduct]);
+
+  await page.goto(`${store.url}#/profile/history`);
+  await expect(page.getByRole('heading', { name: 'Sản phẩm đã xem' })).toBeVisible();
+  await expect(page.locator('.member-product')).toContainText(store.product);
+  await page.getByRole('button', { name: 'Xóa tất cả' }).click();
+  await expect(page.locator('.member-product')).toHaveCount(0);
+  expect(history).toEqual([]);
+
+  await page.goto(`${store.url}#/profile/privacy`);
+  await expect(page.getByRole('heading', { name: 'Quyền riêng tư và đồng ý' })).toBeVisible();
+  await expect(page.getByText('Đã đồng ý · privacy-v1')).toBeVisible();
+  await page.getByRole('button', { name: 'Rút lại' }).click();
+  await expect(page.getByText('Đã rút lại · privacy-v1')).toBeVisible();
+  await page.getByLabel('Loại yêu cầu').selectOption('CORRECTION');
+  await page.getByLabel('Nội dung yêu cầu').fill('Vui lòng cập nhật tên hồ sơ đã cũ của tôi.');
+  await page.getByRole('button', { name: 'Gửi yêu cầu' }).click();
+  await expect(page.getByText('PRV-E2EMEMBER0000001')).toBeVisible();
+  expect(privacyCreateIdempotencyKey.length).toBeGreaterThanOrEqual(16);
+  await page.getByRole('button', { name: 'Hủy yêu cầu' }).click();
+  await expect(page.getByText('Đã hủy', { exact: true })).toBeVisible();
+  expect(privacyCancelIdempotencyKey.length).toBeGreaterThanOrEqual(16);
+
+  await page.getByRole('button', { name: 'ZH', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '隐私与同意' })).toBeVisible();
+  await page.getByRole('button', { name: 'EN', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Privacy and consent' })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  expect(browserErrors).toEqual([]);
+});

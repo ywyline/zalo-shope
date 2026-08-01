@@ -564,6 +564,9 @@ favorites/history 的 member policy 在 `USING` 与 `WITH CHECK` 同时要求商
   `SUBMITTED/ACTION_REQUIRED` 阶段取消。M6.2 仅实现 member owner-RLS 和数据库转换投影，尚未开放
   提交、本人查询或取消运行时；其余管理履约转换先冻结但到 M7 才实现。M7 实施管理员履约、数据导出/删除执行、法定保留
   冲突处理和 SLA 工作台。
+- M6.5 会员取消运行时将 transition 原因规范化为 `MEMBER_CANCELLED_BEFORE_FULFILLMENT`；客户端
+  `reason` 只参与幂等 request hash，不以明文写入 transition。未来如需保存自由文本原因，必须先批准
+  敏感数据分类并通过向前迁移增加加密字段，不能复用当前明文 `reason`。
 - 与收藏/历史相同使用 member-owner RLS；描述视为敏感数据，日志/普通审计只记录请求号、类型和
   状态。会员中心继续复用现有 `members`、地址、订单和 `member_coupons`，不复制这些事实。
 

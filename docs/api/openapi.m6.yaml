@@ -1262,7 +1262,37 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/MemberCommerceSummary' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/members/me/consents:
+    get:
+      operationId: listMemberCurrentConsents
+      summary: List the latest append-only consent fact for each purpose in the current store
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+      responses:
+        '200':
+          description: Latest consent facts without evidence or internal identifiers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberConsentList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /v1/members/me/favorites/{productCode}:
+    get:
+      operationId: getMemberFavoriteStatus
+      summary: Read whether the current member has favorited one current-store product
+      security: [{ MemberBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/ProductCode' }
+      responses:
+        '200':
+          description: Current member and store favorite status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberFavoriteStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     put:
       operationId: putMemberFavorite
       summary: Idempotently add a current-store product favorite
@@ -1912,7 +1942,11 @@ components:
       required: [expected_version, reason]
       properties:
         expected_version: { type: integer, minimum: 1 }
-        reason: { type: string, minLength: 10, maxLength: 500 }
+        reason:
+          type: string
+          minLength: 10
+          maxLength: 500
+          description: Used for confirmation and idempotency only; the server stores a canonical non-sensitive cancellation reason, not this plaintext.
     ReturnShipmentRequest:
       type: object
       additionalProperties: false
@@ -2579,6 +2613,12 @@ components:
           oneOf:
             - { $ref: '#/components/schemas/OpaqueCursor' }
             - { type: 'null' }
+    MemberFavoriteStatus:
+      type: object
+      additionalProperties: false
+      required: [favorited]
+      properties:
+        favorited: { type: boolean }
     MemberCommerceSummary:
       type: object
       additionalProperties: false
@@ -2598,6 +2638,31 @@ components:
         order_status_counts:
           type: object
           additionalProperties: { type: integer, minimum: 0 }
+    MemberConsentPurpose:
+      type: string
+      enum: [PROFILE, PHONE, LOCATION, TERMS, PRIVACY]
+    MemberConsentStatus:
+      type: string
+      enum: [GRANTED, DENIED, REVOKED]
+    MemberConsentSource:
+      type: string
+      enum: [ZALO, MANUAL]
+    MemberConsent:
+      type: object
+      additionalProperties: false
+      required: [purpose, status, policy_version, source, occurred_at]
+      properties:
+        purpose: { $ref: '#/components/schemas/MemberConsentPurpose' }
+        status: { $ref: '#/components/schemas/MemberConsentStatus' }
+        policy_version: { type: string, minLength: 1, maxLength: 64 }
+        source: { $ref: '#/components/schemas/MemberConsentSource' }
+        occurred_at: { type: string, format: date-time }
+    MemberConsentList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/MemberConsent' } }
     PrivacyRequestType:
       type: string
       enum: [ACCESS, CORRECTION, DELETION, ANONYMIZATION, ACCOUNT_CLOSURE]

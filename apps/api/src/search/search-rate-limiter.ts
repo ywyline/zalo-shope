@@ -21,6 +21,8 @@ export class SearchRateLimiter implements OnApplicationShutdown {
     address: string,
     scope:
       | 'coupon-claim'
+      | 'member-read'
+      | 'member-write'
       | 'payment-callback'
       | 'payment-query'
       | 'pricing'

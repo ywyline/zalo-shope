@@ -2,7 +2,7 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.4 已完成支付契约、数据/RLS、可靠消息、受限在线支付核心与 test-only provider；M5.5-M5.7 已加入 Zalo Checkout、GHN、退款及本地补偿底座，但真实凭据、沙箱、结算、COD 回款和真机仍未验收。M6.1/M6.2、M6.3-A/B0/B1/B2a 与 B2b-D0-D5 的各自 repository/local-test 边界已经完成。M6.3-B3 三条售后申请/取消/商家主动退款命令、B4 管理员审核/人工复核与 SYSTEM 寄回到期、B5 会员返件登记/管理员可信物流事实与待验收读取，以及 B6 ONLINE 售后退款权威协调也已完成 default-disabled repository implementation + local/test validation；这些能力只返回稳定投影或追加受限事实，production 配置与服务层均拒绝启用。B2/B2b 整体、B7、M6.3、M6、M6 UI 与 P0 仍未完成；所有生产政策/enforcement、TTL、对象存储、真实供应商、部署和 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。当前没有真实物流 provider、返件验收、真实支付商退款验收、COD 结算、库存恢复或换货履约运行时，不能把 B3-B6 的本地仓库完成状态表述为完整售后或生产就绪。生产依赖审计另保留 3 项 React Router moderate 公告，不得写成零漏洞。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.7 已完成支付/物流/退款仓库底座；P0-M5-002 现已补齐 Mini App ONLINE 报价、下单、显式 Zalo Checkout 拉起、服务端权威查询、重试和订单恢复入口，但真实凭据、sandbox、回调、结算、COD 回款和真机仍未验收。M6.1/M6.2、M6.3-A/B0/B1/B2a 与 B2b-D0-D5 的各自 repository/local-test 边界已经完成。M6.3-B3 三条售后申请/取消/商家主动退款命令、B4 管理员审核/人工复核与 SYSTEM 寄回到期、B5 会员返件登记/管理员可信物流事实与待验收读取，以及 B6 ONLINE 售后退款权威协调也已完成 default-disabled repository implementation + local/test validation；这些能力只返回稳定投影或追加受限事实，production 配置与服务层均拒绝启用。P0-M6-009 已完成商城/会员隔离的收藏、最近商品浏览历史、会员汇总、同意/隐私请求运行时，以及越南语、中文、英文 Mini App 会员中心页面。B2/B2b 整体、B7、M6.3、M6、分享与完整售后 UI 和 P0 仍未完成；所有生产政策/enforcement、TTL、对象存储、真实供应商、部署和 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。当前没有真实物流 provider、返件验收、真实支付商退款验收、COD 结算、库存恢复或换货履约运行时，不能把 B3-B6 或会员本地完成状态表述为完整售后或生产就绪。生产依赖审计另保留 3 项 React Router moderate 公告，不得写成零漏洞。
 
 M6.3-B2b-D1 已完成专用 `AfterSaleEvidenceObjectStorageProvider`、默认失败关闭配置、本地/测试
 MinIO 独立 bucket 与 upload/read/delete 最小 IAM，以及真实对象长度、SHA-256、Content-Type 和
@@ -650,6 +650,22 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   `docs/plans/m6.3-b6-online-refund-plan.md`，最终证据见
   `docs/reports/m6.3-b6-online-refund-completion-report.md`。B6 不包含真实 provider、COD、返件验收、库存
   恢复、换货、UI 或生产 rollout；B2/B2b、B7、M6.3、M6 与 P0 继续未完成。
+
+## P0-M6-009 会员互动与隐私运行时
+
+- 已实现当前商城/会员范围的收藏列表、单商品状态、幂等添加/删除，最近 100 个商品浏览历史的
+  touch/列表/删除/清空，以及地址、券、收藏、历史和订单状态轻量汇总。所有查询和写入显式绑定
+  Bearer、商城、会员、`StoreContext` 与 FORCE RLS。
+- 收藏、历史和隐私列表使用绑定商城、会员、资源、locale 和微秒排序键的 HMAC opaque cursor；
+  会员读写使用 Redis 分级限流，写与隐私路径在 limiter 不可用时失败关闭。
+- 隐私说明加密保存；会员取消只持久化规范化的非敏感原因，不保存客户端取消自由文本。公开编号不暴露
+  内部 UUID。创建只产生 `SUBMITTED`，取消只追加 transition，同意撤回只追加 `REVOKED`，不伪装
+  数据删除、匿名化或账户关闭已经履约。
+- Mini App 已提供越南语、中文、英文会员中心、收藏、历史、同意与隐私页面；下架商品只显示受限
+  摘要且不可导航，列表支持继续加载，无有效会话时不展示残留会员事实。
+- 最终证据见 `docs/reports/p0-m6-009-member-runtime-completion-report.md`。真实隐私履约、法律决定、
+  Zalo 真机、部署和 production rollout 仍为 `BLOCKED / NOT_RUN`；当前 Task Tree 无依赖已满足的后续
+  P0 任务，因此 Stop Protocol 已启用。
 
 ## 环境与密钥
 

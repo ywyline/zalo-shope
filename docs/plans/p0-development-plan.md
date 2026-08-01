@@ -417,6 +417,14 @@ RLS 且无角色成员关系；受限 security-definer 函数以固定 `search_p
 - E2E：退款、退货、换货、收藏、优惠券和分享目标解析。
 - 真机验证分享链接打开正确商城、语言和对象。
 
+P0-M6-009/M6.5 完成记录（2026-08-01）：收藏、单商品收藏状态、最近 100 个商品浏览历史、会员
+轻量汇总、最新同意事实和加密隐私请求受理/查询/取消运行时，以及越南语、中文、英文 Mini App
+会员页面已完成 repository implementation + local/test validation。完整 integration 38 文件/337 项、
+`verify` 76 文件/627 项单元测试、25/25 Chromium/WebKit E2E 和适用安全门禁通过；完整证据见
+`docs/reports/p0-m6-009-member-runtime-completion-report.md`。隐私履约、M6.6 分享、M6.7 完整售后
+UI、Zalo 真机和 production rollout 未包含。完成后没有依赖已满足的 P0 任务，按 `TASKS.md` Stop
+Protocol 停止继续实现。
+
 ### M7：报表、合规、可观测性与发布验收
 
 目标：完成 P0 运营闭环和上线前技术验收。

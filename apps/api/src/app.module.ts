@@ -110,6 +110,9 @@ import {
 import { AfterSalesEvidenceController } from './after-sales-evidence/after-sales-evidence.controller';
 import { AfterSalesEvidenceService } from './after-sales-evidence/after-sales-evidence.service';
 import { AFTER_SALE_EVIDENCE_STORAGE_PROVIDER } from './after-sales-evidence/after-sales-evidence.tokens';
+import { MemberRuntimeController } from './member-runtime/member-runtime.controller';
+import { MemberRuntimeCursor } from './member-runtime/member-runtime-cursor';
+import { MemberRuntimeService } from './member-runtime/member-runtime.service';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -205,6 +208,7 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     AfterSalesController,
     AfterSalesAdminController,
     AfterSalesAdminOrderController,
+    MemberRuntimeController,
   ],
   providers: [
     AdminService,
@@ -238,6 +242,8 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     AfterSalesRateLimiter,
     AfterSalesService,
     AfterSalesEvidenceService,
+    MemberRuntimeCursor,
+    MemberRuntimeService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
       provide: DATABASE_CLIENT,

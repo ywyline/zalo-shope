@@ -26,7 +26,13 @@ import {
 import { CartRequestError } from './cart-api';
 import { CartProvider, useCart } from './cart-state';
 import { CartView, cartQuantity } from './cart-view';
-import { IdentityPanel } from './identity-panel';
+import { MemberCenterView, MemberPrivacyView, MemberProductsView } from './member-center-view';
+import {
+  deleteMemberFavorite,
+  getMemberFavoriteStatus,
+  putMemberFavorite,
+  touchMemberProductHistory,
+} from './member-runtime-api';
 import { useMemberSession } from './member-session';
 import { SearchView } from './search-view';
 import { AddressView } from './address-view';
@@ -587,6 +593,11 @@ function ProductDetailView({ locale }: { locale: Locale }): JSX.Element {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState(false);
   const [added, setAdded] = useState(false);
+  const [favorited, setFavorited] = useState(false);
+  const [favoriteBusy, setFavoriteBusy] = useState(false);
+  const [favoriteError, setFavoriteError] = useState(false);
+  const [pendingFavorite, setPendingFavorite] = useState(false);
+  const historyTouched = React.useRef<string>();
   const product = state.status === 'ready' ? state.data : undefined;
   useEffect(() => {
     setSelectedCode(product?.skus[0]?.code ?? '');
@@ -622,6 +633,47 @@ function ProductDetailView({ locale }: { locale: Locale }): JSX.Element {
     setPendingSku(undefined);
     void addToCart(skuCode, quantity);
   }, [addToCart, cartState.status, pendingSku, quantity, session.status]);
+  useEffect(() => {
+    if (!product || !session.accessToken || session.status !== 'ready') return;
+    let active = true;
+    void getMemberFavoriteStatus(session.accessToken, product.code)
+      .then((status) => {
+        if (active) setFavorited(status.favorited);
+      })
+      .catch(() => {
+        if (active) setFavoriteError(true);
+      });
+    if (historyTouched.current !== product.code) {
+      historyTouched.current = product.code;
+      void touchMemberProductHistory(session.accessToken, product.code).catch(() => {
+        if (historyTouched.current === product.code) historyTouched.current = undefined;
+      });
+    }
+    return () => {
+      active = false;
+    };
+  }, [product, session.accessToken, session.status]);
+
+  const toggleFavorite = React.useCallback(async (): Promise<void> => {
+    if (!product || !session.accessToken) return;
+    setFavoriteBusy(true);
+    setFavoriteError(false);
+    try {
+      if (favorited) await deleteMemberFavorite(session.accessToken, product.code);
+      else await putMemberFavorite(session.accessToken, product.code);
+      setFavorited((current) => !current);
+    } catch {
+      setFavoriteError(true);
+    } finally {
+      setFavoriteBusy(false);
+    }
+  }, [favorited, product, session.accessToken]);
+
+  useEffect(() => {
+    if (!pendingFavorite || session.status !== 'ready' || !session.accessToken) return;
+    setPendingFavorite(false);
+    void toggleFavorite();
+  }, [pendingFavorite, session.accessToken, session.status, toggleFavorite]);
   if (state.status !== 'ready') {
     return (
       <div className="page-view">
@@ -637,6 +689,24 @@ function ProductDetailView({ locale }: { locale: Locale }): JSX.Element {
         <Link className="back-link overlay" to="/products">
           ←
         </Link>
+        <button
+          aria-label={text(locale, favorited ? 'member.favoriteRemove' : 'member.favoriteAdd')}
+          aria-pressed={favorited}
+          className={`detail-favorite${favorited ? ' active' : ''}`}
+          disabled={favoriteBusy || session.status === 'loading'}
+          onClick={() => {
+            if (session.status !== 'ready') {
+              setPendingFavorite(true);
+              void session.connect();
+              return;
+            }
+            void toggleFavorite();
+          }}
+          title={text(locale, favorited ? 'member.favoriteRemove' : 'member.favoriteAdd')}
+          type="button"
+        >
+          {favorited ? '♥' : '♡'}
+        </button>
         <MediaImage
           eager
           className="detail-image"
@@ -679,6 +749,11 @@ function ProductDetailView({ locale }: { locale: Locale }): JSX.Element {
         )}
         {state.data.promotion_summary && (
           <p className="promotion-detail">{state.data.promotion_summary.label}</p>
+        )}
+        {favoriteError && (
+          <p className="purchase-error" role="alert">
+            {text(locale, 'member.actionError')}
+          </p>
         )}
         <section className="sku-section">
           <div className="detail-section-title">
@@ -878,14 +953,17 @@ function CatalogExperience({
           <Route element={<OrderDetailView locale={locale} />} path="/orders/:orderId" />
           <Route element={<PaymentView locale={locale} />} path="/payments/:paymentId" />
           <Route element={<OrderResultView locale={locale} />} path="/order-result/:orderId" />
+          <Route element={<PaymentView locale={locale} />} path="/payments/:paymentId" />
+          <Route element={<MemberCenterView locale={locale} />} path="/profile" />
           <Route
-            element={
-              <div className="page-view">
-                <IdentityPanel locale={locale} />
-              </div>
-            }
-            path="/profile"
+            element={<MemberProductsView kind="favorites" locale={locale} />}
+            path="/profile/favorites"
           />
+          <Route
+            element={<MemberProductsView kind="history" locale={locale} />}
+            path="/profile/history"
+          />
+          <Route element={<MemberPrivacyView locale={locale} />} path="/profile/privacy" />
           <Route element={<HomeView home={home} locale={locale} />} path="*" />
         </Routes>
       </main>

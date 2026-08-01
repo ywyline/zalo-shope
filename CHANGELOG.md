@@ -78,6 +78,7 @@ This file records completed repository changes. Each entry uses `Date`, `Added`,
 ### Docs
 
 - Added the P0-M6-009 plan and completion report; synchronized M6 OpenAPI, README, Task Tree and three-language messages.
+- Git Recovery reconciled this completed task to the task-scoped commit `feat(P0-M6-009): member privacy and engagement runtime`; format, lint, typecheck, 627 unit tests, 337 integration tests, build, schema validation, 25 browser E2E tests and staged-diff verification passed.
 - Recorded the approximately 64% engineering estimate and activated the Stop Protocol because no remaining P0 task has all dependencies satisfied.
 
 ## 2026-08-01 - Buyer Online Payment Experience (`0.1.0`)
