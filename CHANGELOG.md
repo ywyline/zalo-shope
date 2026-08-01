@@ -19,6 +19,7 @@ This file records completed repository changes. Each entry uses `Date`, `Added`,
 
 - Applied `review_status` to both cursor validation and the actual batch query so `OPEN`, `CLOSED_ACCEPTED` and `CLOSED_ESCALATED` pages cannot contain rows from another review state.
 - Revalidated direct-store authorization after the batch review lock wait and kept database maker-checker, RLS, append-only and rollback guards authoritative under races or direct writes.
+- Corrected the README control summary and Task Tree main-sync evidence after Slice C integration so current documentation no longer reports the historical Slice A-only state.
 
 ### Removed
 
