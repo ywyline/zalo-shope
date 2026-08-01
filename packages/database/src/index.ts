@@ -124,6 +124,7 @@ export * from './after-sale-evidence-primitives';
 export * from './after-sale-command-primitives';
 export * from './after-sale-review-primitives';
 export * from './after-sale-return-primitives';
+export * from './after-sale-inspection-primitives';
 export * from './after-sale-refund-events';
 export * from './after-sale-refund-primitives';
 export * from './after-sale-cod-refund-primitives';

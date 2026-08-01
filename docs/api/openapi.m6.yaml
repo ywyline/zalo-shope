@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M6 incremental API contract
-  version: 0.6.3-b7
+  version: 0.6.4-a
   description: >-
     M6 incremental contract combined with the M1-M5 contracts. M6.3-A implements the after-sale
     settings GET/PUT routes, M6.3-B1 implements the member/admin after-sale list and detail GET
@@ -17,7 +17,9 @@ info:
     the server-calculated ONLINE settlement, M5 refund/link atomic coordinator and versioned
     after-sale refund synchronization worker. M6.3-B7 extends the shared refund route with a
     server-selected COD branch backed by exact matched COD remittance facts, then implements an
-    encrypted receipt-recording route and a different-administrator confirmation route. These
+    encrypted receipt-recording route and a different-administrator confirmation route. M6.4
+    Slice A implements complete return inspection and exactly-once sellable inventory restoration;
+    replacement reservation and EXCHANGE_OUTBOUND fulfillment remain contract-only. These
     capabilities remain behind independent
     repository/local-test-only, default-disabled gates. This does not
     establish production readiness: legal-hold/dead-letter management, external alerting,
@@ -29,7 +31,7 @@ info:
     X-Correlation-Id on the server and do not accept a client correlation identifier; the generated
     value is propagated through authorization, audit, logs and error bodies.
 x-after-sale-b0-contract:
-  runtime_status: m6_3_a_b1_b2a_d3_d5_b3_b4_b5_b6_and_b7_repository_local_test_implemented
+  runtime_status: m6_3_a_b1_b2a_d3_d5_b3_b4_b5_b6_b7_and_m6_4_slice_a_repository_local_test_implemented
   runtime_operations:
     implemented_m6_3_a: [getAfterSaleSettings, setAfterSalePolicyEnforcement]
     implemented_m6_3_b1:
@@ -57,7 +59,8 @@ x-after-sale-b0-contract:
     implemented_m6_3_b6: [requestAfterSaleRefund]
     implemented_m6_3_b7:
       [requestAfterSaleRefund, recordAfterSaleCodRefundReceipt, confirmAfterSaleCodRefund]
-    contract_only_m6_3_b2_and_later: all_after_sale_operations_not_listed_as_implemented_above
+    implemented_m6_4_slice_a: [inspectAfterSaleReturn]
+    contract_only_m6_3_b2_m6_4_slice_b_and_later: all_after_sale_operations_not_listed_as_implemented_above
   protected_evidence_read:
     status: complete_repository_local_test_default_disabled
     repository_gates: pass
@@ -90,7 +93,7 @@ x-after-sale-b0-contract:
       member_read: implemented_m6_3_b1_m6_3_b2b_d3_and_d5
       admin_read: implemented_m6_3_b1_m6_3_b2a_and_m6_3_b2b_d5
       member_write: implemented_m6_3_b2b_d3_b3_and_b5
-      admin_write: implemented_m6_3_b2a_b3_b4_b5_b6_and_b7
+      admin_write: implemented_m6_3_b2a_b3_b4_b5_b6_b7_and_m6_4_slice_a
     read_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
     write_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
   b3_commands:
@@ -154,6 +157,18 @@ x-after-sale-b0-contract:
     receipt_storage: keyed_digests_mask_and_encrypted_evidence_plaintext_not_projected
     transaction: serializable_pending_settlement_receipt_then_atomic_success_transitions_confirmation_and_audit
     excluded_side_effects: real_bank_transfer_provider_calls_inventory_inspection_exchange_ui_rollout
+  m6_4_slice_a_return_inspection:
+    status: complete_repository_local_test_default_disabled
+    repository_gates: pass
+    migration_range: '57'
+    production_status: not_authorized_not_run_and_rejected_by_runtime_configuration
+    command_gate: AFTER_SALE_FULFILLMENT_COMMANDS_ENABLED_false
+    admin_authorization: direct_target_store_after_sale_inspect_recent_mfa_plus_inventory_adjust_for_sellable_restore
+    input_authority: complete_approved_order_item_coverage_no_client_sku_warehouse_amount_or_status
+    dispositions: [RESTOCK_SELLABLE, QUARANTINE, SCRAP, RETURN_TO_MEMBER]
+    inventory_restore: exactly_once_original_consumed_reservation_single_authoritative_warehouse
+    result_statuses: [REFUND_PENDING, EXCHANGE_PENDING, REJECTED]
+    excluded_side_effects: replacement_reservation_exchange_outbound_provider_calls_ui_rollout
   system_principal:
     scope: after-sale-transition
     events:
@@ -675,6 +690,56 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSaleCommandAcknowledgement' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
+  /v1/admin/after-sales/{afterSaleId}/inspection:
+    post:
+      operationId: inspectAfterSaleReturn
+      x-runtime-status: implemented_m6_4_slice_a_repository_local_test_default_disabled
+      x-rate-limit-tier: admin_write
+      summary: Record a complete return inspection and restore sellable inventory exactly once
+      description: >-
+        Accepts one complete disposition allocation for every approved order item only while the
+        trusted return projection is INSPECTION_PENDING. The request cannot provide SKU, warehouse,
+        amount, inventory operation or target status. RESTOCK_SELLABLE is the only disposition that
+        restores inventory, and it requires direct target-store store.inventory.adjust in addition
+        to direct store.after-sales.inspect and recent MFA. The database revalidates the active
+        store, administrator, session, token, MFA and direct permissions after all lock waits, then
+        binds each restoration to the consumed original order reservation and its single
+        authoritative warehouse. QUARANTINE, SCRAP and RETURN_TO_MEMBER record immutable inspection
+        facts without increasing sellable inventory. Any accepted quantity moves RETURN_REFUND to
+        REFUND_PENDING or EXCHANGE to EXCHANGE_PENDING; an entirely rejected inspection moves to
+        REJECTED. Replacement reservation, exchange shipment, provider calls and UI are excluded.
+        This repository/local-test capability is disabled by default and rejected in production.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleInspectionRequest' }
+      responses:
+        '200':
+          description: >-
+            Immutable acknowledgement of the committed inspection and its public sellable-restoration
+            summary. Current aggregate details remain available through the B1 GET route.
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSaleInspectionAcknowledgement' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2039,6 +2104,65 @@ components:
         expected_version: { type: integer, minimum: 1 }
         reason: { type: string, minLength: 10, maxLength: 500 }
         status: { type: string, enum: [IN_TRANSIT, DELIVERED] }
+    AfterSaleInspectionAllocation:
+      type: object
+      additionalProperties: false
+      required: [disposition, quantity]
+      properties:
+        disposition: { type: string, enum: [RESTOCK_SELLABLE, QUARANTINE, SCRAP, RETURN_TO_MEMBER] }
+        quantity: { type: integer, minimum: 1, maximum: 1000 }
+    AfterSaleInspectionItem:
+      type: object
+      additionalProperties: false
+      required: [dispositions, order_item_id]
+      properties:
+        dispositions:
+          type: array
+          minItems: 1
+          maxItems: 4
+          uniqueItems: true
+          description: Each disposition may occur at most once for an order item.
+          items: { $ref: '#/components/schemas/AfterSaleInspectionAllocation' }
+        order_item_id: { type: string, format: uuid }
+    AfterSaleInspectionRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, expected_inspection_version, expected_version, items, reason]
+      properties:
+        confirmation_code: { type: string, const: CONFIRM_RETURN_INSPECTION }
+        expected_inspection_version: { type: integer, minimum: 0 }
+        expected_version: { type: integer, minimum: 1 }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          description: >-
+            Must contain each approved order item exactly once, with disposition quantities summing
+            to that item's complete approved quantity.
+          items: { $ref: '#/components/schemas/AfterSaleInspectionItem' }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+    AfterSaleInspectionRestoredItem:
+      type: object
+      additionalProperties: false
+      required: [order_item_id, quantity]
+      properties:
+        order_item_id: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 1, maximum: 1000 }
+    AfterSaleInspectionAcknowledgement:
+      type: object
+      additionalProperties: false
+      required: [id, inspection_version, public_number, restored_items, status, version]
+      properties:
+        id: { type: string, format: uuid }
+        inspection_version: { type: integer, minimum: 1 }
+        public_number: { type: string, pattern: '^ASC-[A-Z0-9]{16,32}$' }
+        restored_items:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/AfterSaleInspectionRestoredItem' }
+        status: { type: string, enum: [REFUND_PENDING, EXCHANGE_PENDING, REJECTED] }
+        version: { type: integer, minimum: 1 }
     AfterSaleApprovedItemInput:
       type: object
       additionalProperties: false

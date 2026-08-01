@@ -12,7 +12,13 @@ import type {
   AfterSaleCommandAcknowledgementResponse,
   AfterSalePolicyContent,
 } from '@zalo-shop/contracts';
-import { canonicalAfterSalePolicyHash, PrismaClient } from '@zalo-shop/database';
+import {
+  canonicalAfterSalePolicyHash,
+  consumeReservation,
+  PrismaClient,
+  reserveInventory,
+} from '@zalo-shop/database';
+import { createStoreContext } from '@zalo-shop/domain';
 import { signJwt } from '@zalo-shop/security';
 
 const STORE_SUFFIX = randomUUID().slice(0, 8);
@@ -39,6 +45,7 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
     codShipmentId: randomUUID(),
     codShipmentItemId: randomUUID(),
     fashionRoleId: randomUUID(),
+    inventoryBalanceId: randomUUID(),
     memberId: randomUUID(),
     memberSessionId: randomUUID(),
     orderId: randomUUID(),
@@ -110,6 +117,8 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
   let otherMemberToken: string;
   let limiterRedis: { del(...keys: string[]): Promise<number> };
   let memberCreateAcknowledgement: AfterSaleCommandAcknowledgementResponse;
+  let inspectionPendingAcknowledgement: AfterSaleCommandAcknowledgementResponse | undefined;
+  let originalReservationId: string | undefined;
 
   const api = () => request(app.getHttpServer() as Server);
   const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -359,6 +368,11 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
             storeId: BEAUTY_STORE_ID,
           },
           {
+            permissionCode: 'store.after-sales.inspect',
+            roleId: fixture.beautyRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+          {
             permissionCode: 'store.after-sales.review',
             roleId: fixture.beautyRoleId,
             storeId: BEAUTY_STORE_ID,
@@ -379,12 +393,27 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
             storeId: BEAUTY_STORE_ID,
           },
           {
+            permissionCode: 'store.inventory.adjust',
+            roleId: fixture.beautyRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+          {
+            permissionCode: 'store.after-sales.inspect',
+            roleId: fixture.fashionRoleId,
+            storeId: FASHION_STORE_ID,
+          },
+          {
             permissionCode: 'store.after-sales.review',
             roleId: fixture.fashionRoleId,
             storeId: FASHION_STORE_ID,
           },
           {
             permissionCode: 'store.after-sales.read',
+            roleId: fixture.fashionRoleId,
+            storeId: FASHION_STORE_ID,
+          },
+          {
+            permissionCode: 'store.inventory.adjust',
             roleId: fixture.fashionRoleId,
             storeId: FASHION_STORE_ID,
           },
@@ -456,6 +485,16 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
           productId: fixture.productId,
           salePriceVnd: 100_000,
           storeId: BEAUTY_STORE_ID,
+        },
+      });
+      await transaction.inventoryBalance.create({
+        data: {
+          id: fixture.inventoryBalanceId,
+          onHand: 20,
+          reserved: 0,
+          skuId: fixture.skuId,
+          storeId: BEAUTY_STORE_ID,
+          warehouseId: fixture.warehouseId,
         },
       });
       await transaction.$executeRaw`
@@ -768,6 +807,40 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
       });
     });
 
+    const inventoryContext = createStoreContext({
+      accessSessionExpiresAt: expiresAt,
+      accessSessionId: fixture.adminSessionId,
+      accessTokenExpiresAt: new Date(Date.now() + 15 * 60 * 1_000),
+      adminAuthorizationScope: 'STORE',
+      actor: { id: fixture.adminId, type: 'admin' },
+      correlationId: `m64-api-inventory-${suffix}`,
+      locale: 'vi',
+      storeCode: BEAUTY_STORE_CODE,
+      storeId: BEAUTY_STORE_ID,
+    });
+    const reserved = await reserveInventory(owner, inventoryContext, {
+      expiresAt,
+      items: [{ quantity: 3, skuId: fixture.skuId, warehouseId: fixture.warehouseId }],
+      operationKey: `m64-api-order-reserve-${suffix}`,
+      sourceId: fixture.orderId,
+      sourceType: 'ORDER',
+    });
+    originalReservationId = reserved.result.reservation_id;
+    await consumeReservation(
+      owner,
+      inventoryContext,
+      originalReservationId,
+      `m64-api-order-consume-${suffix}`,
+    );
+    await owner.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.order.update({
+        data: { reservationId: originalReservationId },
+        where: { id: fixture.orderId },
+      });
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
     memberToken = accessToken({
       actorType: 'member',
       sessionId: fixture.memberSessionId,
@@ -827,6 +900,15 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
         where: { actorId: { in: [fixture.memberId, fixture.otherMemberId, fixture.adminId] } },
       });
       if (afterSaleIds.length > 0) {
+        await transaction.afterSaleInventoryAction.deleteMany({
+          where: { afterSaleId: { in: afterSaleIds } },
+        });
+        await transaction.afterSaleInspectionAllocation.deleteMany({
+          where: { afterSaleId: { in: afterSaleIds } },
+        });
+        await transaction.afterSaleInspection.deleteMany({
+          where: { afterSaleId: { in: afterSaleIds } },
+        });
         await transaction.afterSaleCodRefundConfirmation.deleteMany({
           where: { afterSaleId: { in: afterSaleIds } },
         });
@@ -874,6 +956,29 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
       });
       await transaction.orderItem.deleteMany({ where: { id: fixture.orderItemId } });
       await transaction.order.deleteMany({ where: { id: fixture.orderId } });
+      await transaction.inventoryMovement.deleteMany({
+        where: { balanceId: fixture.inventoryBalanceId },
+      });
+      if (originalReservationId !== undefined) {
+        await transaction.inventoryReservationItem.deleteMany({
+          where: { reservationId: originalReservationId },
+        });
+        await transaction.inventoryReservation.deleteMany({
+          where: { id: originalReservationId },
+        });
+      }
+      await transaction.inventoryOperation.deleteMany({
+        where: {
+          storeId: BEAUTY_STORE_ID,
+          OR: [
+            { operationKey: { startsWith: 'm64-api-order-' } },
+            { sourceType: 'AFTER_SALE_RESTORE' },
+          ],
+        },
+      });
+      await transaction.inventoryBalance.deleteMany({
+        where: { id: fixture.inventoryBalanceId },
+      });
       await transaction.afterSalePolicyLocalization.deleteMany({
         where: { policyVersionId: fixture.policyVersionId, storeId: BEAUTY_STORE_ID },
       });
@@ -1445,6 +1550,203 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
         expect.objectContaining({ id: created.body.id, status: 'INSPECTION_PENDING' }),
       ]),
     );
+    inspectionPendingAcknowledgement = delivered.body as AfterSaleCommandAcknowledgementResponse;
+  });
+
+  it('inspects a return through strict HTTP, dynamic RBAC, MFA and idempotent restoration', async () => {
+    if (inspectionPendingAcknowledgement === undefined) {
+      throw new Error('inspection-pending API fixture was not created');
+    }
+    await limiterRedis.del(
+      ...[-1, 0, 1].flatMap((offset) => [
+        rateLimitKey('ADMIN', fixture.adminId, BEAUTY_STORE_ID, offset),
+        rateLimitKey('ADMIN', fixture.adminId, FASHION_STORE_ID, offset),
+      ]),
+    );
+    const inspectionPath = `/v1/admin/after-sales/${inspectionPendingAcknowledgement.id}/inspection`;
+    const inspectionKey = `m64-api-inspection-${suffix}`;
+    const inspectionBody = {
+      confirmation_code: 'CONFIRM_RETURN_INSPECTION',
+      expected_inspection_version: 0,
+      expected_version: inspectionPendingAcknowledgement.version,
+      items: [
+        {
+          dispositions: [{ disposition: 'RESTOCK_SELLABLE', quantity: 1 }],
+          order_item_id: fixture.orderItemId,
+        },
+      ],
+      reason: 'Completed the physical return inspection against the approved quantity.',
+    };
+
+    for (const [field, body] of [
+      [
+        'sku_id',
+        { ...inspectionBody, items: [{ ...inspectionBody.items[0], sku_id: fixture.skuId }] },
+      ],
+      [
+        'warehouse_id',
+        {
+          ...inspectionBody,
+          items: [
+            {
+              ...inspectionBody.items[0],
+              dispositions: [
+                {
+                  ...inspectionBody.items[0]!.dispositions[0],
+                  warehouse_id: fixture.warehouseId,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      ['amount_vnd', { ...inspectionBody, amount_vnd: 1 }],
+      ['status', { ...inspectionBody, status: 'COMPLETED' }],
+      ['unknown_field', { ...inspectionBody, unknown_field: true }],
+    ] as const) {
+      const invalid = await api()
+        .post(`${inspectionPath}?store_id=${BEAUTY_STORE_ID}`)
+        .set({ ...adminHeaders(), 'Idempotency-Key': `m64-api-invalid-${field}-${suffix}` })
+        .send(body);
+      expect(invalid.status, `${field}: ${JSON.stringify(invalid.body)}`).toBe(400);
+      expect(invalid.body).toMatchObject({ code: 'INPUT_INVALID' });
+    }
+
+    await owner.adminSession.update({
+      data: { mfaVerifiedAt: new Date(Date.now() - 11 * 60 * 1_000) },
+      where: { id: fixture.adminSessionId },
+    });
+    const staleMfa = await api()
+      .post(`${inspectionPath}?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': `m64-api-stale-mfa-${suffix}` })
+      .send(inspectionBody);
+    expect(staleMfa.status).toBe(403);
+    expect(staleMfa.body).toMatchObject({ code: 'AUTHORIZATION_DENIED' });
+    await owner.adminSession.update({
+      data: { mfaVerifiedAt: new Date() },
+      where: { id: fixture.adminSessionId },
+    });
+
+    for (const permissionCode of ['store.after-sales.inspect', 'store.inventory.adjust'] as const) {
+      await owner.storeRolePermission.delete({
+        where: {
+          storeId_roleId_permissionCode: {
+            permissionCode,
+            roleId: fixture.beautyRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+        },
+      });
+      try {
+        const revoked = await api()
+          .post(`${inspectionPath}?store_id=${BEAUTY_STORE_ID}`)
+          .set({
+            ...adminHeaders(),
+            'Idempotency-Key': `m64-api-revoked-${permissionCode}-${suffix}`,
+          })
+          .send(inspectionBody);
+        expect(revoked.status).toBe(403);
+        expect(revoked.body).toMatchObject({ code: 'AUTHORIZATION_DENIED' });
+      } finally {
+        await owner.storeRolePermission.create({
+          data: {
+            permissionCode,
+            roleId: fixture.beautyRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+        });
+      }
+    }
+
+    const foreign = await api()
+      .post(`${inspectionPath}?store_id=${FASHION_STORE_ID}`)
+      .set({
+        ...adminHeaders(FASHION_STORE_CODE),
+        'Idempotency-Key': `m64-api-foreign-inspection-${suffix}`,
+      })
+      .send(inspectionBody);
+    expect(foreign.status).toBe(404);
+    expect(foreign.body).toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
+
+    const balanceBefore = await owner.inventoryBalance.findUniqueOrThrow({
+      where: { id: fixture.inventoryBalanceId },
+    });
+    const inspected = await api()
+      .post(`${inspectionPath}?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': inspectionKey })
+      .send(inspectionBody);
+    expect(inspected.status, JSON.stringify(inspected.body)).toBe(200);
+    expect(inspected.headers['idempotency-replayed']).toBe('false');
+    expect(inspected.body).toEqual({
+      id: inspectionPendingAcknowledgement.id,
+      inspection_version: 1,
+      public_number: inspectionPendingAcknowledgement.public_number,
+      restored_items: [{ order_item_id: fixture.orderItemId, quantity: 1 }],
+      status: 'REFUND_PENDING',
+      version: inspectionPendingAcknowledgement.version + 1,
+    });
+    const serialized = JSON.stringify(inspected.body);
+    for (const sensitiveValue of [
+      fixture.skuId,
+      fixture.warehouseId,
+      fixture.inventoryBalanceId,
+      originalReservationId,
+      'operation_id',
+      'audit',
+      'amount_vnd',
+    ]) {
+      if (sensitiveValue !== undefined) expect(serialized).not.toContain(sensitiveValue);
+    }
+
+    const replay = await api()
+      .post(`${inspectionPath}?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': inspectionKey })
+      .send(inspectionBody);
+    expect(replay.status).toBe(200);
+    expect(replay.headers['idempotency-replayed']).toBe('true');
+    expect(replay.body).toEqual(inspected.body);
+
+    const conflict = await api()
+      .post(`${inspectionPath}?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': inspectionKey })
+      .send({ ...inspectionBody, reason: 'A changed inspection cannot reuse the command key.' });
+    expect(conflict.status).toBe(409);
+    expect(conflict.body).toMatchObject({
+      code: 'CONFLICT',
+      details: { reason_code: 'AFTER_SALE_IDEMPOTENCY_CONFLICT' },
+    });
+
+    const balanceAfter = await owner.inventoryBalance.findUniqueOrThrow({
+      where: { id: fixture.inventoryBalanceId },
+    });
+    expect(balanceAfter).toMatchObject({
+      onHand: balanceBefore.onHand + 1,
+      reserved: balanceBefore.reserved,
+      version: balanceBefore.version + 1,
+    });
+
+    const [{ AppModule }, { ApiExceptionFilter }, { RUNTIME_CONFIG }] = await Promise.all([
+      import('../../apps/api/src/app.module'),
+      import('../../apps/api/src/api-exception.filter'),
+      import('../../apps/api/src/health.controller'),
+    ]);
+    const disabledModule = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(RUNTIME_CONFIG)
+      .useValue({ ...config, AFTER_SALE_FULFILLMENT_COMMANDS_ENABLED: false })
+      .compile();
+    const disabledApp = disabledModule.createNestApplication();
+    disabledApp.useGlobalFilters(new ApiExceptionFilter());
+    await disabledApp.init();
+    try {
+      const disabled = await request(disabledApp.getHttpServer() as Server)
+        .post(`${inspectionPath}?store_id=${BEAUTY_STORE_ID}`)
+        .set({ ...adminHeaders(), 'Idempotency-Key': inspectionKey })
+        .send(inspectionBody);
+      expect(disabled.status).toBe(503);
+      expect(disabled.body).toMatchObject({ code: 'UPSTREAM_UNAVAILABLE' });
+    } finally {
+      await disabledApp.close();
+    }
   });
 
   it('requests a server-calculated ONLINE refund with direct refund/read scopes', async () => {

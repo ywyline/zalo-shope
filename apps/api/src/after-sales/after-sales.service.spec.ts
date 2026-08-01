@@ -21,6 +21,7 @@ const commandMocks = vi.hoisted(() => ({
   confirmCodRefund: vi.fn(),
   createMember: vi.fn(),
   createMerchant: vi.fn(),
+  inspectReturn: vi.fn(),
   recordCodRefundReceipt: vi.fn(),
   recordReturnFact: vi.fn(),
   requestCodRefund: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock('@zalo-shop/database', async () => {
     confirmAfterSaleCodRefund: commandMocks.confirmCodRefund,
     createMemberAfterSaleCommand: commandMocks.createMember,
     createMerchantRefundAfterSaleCommand: commandMocks.createMerchant,
+    inspectAfterSaleReturn: commandMocks.inspectReturn,
     recordAfterSaleCodRefundReceipt: commandMocks.recordCodRefundReceipt,
     recordAfterSaleReturnFact: commandMocks.recordReturnFact,
     requestAfterSaleCodRefund: commandMocks.requestCodRefund,
@@ -119,6 +121,7 @@ function commandResult(
 function enabledConfig(): RuntimeConfig {
   return {
     AFTER_SALE_COMMANDS_ENABLED: true,
+    AFTER_SALE_FULFILLMENT_COMMANDS_ENABLED: true,
     AFTER_SALE_REVIEW_COMMANDS_ENABLED: true,
     AFTER_SALE_RETURN_COMMANDS_ENABLED: true,
     AFTER_SALE_REFUND_COMMANDS_ENABLED: true,
@@ -138,6 +141,7 @@ function enabledConfig(): RuntimeConfig {
 function commandOnlyConfig(): RuntimeConfig {
   return {
     AFTER_SALE_COMMANDS_ENABLED: true,
+    AFTER_SALE_FULFILLMENT_COMMANDS_ENABLED: true,
     AFTER_SALE_REVIEW_COMMANDS_ENABLED: true,
     AFTER_SALE_RETURN_COMMANDS_ENABLED: true,
     AFTER_SALE_REFUND_COMMANDS_ENABLED: true,
@@ -211,6 +215,16 @@ describe('AfterSalesService B3 commands', () => {
     commandMocks.review.mockResolvedValue(commandResult('APPROVED', 2));
     commandMocks.submitReturn.mockResolvedValue(commandResult('RETURN_PENDING', 3));
     commandMocks.recordReturnFact.mockResolvedValue(commandResult('RETURN_IN_TRANSIT', 4));
+    commandMocks.inspectReturn.mockResolvedValue({
+      afterSaleId: AFTER_SALE_ID,
+      inspectionVersion: 1,
+      operationId: OPERATION_ID,
+      publicCaseNumber: PUBLIC_CASE_NUMBER,
+      replayed: false,
+      restoredItems: [{ orderItemId: ORDER_ITEM_ID, quantity: 1 }],
+      status: 'REFUND_PENDING',
+      version: 6,
+    });
     commandMocks.requestCodRefund.mockResolvedValue({
       ...commandResult('REFUND_PROCESSING', 3),
       publicSettlementNumber: SETTLEMENT_NUMBER,
@@ -768,6 +782,134 @@ describe('AfterSalesService B3 commands', () => {
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(commandMocks.submitReturn).not.toHaveBeenCalled();
     expect(commandMocks.recordReturnFact).not.toHaveBeenCalled();
+  });
+
+  it('requires inspection and inventory permissions for a sellable return allocation', async () => {
+    const { authorizeSensitive, consume, service } = harness(commandOnlyConfig());
+    const body = {
+      confirmation_code: 'CONFIRM_RETURN_INSPECTION' as const,
+      expected_inspection_version: 0,
+      expected_version: 5,
+      items: [
+        {
+          dispositions: [{ disposition: 'RESTOCK_SELLABLE' as const, quantity: 1 }],
+          order_item_id: ORDER_ITEM_ID,
+        },
+      ],
+      reason: 'Completed the physical return inspection against the approved quantity.',
+    };
+    await expect(
+      service.adminInspectReturn({
+        afterSaleId: AFTER_SALE_ID,
+        body,
+        headers: {
+          accessToken: 'admin-token',
+          correlationId: 'admin-inspection-correlation',
+          sourceIp: '127.0.0.1',
+          storeCode: 'beauty-local',
+        },
+        idempotencyKey: 'admin-inspection-idempotency-key',
+        query: { store_id: STORE_ID },
+      }),
+    ).resolves.toEqual({
+      body: {
+        id: AFTER_SALE_ID,
+        inspection_version: 1,
+        public_number: PUBLIC_CASE_NUMBER,
+        restored_items: [{ order_item_id: ORDER_ITEM_ID, quantity: 1 }],
+        status: 'REFUND_PENDING',
+        version: 6,
+      },
+      replayed: false,
+    });
+    expect(authorizeSensitive).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      STORE_ID,
+      'store.after-sales.inspect',
+    );
+    expect(authorizeSensitive).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      STORE_ID,
+      'store.inventory.adjust',
+    );
+    expect(consume).toHaveBeenCalledWith({
+      access: 'WRITE',
+      actorId: ADMIN_ID,
+      actorType: 'ADMIN',
+      storeId: STORE_ID,
+    });
+    expect(commandMocks.inspectReturn).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ adminAuthorizationScope: 'STORE' }),
+      expect.objectContaining({ afterSaleId: AFTER_SALE_ID, body, sourceIp: '127.0.0.1' }),
+    );
+  });
+
+  it('does not require inventory adjustment for non-sellable inspection and fails closed disabled', async () => {
+    const enabled = commandOnlyConfig();
+    const enabledHarness = harness(enabled);
+    commandMocks.inspectReturn.mockResolvedValueOnce({
+      afterSaleId: AFTER_SALE_ID,
+      inspectionVersion: 1,
+      operationId: OPERATION_ID,
+      publicCaseNumber: PUBLIC_CASE_NUMBER,
+      replayed: false,
+      restoredItems: [],
+      status: 'REFUND_PENDING',
+      version: 6,
+    });
+    await enabledHarness.service.adminInspectReturn({
+      afterSaleId: AFTER_SALE_ID,
+      body: {
+        confirmation_code: 'CONFIRM_RETURN_INSPECTION',
+        expected_inspection_version: 0,
+        expected_version: 5,
+        items: [
+          {
+            dispositions: [{ disposition: 'QUARANTINE', quantity: 1 }],
+            order_item_id: ORDER_ITEM_ID,
+          },
+        ],
+        reason: 'Quarantined the returned item after completing the physical inspection.',
+      },
+      headers: {
+        accessToken: 'admin-token',
+        correlationId: 'admin-quarantine-correlation',
+        storeCode: 'beauty-local',
+      },
+      idempotencyKey: 'admin-quarantine-idempotency-key',
+      query: { store_id: STORE_ID },
+    });
+    expect(enabledHarness.authorizeSensitive).toHaveBeenCalledTimes(1);
+
+    const disabled = commandOnlyConfig();
+    disabled.AFTER_SALE_FULFILLMENT_COMMANDS_ENABLED = false;
+    await expect(
+      harness(disabled).service.adminInspectReturn({
+        afterSaleId: AFTER_SALE_ID,
+        body: {
+          confirmation_code: 'CONFIRM_RETURN_INSPECTION',
+          expected_inspection_version: 0,
+          expected_version: 5,
+          items: [
+            {
+              dispositions: [{ disposition: 'QUARANTINE', quantity: 1 }],
+              order_item_id: ORDER_ITEM_ID,
+            },
+          ],
+          reason: 'Quarantined the returned item after completing the physical inspection.',
+        },
+        headers: {
+          accessToken: 'admin-token',
+          correlationId: 'disabled-inspection-correlation',
+          storeCode: 'beauty-local',
+        },
+        idempotencyKey: 'disabled-inspection-idempotency-key',
+        query: { store_id: STORE_ID },
+      }),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
   it('requires direct target-store refund and read scopes before projecting an ONLINE refund', async () => {

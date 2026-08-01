@@ -370,11 +370,14 @@ B3 另增加 `UNIQUE(store_id,id,after_sale_id)` 供 transition 复合引用。�
 `MEMBER_CREATE`、`MERCHANT_REFUND_CREATE` 和 `MEMBER_CANCEL`；`result_summary` 保存命令提交时的
 case 公开号、状态和版本，幂等重放读取该不可变结果而不是后续 header 状态。三条写 API 由该摘要构造
 `id/public_number/status/version` acknowledgement；当前可变聚合只通过 GET 查询。
+M6.4 Slice A 增加 `ADMIN_INSPECT_RETURN` operation；结果摘要固定保存 case 公开号、派生状态/版本、
+inspection version 和公开 `order_item_id/quantity` 可售恢复汇总。它不保存内部售后行、SKU、仓库、
+库存余额或 movement 标识。同商城同 operation/幂等键只可存在一个已提交结果。
 
 ### 4.5 `after_sale_inspections` 与 `after_sale_inspection_allocations`
 
-- 两张表及既有数据库完整性 guard 继续保留，供后续 M6.4 使用；B0 已从 M6.3-B 公共契约移除
-  `inspect-return` 写路由，B1-B5 不得据表存在自行开放验收或库存恢复。
+- M6.4 Slice A 已通过默认关闭的管理员验收命令使用两张表；此前 B0/M6.3 仅保留结构与 guard 的历史
+  边界不变。除受限 `inspect_p0_m6_008_after_sale_return` 原语外，runtime 仍不得直接写入验收或库存事实。
 - inspection header 只追加保存售后单、版本、管理员、原因和时间；P0 一次命令必须精确覆盖所有
   等待验收的 approved 行，管理员必须等于当前 actor，禁止只提交部分行或全零数量推进整个聚合。
 - allocation 逐售后行保存 `RESTOCK_SELLABLE/QUARANTINE/SCRAP/RETURN_TO_MEMBER` 和正整数数量；
@@ -382,8 +385,10 @@ case 公开号、状态和版本，幂等重放读取该不可变结果而不是
 - `accepted_quantity` 是前三种处置之和，`rejected_quantity` 是 `RETURN_TO_MEMBER`，
   `restockable_quantity` 仅等于 `RESTOCK_SELLABLE`；全部拒绝走 `REJECT_INSPECTION`，不能进入退款/
   换货。更正通过新 inspection 版本追加，不能覆盖旧验收事实。
-- 完整验收命令必须与 exactly-once 库存恢复原语、累计可售容量 guard 和迁移证据一并在 M6.4 获得
-  明确授权；M6.3-B 只提供返件、待验收状态和可信物流事实的读取边界。
+- Slice A 命令必须精确覆盖全部 approved 行，校验每行处置和为 approved 数量，显式将 deferred 完整性
+  guard 置为 immediate 后才追加 `ACCEPT_INSPECTION/REJECT_INSPECTION`。任何接受数量将
+  `RETURN_REFUND` 派生为 `REFUND_PENDING`、`EXCHANGE` 派生为 `EXCHANGE_PENDING`；全部
+  `RETURN_TO_MEMBER` 才进入 `REJECTED`。验收不代表退款或换货履约完成。
 
 ## 5. 凭证、结算、库存和换货履约
 
@@ -505,6 +510,10 @@ SCAN_TEMPORARY`。父表使用 `(store_id,evidence_file_id)` 复合外键，表�
 全部 inspection version 的已完成恢复量；汇总不得超过累计 accepted/restockable 和原已消费量，
 `after_sale_items.restored_quantity` 必须与只追加 actions 之和一致。新增 inspection version 不能重置
 总量或获得第二份容量。
+M6.4 Slice A 的每项可售恢复固定生成一个 `source_type='AFTER_SALE_RESTORE'` 的 M3 `RESTORE`
+operation、一个 tuple/数量精确的 movement 和一个 action。仓库只能来自原订单已消费 reservation 中该
+SKU 的唯一 warehouse；缺少、未消费、多仓或数量不足均失败关闭。`QUARANTINE`、`SCRAP` 与
+`RETURN_TO_MEMBER` 不创建库存 operation/movement/action，也不增加 `on_hand`。
 
 ### 5.4 返件和换货
 
@@ -1016,3 +1025,27 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   回执。`down.sql` 只允许没有 COD settlement、回执、确认、B7 审计或成对 B7 refund transition 的
   local/test；产生事实后只允许受审前向修复。该切片不执行真实银行转账、provider 调用、库存恢复、部署
   或 rollout。
+
+## 22. M6.4 Slice A 返件验收与库存恢复数据边界
+
+- 第 57 段 `20260801130000_p0_m6_008_return_inspection_inventory` 不新增业务表或枚举；它在既有
+  M6.2 inspection/action/operation/transition 结构上增加受限命令、最终授权重验、operation completion
+  与 command atomicity guard，并保持全部商城复合键、FORCE RLS、append-only 和既有容量约束。
+- 命令只接收公开 `order_item_id`、正整数处置数量、aggregate/inspection expected version、确认词与
+  reason。它锁定售后、approved 行、原订单、已消费 reservation、库存余额和 operation，并拒绝客户端
+  SKU、warehouse、金额、状态、库存动作或内部主键。请求必须完整且唯一覆盖所有 approved 行。
+- `RESTOCK_SELLABLE` 才需要原订单 `source_type='ORDER'` 且 `status='CONSUMED'` 的 reservation，
+  并要求目标 SKU 只来自一个权威原仓。每项恢复原子生成唯一 RESTORE operation、movement 与
+  `after_sale_inventory_actions`；累计 restored 不得超过累计可售验收量、订单行数量或原消费量。
+- `ADMIN_INSPECT_RETURN` operation、inspection/allocation、RESTORE operation/movement/action、
+  `ACCEPT_INSPECTION/REJECT_INSPECTION` transition 与 audit 必须同事务成套提交。完成 operation 的
+  严格 result summary 只公开 case、状态/版本、inspection version 和恢复的订单行数量；缺失或额外事实
+  都由 deferred guard 拒绝。
+- 同键并发唯一冲突只可在原事务回滚后，以新的 `ReadCommitted` 事务读取并重验匹配 request hash、
+  已提交状态和严格结果 schema 的 winner；异参、未提交或损坏结果不得重放。所有锁等待后还会用数据库
+  权威时间重验 ACTIVE 商城、管理员、session/Bearer、近期 MFA、直接 inspect 权限及条件性 inventory
+  adjust 权限。
+- 迁移前向发现任何 M6.4 inspection/action/transition/operation/audit 历史事实时以 SQLSTATE `55000`
+  停止；`down.sql` 对同五类事实同样失败关闭，只允许空事实 local/test scratch 回滚。应用回滚仅关闭
+  `AFTER_SALE_FULFILLMENT_COMMANDS_ENABLED` 并保留事实。Slice A 不创建 replacement reservation、
+  `EXCHANGE_OUTBOUND` 运单或 provider 请求，这些仍属于 P0-M6-008 Slice B。

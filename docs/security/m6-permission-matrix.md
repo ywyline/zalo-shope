@@ -7,8 +7,9 @@
 > local/test deletion worker validation、B2b-D5 default-disabled repository implementation +
 > local/test protected-read validation `COMPLETE`，适用 repository/local-test 门禁 `PASS`；
 > B3 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且适用门禁
-> `PASS`；B4、B5、B6 与 B7 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且
-> 适用门禁 `PASS`；B2/B2b、M6.3、UI 与生产启用仍未完成。生产策略、TTL、对象存储、真实供应商、真实资金、部署和 rollout 均为
+> `PASS`；B4、B5、B6、B7 与 M6.4 Slice A default-disabled repository implementation + local/test
+> validation 也已 `COMPLETE` 且适用门禁 `PASS`；B2/B2b、M6.3、M6.4 Slice B、UI 与生产启用仍未完成。
+> 生产策略、TTL、对象存储、真实供应商、真实资金、部署和 rollout 均为
 > `NOT_AUTHORIZED / NOT_RUN` 并保持失败关闭
 >
 > 日期：2026-08-01
@@ -40,6 +41,9 @@ B5 再复用会员 owner scope 与目标商城直接 review 权限，开放默�
 transition/audit/outbox 原子协调与 provider 结果同步。B6 要求四项目标商城直接权限：
 `store.after-sales.review`、`store.refunds.create`、`store.after-sales.read` 和 `store.refunds.read`，
 cross-access-only 不能替代任一项；它不新增权限 code 或生产角色授权。
+M6.4 Slice A 复用已登记但未向生产角色自动授权的 `store.after-sales.inspect`；任何
+`RESTOCK_SELLABLE` 处置还动态要求同一目标商城直接 `store.inventory.adjust`。两项权限都在全部锁
+等待后由数据库重新校验，cross-access-only 不能替代。
 本矩阵中除明确标为 M6.3-A、B1、B2a、D0 数据层、D1 local/test storage、D2 local/test 内部扫描、
 D3 local/test 会员 HTTP、D4 local/test 内部删除 worker、D5 local/test 保护读取、B3 默认关闭写命令、
 B4 默认关闭审核/到期、B5 默认关闭返件可信事实或 B6 默认关闭 ONLINE 退款协调的动作外，其余动作行是 B0 已冻结、等待完整 B2b/B7 或后续里程碑另行授权
@@ -81,8 +85,8 @@ B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transac
 | 记录可信返件物流事实 | 目标商城直接 `store.after-sales.review`                                                                            | B5 default-disabled repository/local-test `COMPLETE`；近期 MFA、确认词/reason、aggregate/返件双版本、幂等/审计；只接受 IN_TRANSIT/DELIVERED |
 | 发起 ONLINE 退款     | 目标商城直接 `store.after-sales.review` + `store.refunds.create` + `store.after-sales.read` + `store.refunds.read` | B6 default-disabled repository/local-test `COMPLETE`；近期 MFA、严格 DTO、服务端金额、M5 capacity/outbox；cross-access-only 失败关闭        |
 | 查询 ONLINE 退款     | `store.after-sales.read` + `store.refunds.read`                                                                    | B6 复用售后完整投影；只返回受限供应商状态摘要，不返回完整供应商引用或原始响应                                                               |
-| 返件验收             | `store.after-sales.inspect`                                                                                        | 整体延至 M6.4；须与 exactly-once 库存恢复一并授权，B 不开放写路由                                                                           |
-| 恢复可售库存         | `store.after-sales.inspect` + `store.inventory.adjust`                                                             | M6.4；仅验收可售数量、稳定 operation key、同事务审计                                                                                        |
+| 返件验收             | 目标商城直接 `store.after-sales.inspect`                                                                           | M6.4 Slice A default-disabled repository/local-test `COMPLETE`；完整 approved 行、近期 MFA、双版本、幂等/审计；cross-access-only 失败关闭   |
+| 恢复可售库存         | 目标商城直接 `store.after-sales.inspect` + `store.inventory.adjust`                                                | M6.4 Slice A；仅 RESTOCK_SELLABLE、原已消费 reservation/唯一原仓、exactly-once operation/movement/action                                    |
 | 创建换货             | `store.after-sales.exchange`                                                                                       | 同 SPU 等量 SKU、库存预留、近期 MFA、幂等                                                                                                   |
 | 换货运单             | `store.after-sales.exchange` + `store.shipments.create`                                                            | purpose=EXCHANGE_OUTBOUND，不推进原订单                                                                                                     |
 | COD 退款申请/回执    | 目标商城直接 `store.after-sales.read` + `store.after-sales.cod-refunds.request`                                    | B7 default-disabled repository/local-test `COMPLETE`；近期 MFA、服务端分支/金额、精确 MATCHED 回款、requester 回执、加密敏感事实            |
@@ -595,3 +599,26 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
 - `AFTER_SALE_REFUND_COMMANDS_ENABLED=false` 同时关闭 B6/B7 创建入口，production 配置与 service 双重拒绝
   启用。B7 不新增 permission code 或生产角色 grant，不执行真实银行转账或 provider 调用；真实资金、
   两商城 sandbox/staging、UI、部署和 rollout 仍为 `NOT_AUTHORIZED / NOT_RUN`。
+
+## 21. M6.4 Slice A 返件验收与库存恢复授权边界
+
+- `POST /v1/admin/after-sales/{afterSaleId}/inspection` 要求 Header/query 商城一致、目标商城直接
+  `store.after-sales.inspect`、有效 ADMIN Bearer/session、近期 MFA、ADMIN WRITE 限流、确认词、reason、
+  aggregate/inspection expected version 和商城范围幂等键。platform cross-access-only 即使带
+  `X-Access-Reason` 也不能替代直接权限。
+- 请求包含任一 `RESTOCK_SELLABLE` 时，服务层和数据库还要求同一管理员在同一目标商城直接
+  `store.inventory.adjust`。不恢复可售库存的 `QUARANTINE/SCRAP/RETURN_TO_MEMBER` 不要求 inventory
+  adjust；该条件来自严格处置 DTO，客户端不能通过 SKU、仓库、金额、状态或库存动作字段改变授权分支。
+- 服务层预授权只做快速拒绝。数据库命令在商城/幂等 advisory lock、售后/订单/reservation/库存行锁后，
+  以数据库权威时间再次锁定并校验 ACTIVE 商城、ACTIVE 管理员、session、Bearer、近期 MFA、角色分配
+  和全部条件性直接权限；等待期间撤权、停用账号、撤销 session 或 MFA 过期必须在首笔业务事实前失败。
+- 受限 `SECURITY DEFINER` 命令使用固定 `pg_catalog, public, pg_temp` search path；runtime 只有该命令的
+  EXECUTE 和底层表既有最小列授权，不获得 inspection/action/inventory operation 的通用写入能力，
+  `PUBLIC` 无 EXECUTE。所有表继续受商城显式条件、复合外键和 FORCE RLS 保护。
+- 同键重放必须匹配 actor/store/path/body hash、售后 ID、已提交 operation 状态和严格结果 schema；同键
+  异参冲突。并发唯一冲突只在原事务回滚后用新的 ReadCommitted 事务读取合法 committed winner，不得
+  在失败事务中或凭唯一键存在假定成功。
+- `AFTER_SALE_FULFILLMENT_COMMANDS_ENABLED=false` 默认关闭；production 配置和 service 双重拒绝启用。
+  Slice A 不授予 `store.after-sales.exchange` 或 `store.shipments.create`，不创建 replacement reservation、
+  `EXCHANGE_OUTBOUND`、provider 请求或 UI。真实仓库、物流、Zalo 宿主、部署和 rollout 为
+  `NOT_AUTHORIZED / NOT_RUN`。

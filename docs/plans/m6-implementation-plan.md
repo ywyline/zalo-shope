@@ -6,9 +6,10 @@
 > B2b-D4 repository implementation + local/test deletion worker validation 已完成且适用仓库门禁通过；
 > B2b-D5 default-disabled repository implementation + local/test protected-read validation 已完成且
 > 适用仓库门禁通过；B3 default-disabled repository implementation + local/test validation 已完成且
-> 适用仓库门禁通过；B4、B5 与 B6 default-disabled repository implementation + local/test validation 也已完成且
-> 适用仓库门禁通过；B2/B2b、B7、
-> M6.3、UI 与生产启用未完成或未授权并保持失败关闭；M6 整体未完成
+> 适用仓库门禁通过；B4、B5、B6 与 B7 default-disabled repository implementation + local/test validation
+> 也已完成且适用仓库门禁通过；M6.4 Slice A default-disabled repository implementation + local/test
+> validation 已完成，Slice B 待实施；B2/B2b、M6.3、UI 与生产启用未完成或未授权并保持失败关闭；
+> M6 整体未完成
 >
 > 版本：1.1
 >
@@ -314,9 +315,9 @@ M6.3-B0/B1/B2a/B2b-D0 仓库实施、B2b-D1 repository + local/test storage vali
 repository implementation + local/test scanner worker validation、B2b-D3 repository
 implementation + local/test member evidence HTTP validation、B2b-D4 repository implementation + local/test
 deletion worker validation 与 B2b-D5 default-disabled repository implementation + local/test
-protected-read validation 已完成。B3、B4、B5 与 B6 计划及建议默认值已获 repository/local-test 实施授权，且
-四者的 default-disabled repository implementation + local/test validation 现已完成；B2/B2b、B7
-仍未完成或未授权并失败关闭。A/B0/B1/B2a/D0-D5/B3/B4/B5/B6 的局部交付也不代表 M6.3 完成，详见
+protected-read validation 已完成。B3、B4、B5、B6 与 B7 的 default-disabled repository implementation +
+local/test validation 现已完成；B2/B2b 仍未完成或未授权并失败关闭。
+A/B0/B1/B2a/D0-D5/B3/B4/B5/B6/B7 的局部交付也不代表 M6.3 完成，详见
 `docs/plans/m6.3-implementation-plan.md`。
 
 - B1 只读列表/详情使用严格响应投影和三语历史政策回退；不得因 RLS 没有列级保护而使用宽
@@ -363,7 +364,8 @@ protected-read validation 已完成。B3、B4、B5 与 B6 计划及建议默认�
   `Serializable` 事务写入 ONLINE settlement、M5 refund/link、售后 transition/audit 和版本化 sync
   outbox；worker 对成功、失败、取消和不确定结果按最新 M5 权威事实收敛，cross-access-only、金额/
   link/version/store 不一致失败关闭。完整证据见 `docs/reports/m6.3-b6-online-refund-completion-report.md`。
-- COD 仍需独立 B7 双人确认线下结算事实；本阶段不提供 COD 到账成功按钮。
+- B7 已完成默认关闭的精确 MATCHED COD 回款准入、pending settlement、加密回执和异人确认；真实
+  银行转账、provider、sandbox/staging 与 production 验收仍未运行。
 - 所有命令使用商城范围幂等键、expected version、固定锁序和有界串行化重试。
 - 在创建任何 `AFTER_SALE_RETURN`/`EXCHANGE_OUTBOUND` 运单前，先把既有 M5 物流读取、命令、
   callback 和 worker 改为显式 purpose-aware；只有 `ORDER_OUTBOUND` 可推进原订单 `SHIP/DELIVER`。
@@ -372,8 +374,13 @@ protected-read validation 已完成。B3、B4、B5 与 B6 计划及建议默认�
 
 ### M6.4：库存恢复与等价换货履约
 
-- 按验收行数量幂等恢复可售库存；隔离/报废不恢复。
+- Slice A 已完成默认关闭的完整返件验收：按 approved 行和四种处置保存不可变事实，只有
+  `RESTOCK_SELLABLE` 从原订单已消费 reservation 的唯一原仓 exactly once 恢复可售库存；隔离、报废、
+  退还会员不恢复。验收派生退款/换货资格或拒绝，不代表资金/换货完成。完整证据见
+  `docs/reports/p0-m6-008-return-inspection-slice-a-completion-report.md`。
 - 等价换货预留替换 SKU，失败释放；换货出库与原订单履约事件隔离。
+- Slice B 仍待实现 replacement reservation、取消/超时释放、出库消费和
+  `EXCHANGE_OUTBOUND` 协调；因此 P0-M6-008 与 M6.4 整体保持未完成。
 - 不确定、越界、价差或供应商异常进入人工复核。
 - 进入人工复核时冻结原阶段的可恢复状态；受审解决命令只能回到同类型记录状态，或在原状态仍为
   `APPROVED/RETURN_PENDING` 且不存在资金、返件在途、验收、库存或换货副作用时拒绝。退款已排队/

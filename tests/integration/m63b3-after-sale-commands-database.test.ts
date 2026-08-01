@@ -19,11 +19,14 @@ import {
   createMerchantRefundAfterSaleCommand,
   createRuntimePrismaClient,
   confirmAfterSaleCodRefund,
+  consumeReservation,
   expireDueAfterSales,
   initializeAfterSaleEvidenceUpload,
+  inspectAfterSaleReturn,
   resolveAfterSaleReviewCommand,
   recordAfterSaleReturnFact,
   recordAfterSaleCodRefundReceipt,
+  reserveInventory,
   requestAfterSaleCodRefund,
   requestAfterSaleOnlineRefund,
   reviewAfterSaleCommand,
@@ -121,6 +124,7 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
     exchangeReplacementSkuId: randomUUID(),
     exchangeReplacementInvalidFinishSkuId: randomUUID(),
     exchangeReplacementShadeOptionId: randomUUID(),
+    inventoryBalanceId: randomUUID(),
     brandId: randomUUID(),
     fashionMemberId: randomUUID(),
     fashionMemberSessionId: randomUUID(),
@@ -724,6 +728,118 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
     return { afterSaleId: created.afterSaleId, order, version: approved.version };
   }
 
+  async function consumeOriginalOrderInventory(order: OrderFixture, tag: string): Promise<string> {
+    const reserved = await reserveInventory(requiredRuntime(), adminContext(), {
+      expiresAt: new Date(Date.now() + 60_000),
+      items: [
+        {
+          quantity: order.quantity,
+          skuId: fixture.skuId,
+          warehouseId: BEAUTY_WAREHOUSE_ID,
+        },
+      ],
+      operationKey: `m64-${tag}-reserve-${suffix}`,
+      sourceId: order.id,
+      sourceType: 'ORDER',
+    });
+    await consumeReservation(
+      requiredRuntime(),
+      adminContext(),
+      reserved.result.reservation_id,
+      `m64-${tag}-consume-${suffix}`,
+    );
+    await requiredOwner().$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.order.update({
+        data: { reservationId: reserved.result.reservation_id },
+        where: { id: order.id },
+      });
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    return reserved.result.reservation_id;
+  }
+
+  async function createInspectionPendingCase(
+    tag: string,
+    options: Readonly<{ quantity?: number; type?: 'EXCHANGE' | 'RETURN_REFUND' }> = {},
+  ): Promise<{
+    afterSaleId: string;
+    order: OrderFixture;
+    reservationId: string;
+    version: number;
+  }> {
+    const quantity = options.quantity ?? 1;
+    const type = options.type ?? 'RETURN_REFUND';
+    const exchangePolicy =
+      type === 'EXCHANGE'
+        ? await createPolicyFixture(
+            { ...policyContent, allowed_types: ['EXCHANGE'], exchange_attribute_code: 'shade' },
+            `${tag}-exchange-policy`,
+          )
+        : undefined;
+    const optionSnapshot =
+      type === 'EXCHANGE'
+        ? ([
+            {
+              attributeDefinitionId: BEAUTY_SHADE_DEFINITION_ID,
+              optionId: BEAUTY_DEFAULT_SHADE_OPTION_ID,
+            },
+            {
+              attributeDefinitionId: fixture.exchangeFinishDefinitionId,
+              optionId: fixture.exchangeFinishOriginalOptionId,
+            },
+          ] satisfies Prisma.InputJsonValue)
+        : undefined;
+    const order = await createOrder({
+      ...(optionSnapshot === undefined ? {} : { optionSnapshot }),
+      ...(exchangePolicy === undefined ? {} : { policy: exchangePolicy }),
+      quantity,
+      tag: `m64-${digest(tag).slice(0, 8)}`,
+    });
+    const reservationId = await consumeOriginalOrderInventory(order, tag);
+    const created = await createMemberAfterSaleCommand(
+      requiredRuntime(),
+      memberContext(),
+      memberCreateInput(order, `m64-${tag}`, quantity, {
+        ...(type === 'EXCHANGE' ? { replacementSkuId: fixture.exchangeReplacementSkuId } : {}),
+        type,
+      }),
+    );
+    const approved = await reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+      afterSaleId: created.afterSaleId,
+      body: {
+        confirmation_code: 'APPROVE_AFTER_SALE',
+        decision: 'APPROVE',
+        expected_version: created.version,
+        items: [{ approved_quantity: quantity, order_item_id: order.itemId }],
+        reason: 'Approve the return after completing the required administrator review.',
+      },
+      idempotencyKey: `m64-${tag}-approve-${suffix}`,
+    });
+    const submitted = await submitMemberAfterSaleReturn(requiredRuntime(), memberContext(), {
+      afterSaleId: created.afterSaleId,
+      body: {
+        carrier_name: 'LOCAL_TEST',
+        expected_version: approved.version,
+        tracking_number: `M64-${tag}-${suffix}`,
+      },
+      idempotencyKey: `m64-${tag}-submit-${suffix}`,
+      trackingHashKey: process.env.PII_HASH_KEY!,
+    });
+    const delivered = await recordAfterSaleReturnFact(requiredRuntime(), adminContext(), {
+      afterSaleId: created.afterSaleId,
+      body: {
+        confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT',
+        expected_return_shipment_version: submitted.returnShipmentVersion,
+        expected_version: submitted.version,
+        reason: 'Trusted local receipt confirms delivery to the return inspection warehouse.',
+        status: 'DELIVERED',
+      },
+      idempotencyKey: `m64-${tag}-delivered-${suffix}`,
+    });
+    return { afterSaleId: created.afterSaleId, order, reservationId, version: delivered.version };
+  }
+
   async function createApprovedRefundCase(tag: string): Promise<{
     afterSaleId: string;
     order: OrderFixture;
@@ -978,7 +1094,9 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
         'store.after-sales.read',
         'store.after-sales.cod-refunds.confirm',
         'store.after-sales.cod-refunds.request',
+        'store.after-sales.inspect',
         'store.after-sales.review',
+        'store.inventory.adjust',
         'store.refunds.create',
         'store.refunds.read',
       ].map((permissionCode) => ({
@@ -1086,6 +1204,15 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
         productId: fixture.productId,
         salePriceVnd: 120_000,
         storeId: BEAUTY_STORE_ID,
+      },
+    });
+    await owner.inventoryBalance.create({
+      data: {
+        id: fixture.inventoryBalanceId,
+        onHand: 100,
+        skuId: fixture.skuId,
+        storeId: BEAUTY_STORE_ID,
+        warehouseId: BEAUTY_WAREHOUSE_ID,
       },
     });
     await owner.attributeOption.create({
@@ -4160,5 +4287,392 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
         ),
       '42501',
     );
+  });
+
+  it('commits one complete inspection and restores only the sellable allocation exactly once', async () => {
+    const pending = await createInspectionPendingCase('four-dispositions', { quantity: 4 });
+    const balanceBefore = await requiredOwner().inventoryBalance.findUniqueOrThrow({
+      where: { id: fixture.inventoryBalanceId },
+    });
+    const idempotencyKey = `m64-four-dispositions-inspection-${suffix}`;
+    const body = {
+      confirmation_code: 'CONFIRM_RETURN_INSPECTION' as const,
+      expected_inspection_version: 0,
+      expected_version: pending.version,
+      items: [
+        {
+          dispositions: [
+            { disposition: 'RESTOCK_SELLABLE' as const, quantity: 1 },
+            { disposition: 'QUARANTINE' as const, quantity: 1 },
+            { disposition: 'SCRAP' as const, quantity: 1 },
+            { disposition: 'RETURN_TO_MEMBER' as const, quantity: 1 },
+          ],
+          order_item_id: pending.order.itemId,
+        },
+      ],
+      reason: 'Complete the physical inspection with one unit in each disposition.',
+    };
+    const input = {
+      afterSaleId: pending.afterSaleId,
+      body,
+      idempotencyKey,
+      sourceIp: '127.0.0.1',
+    };
+    const inspected = await inspectAfterSaleReturn(requiredRuntime(), adminContext(), input);
+    expect(inspected).toMatchObject({
+      afterSaleId: pending.afterSaleId,
+      inspectionVersion: 1,
+      replayed: false,
+      restoredItems: [{ orderItemId: pending.order.itemId, quantity: 1 }],
+      status: 'REFUND_PENDING',
+      version: pending.version + 1,
+    });
+    await expect(inspectAfterSaleReturn(requiredRuntime(), adminContext(), input)).resolves.toEqual(
+      {
+        ...inspected,
+        replayed: true,
+      },
+    );
+    await expectCommandFailure(
+      () =>
+        inspectAfterSaleReturn(requiredRuntime(), adminContext(), {
+          ...input,
+          body: { ...body, reason: 'A changed reason cannot reuse the completed inspection key.' },
+        }),
+      'AFTER_SALE_IDEMPOTENCY_CONFLICT',
+    );
+
+    const [sale, item, inspection, actions, operations, movements, audits, balanceAfter] =
+      await Promise.all([
+        requiredOwner().afterSale.findUniqueOrThrow({ where: { id: pending.afterSaleId } }),
+        requiredOwner().afterSaleItem.findFirstOrThrow({
+          where: { afterSaleId: pending.afterSaleId },
+        }),
+        requiredOwner().afterSaleInspection.findFirstOrThrow({
+          include: { allocations: true },
+          where: { afterSaleId: pending.afterSaleId },
+        }),
+        requiredOwner().afterSaleInventoryAction.findMany({
+          where: { afterSaleId: pending.afterSaleId },
+        }),
+        requiredOwner().inventoryOperation.findMany({
+          where: { sourceType: 'AFTER_SALE_RESTORE' },
+        }),
+        requiredOwner().inventoryMovement.findMany({
+          where: { reasonCode: 'AFTER_SALE_RESTORE' },
+        }),
+        requiredOwner().auditLog.findMany({
+          where: { action: 'after-sale.return.inspected', targetId: pending.afterSaleId },
+        }),
+        requiredOwner().inventoryBalance.findUniqueOrThrow({
+          where: { id: fixture.inventoryBalanceId },
+        }),
+      ]);
+    expect(sale).toMatchObject({ status: 'REFUND_PENDING', version: pending.version + 1 });
+    expect(item).toMatchObject({
+      acceptedQuantity: 3,
+      inspectionVersion: 1,
+      receivedQuantity: 4,
+      rejectedQuantity: 1,
+      restockableQuantity: 1,
+      restoredQuantity: 1,
+    });
+    expect(inspection.allocations).toHaveLength(4);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      actionType: 'RESTOCK_SELLABLE',
+      disposition: 'RESTOCK_SELLABLE',
+      inspectionVersion: 1,
+      quantity: 1,
+      skuId: fixture.skuId,
+      warehouseId: BEAUTY_WAREHOUSE_ID,
+    });
+    const actionOperation = operations.find(({ id }) => id === actions[0]?.inventoryOperationId);
+    expect(actionOperation).toMatchObject({ operationType: 'RESTORE' });
+    expect(actionOperation?.resultSnapshot).toEqual({
+      items: [{ quantity: 1, sku_id: fixture.skuId, warehouse_id: BEAUTY_WAREHOUSE_ID }],
+      operation_id: actions[0]?.inventoryOperationId,
+      source_id: item.id,
+      source_type: 'AFTER_SALE_RESTORE',
+    });
+    expect(
+      movements.filter(({ operationId }) => operationId === actions[0]?.inventoryOperationId),
+    ).toEqual([
+      expect.objectContaining({
+        movementType: 'RESTORE',
+        onHandDelta: 1,
+        reservedDelta: 0,
+      }),
+    ]);
+    expect(audits).toHaveLength(1);
+    expect(balanceAfter).toMatchObject({
+      onHand: balanceBefore.onHand + 1,
+      reserved: balanceBefore.reserved,
+      version: balanceBefore.version + 1,
+    });
+  });
+
+  it('derives rejection and exchange eligibility without restoring non-sellable allocations', async () => {
+    const rejectedPending = await createInspectionPendingCase('reject-return');
+    await requiredOwner().storeRolePermission.delete({
+      where: {
+        storeId_roleId_permissionCode: {
+          permissionCode: 'store.inventory.adjust',
+          roleId: fixture.adminRoleId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      },
+    });
+    try {
+      await expect(
+        inspectAfterSaleReturn(requiredRuntime(), adminContext(), {
+          afterSaleId: rejectedPending.afterSaleId,
+          body: {
+            confirmation_code: 'CONFIRM_RETURN_INSPECTION',
+            expected_inspection_version: 0,
+            expected_version: rejectedPending.version,
+            items: [
+              {
+                dispositions: [{ disposition: 'RETURN_TO_MEMBER', quantity: 1 }],
+                order_item_id: rejectedPending.order.itemId,
+              },
+            ],
+            reason: 'Reject the complete return after the physical inspection is complete.',
+          },
+          idempotencyKey: `m64-reject-return-inspection-${suffix}`,
+        }),
+      ).resolves.toMatchObject({ restoredItems: [], status: 'REJECTED' });
+    } finally {
+      await requiredOwner().storeRolePermission.create({
+        data: {
+          permissionCode: 'store.inventory.adjust',
+          roleId: fixture.adminRoleId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+    }
+
+    const exchangePending = await createInspectionPendingCase('exchange-eligibility', {
+      type: 'EXCHANGE',
+    });
+    const exchanged = await inspectAfterSaleReturn(requiredRuntime(), adminContext(), {
+      afterSaleId: exchangePending.afterSaleId,
+      body: {
+        confirmation_code: 'CONFIRM_RETURN_INSPECTION',
+        expected_inspection_version: 0,
+        expected_version: exchangePending.version,
+        items: [
+          {
+            dispositions: [{ disposition: 'QUARANTINE', quantity: 1 }],
+            order_item_id: exchangePending.order.itemId,
+          },
+        ],
+        reason: 'Accept the inspected exchange return into the quarantine inventory stream.',
+      },
+      idempotencyKey: `m64-exchange-eligibility-inspection-${suffix}`,
+    });
+    expect(exchanged).toMatchObject({ restoredItems: [], status: 'EXCHANGE_PENDING' });
+    expect(
+      await requiredOwner().afterSaleInventoryAction.count({
+        where: { afterSaleId: { in: [rejectedPending.afterSaleId, exchangePending.afterSaleId] } },
+      }),
+    ).toBe(0);
+  });
+
+  it('fails closed on stale versions, cross-access-only scope and revoked direct permissions', async () => {
+    const pending = await createInspectionPendingCase('authorization-conflicts');
+    const baseInput = {
+      afterSaleId: pending.afterSaleId,
+      body: {
+        confirmation_code: 'CONFIRM_RETURN_INSPECTION' as const,
+        expected_inspection_version: 0,
+        expected_version: pending.version,
+        items: [
+          {
+            dispositions: [{ disposition: 'SCRAP' as const, quantity: 1 }],
+            order_item_id: pending.order.itemId,
+          },
+        ],
+        reason: 'Scrap the returned unit after completing the physical inspection.',
+      },
+      idempotencyKey: `m64-authorization-conflicts-${suffix}`,
+    };
+    await expectCommandFailure(
+      () =>
+        inspectAfterSaleReturn(requiredRuntime(), adminContext(), {
+          ...baseInput,
+          body: { ...baseInput.body, expected_version: pending.version - 1 },
+          idempotencyKey: `m64-stale-version-${suffix}`,
+        }),
+      'AFTER_SALE_VERSION_CONFLICT',
+    );
+    await expectCommandFailure(
+      () =>
+        inspectAfterSaleReturn(
+          requiredRuntime(),
+          crossStoreAdminContext(`m64-cross-access-${suffix}`),
+          { ...baseInput, idempotencyKey: `m64-cross-access-${suffix}` },
+        ),
+      'AFTER_SALE_AUTHORIZATION_DENIED',
+    );
+    await requiredOwner().storeRolePermission.delete({
+      where: {
+        storeId_roleId_permissionCode: {
+          permissionCode: 'store.after-sales.inspect',
+          roleId: fixture.adminRoleId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      },
+    });
+    try {
+      await expectCommandFailure(
+        () => inspectAfterSaleReturn(requiredRuntime(), adminContext(), baseInput),
+        'AFTER_SALE_AUTHORIZATION_DENIED',
+      );
+    } finally {
+      await requiredOwner().storeRolePermission.create({
+        data: {
+          permissionCode: 'store.after-sales.inspect',
+          roleId: fixture.adminRoleId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+    }
+    expect(
+      await requiredOwner().afterSaleInspection.count({
+        where: { afterSaleId: pending.afterSaleId },
+      }),
+    ).toBe(0);
+  });
+
+  it('replays the one committed concurrent winner and rejects permission or MFA revocation while waiting', async () => {
+    const concurrentPending = await createInspectionPendingCase('concurrent-winner');
+    const concurrentInput = {
+      afterSaleId: concurrentPending.afterSaleId,
+      body: {
+        confirmation_code: 'CONFIRM_RETURN_INSPECTION' as const,
+        expected_inspection_version: 0,
+        expected_version: concurrentPending.version,
+        items: [
+          {
+            dispositions: [{ disposition: 'RESTOCK_SELLABLE' as const, quantity: 1 }],
+            order_item_id: concurrentPending.order.itemId,
+          },
+        ],
+        reason: 'Restore the one physically inspected sellable return to inventory.',
+      },
+      idempotencyKey: `m64-concurrent-winner-${suffix}`,
+    };
+    const concurrent = await Promise.all([
+      inspectAfterSaleReturn(requiredRuntime(), adminContext(), concurrentInput),
+      inspectAfterSaleReturn(requiredRuntime(), adminContext(), concurrentInput),
+    ]);
+    expect(concurrent.map(({ replayed }) => replayed).sort()).toEqual([false, true]);
+    expect(concurrent[0]).toEqual({ ...concurrent[1], replayed: concurrent[0].replayed });
+    expect(
+      await requiredOwner().afterSaleInventoryAction.count({
+        where: { afterSaleId: concurrentPending.afterSaleId },
+      }),
+    ).toBe(1);
+
+    for (const revocation of ['permission', 'mfa'] as const) {
+      const pending = await createInspectionPendingCase(`wait-${revocation}`);
+      const idempotencyKey = `m64-wait-${revocation}-${suffix}`;
+      const advisoryKey = `p0-m6-008:${BEAUTY_STORE_ID}:ADMIN_INSPECT_RETURN:${digest(idempotencyKey)}`;
+      let announceLock!: () => void;
+      let releaseLock!: () => void;
+      const acquired = new Promise<void>((resolve) => {
+        announceLock = resolve;
+      });
+      const released = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+      const holder = requiredOwner().$transaction(async (transaction) => {
+        await transaction.$executeRaw`
+          SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${advisoryKey}, 0))
+        `;
+        announceLock();
+        await released;
+      });
+      await acquired;
+      const attempt = inspectAfterSaleReturn(requiredRuntime(), adminContext(), {
+        afterSaleId: pending.afterSaleId,
+        body: {
+          confirmation_code: 'CONFIRM_RETURN_INSPECTION',
+          expected_inspection_version: 0,
+          expected_version: pending.version,
+          items: [
+            {
+              dispositions: [{ disposition: 'QUARANTINE', quantity: 1 }],
+              order_item_id: pending.order.itemId,
+            },
+          ],
+          reason: 'Quarantine the return only if final authorization remains current.',
+        },
+        idempotencyKey,
+      });
+      try {
+        for (let poll = 0; poll < 100; poll += 1) {
+          const [activity] = await requiredOwner().$queryRaw<Array<{ waiting: boolean }>>`
+            SELECT EXISTS (
+              SELECT 1 FROM pg_catalog.pg_stat_activity
+              WHERE datname = current_database() AND wait_event = 'advisory'
+                AND query ILIKE '%inspect_p0_m6_008_after_sale_return%'
+            ) AS waiting
+          `;
+          if (activity?.waiting) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          if (poll === 99) throw new Error('M6.4 inspection did not wait on the advisory lock');
+        }
+        if (revocation === 'permission') {
+          await requiredOwner().storeRolePermission.delete({
+            where: {
+              storeId_roleId_permissionCode: {
+                permissionCode: 'store.after-sales.inspect',
+                roleId: fixture.adminRoleId,
+                storeId: BEAUTY_STORE_ID,
+              },
+            },
+          });
+        } else {
+          await requiredOwner().adminSession.update({
+            data: { mfaVerifiedAt: new Date(Date.now() - 11 * 60 * 1_000) },
+            where: { id: fixture.adminSessionId },
+          });
+        }
+        releaseLock();
+        await expectCommandFailure(() => attempt, 'AFTER_SALE_AUTHORIZATION_DENIED');
+      } finally {
+        releaseLock();
+        await holder;
+        if (revocation === 'permission') {
+          await requiredOwner().storeRolePermission.upsert({
+            create: {
+              permissionCode: 'store.after-sales.inspect',
+              roleId: fixture.adminRoleId,
+              storeId: BEAUTY_STORE_ID,
+            },
+            update: {},
+            where: {
+              storeId_roleId_permissionCode: {
+                permissionCode: 'store.after-sales.inspect',
+                roleId: fixture.adminRoleId,
+                storeId: BEAUTY_STORE_ID,
+              },
+            },
+          });
+        } else {
+          await requiredOwner().adminSession.update({
+            data: { mfaVerifiedAt: new Date() },
+            where: { id: fixture.adminSessionId },
+          });
+        }
+      }
+      expect(
+        await requiredOwner().afterSaleOperation.count({
+          where: { afterSaleId: pending.afterSaleId, operation: 'ADMIN_INSPECT_RETURN' },
+        }),
+      ).toBe(0);
+    }
   });
 });
