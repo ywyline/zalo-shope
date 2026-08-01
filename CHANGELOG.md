@@ -2,6 +2,35 @@
 
 This file records completed repository changes. Each entry uses `Date`, `Added`, `Changed`, `Fixed`, `Removed` and `Docs`. Task status and future work belong only in `TASKS.md`.
 
+## 2026-08-01 - P0-M6-008 Return Inspection And Inventory Restoration Slice A (`0.1.0`)
+
+### Added
+
+- A default-disabled administrator return-inspection API with complete approved-line allocations, strict public DTOs, recent MFA, direct-store RBAC and conditional inventory-adjust authorization.
+- Atomic inspection, derived refund/exchange eligibility and exactly-once sellable restoration bound to the consumed original order reservation and its single authoritative warehouse.
+- Migration 57 with final authorization revalidation, operation completion/command atomicity guards, minimal runtime execution rights and fact-protected local/test rollback.
+
+### Changed
+
+- Return-refund inspections now derive `REFUND_PENDING`, exchange inspections derive `EXCHANGE_PENDING`, and entirely rejected inspections derive `REJECTED` without claiming refund or exchange completion.
+- M6 OpenAPI, architecture, data, permissions, milestone plans and README now distinguish completed Slice A inspection/restoration from pending Slice B replacement fulfillment.
+
+### Fixed
+
+- Replayed concurrent unique winners only after rollback in a new `ReadCommitted` transaction and only when the committed operation, request hash and strict result schema match.
+- Revalidated active store, administrator, session, token, MFA and all conditional direct permissions after lock waits and before the first business fact.
+- Removed one unnecessary non-null assertion found by the full ESLint gate without changing test behavior.
+
+### Removed
+
+- None.
+
+### Docs
+
+- Added the P0-M6-008 plan and Slice A completion report; kept the Task `In Progress` because replacement reservation and `EXCHANGE_OUTBOUND` remain pending in Slice B.
+- Verified 641/641 unit, 362/362 integration, 26/26 browser E2E after one disclosed WebKit timing rerun, and the 57-migration guarded exercise; OpenAPI, Compose, Gitleaks and diff/security gates passed. Audit remains 3 moderate and 0 high/critical.
+- This is repository/local-test completion only. Real warehouse/provider/Zalo host, staging, deployment, production enablement and rollout remain `NOT_AUTHORIZED / NOT_RUN`; the project is not Production Ready.
+
 ## 2026-08-01 - P0-M6-007 COD Refund Settlement (`0.1.0`)
 
 ### Added

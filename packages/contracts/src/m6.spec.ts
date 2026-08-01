@@ -16,6 +16,8 @@ import {
   afterSaleEvidenceUploadResponseSchema,
   afterSaleEvidenceUploadRequestSchema,
   afterSaleExchangeToRefundRequestSchema,
+  afterSaleInspectionAcknowledgementResponseSchema,
+  afterSaleInspectionRequestSchema,
   afterSaleListQuerySchema,
   afterSaleMemberReadQuerySchema,
   afterSalePolicyDraftSchema,
@@ -325,6 +327,62 @@ describe('M6 strict after-sale DTOs', () => {
         status: 'IN_TRANSIT',
       }),
     ).toThrow();
+  });
+
+  it('requires complete, unique and server-resolved return inspection allocations', () => {
+    const request = {
+      confirmation_code: 'CONFIRM_RETURN_INSPECTION',
+      expected_inspection_version: 0,
+      expected_version: 4,
+      items: [
+        {
+          dispositions: [
+            { disposition: 'RESTOCK_SELLABLE', quantity: 1 },
+            { disposition: 'QUARANTINE', quantity: 1 },
+          ],
+          order_item_id: orderItemId,
+        },
+      ],
+      reason: 'Completed the physical return inspection against the approved quantity.',
+    } as const;
+    expect(afterSaleInspectionRequestSchema.parse(request)).toEqual(request);
+    expect(() =>
+      afterSaleInspectionRequestSchema.parse({
+        ...request,
+        items: [request.items[0], request.items[0]],
+      }),
+    ).toThrow();
+    expect(() =>
+      afterSaleInspectionRequestSchema.parse({
+        ...request,
+        items: [
+          {
+            ...request.items[0],
+            dispositions: [
+              { disposition: 'RESTOCK_SELLABLE', quantity: 1 },
+              { disposition: 'RESTOCK_SELLABLE', quantity: 1 },
+            ],
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      afterSaleInspectionRequestSchema.parse({
+        ...request,
+        items: [{ ...request.items[0], sku_id: replacementSkuId }],
+      }),
+    ).toThrow();
+
+    expect(
+      afterSaleInspectionAcknowledgementResponseSchema.parse({
+        id: orderId,
+        inspection_version: 1,
+        public_number: 'ASC-01J9Z6Y4T8K2M7NQ',
+        restored_items: [{ order_item_id: orderItemId, quantity: 1 }],
+        status: 'REFUND_PENDING',
+        version: 5,
+      }),
+    ).toMatchObject({ inspection_version: 1, status: 'REFUND_PENDING' });
   });
 
   it('freezes signed cursor scope, public numbers, locale fallback and rate-limit tiers', () => {

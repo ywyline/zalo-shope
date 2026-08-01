@@ -21,6 +21,8 @@ import type {
   AfterSaleCodRefundReceiptRequest,
   AfterSaleCommandAcknowledgementResponse,
   AfterSaleCreateRequest,
+  AfterSaleInspectionAcknowledgementResponse,
+  AfterSaleInspectionRequest,
   AfterSaleListQuery,
   AfterSalePageResponse,
   AfterSaleRefundRequest,
@@ -33,6 +35,7 @@ import type {
 } from '@zalo-shop/contracts';
 import {
   afterSaleCommandAcknowledgementResponseSchema,
+  afterSaleInspectionAcknowledgementResponseSchema,
   afterSalePageResponseSchema,
 } from '@zalo-shop/contracts';
 import {
@@ -43,6 +46,7 @@ import {
   confirmAfterSaleCodRefund,
   createMemberAfterSaleCommand,
   createMerchantRefundAfterSaleCommand,
+  inspectAfterSaleReturn,
   recordAfterSaleCodRefundReceipt,
   recordAfterSaleReturnFact,
   requestAfterSaleOnlineRefund,
@@ -78,6 +82,10 @@ type PageKey = { id: string; sort_key: string };
 type DecodedPageKey = { sortId: string; sortKey: string };
 type AfterSaleCommandExecution = {
   body: AfterSaleCommandAcknowledgementResponse;
+  replayed: boolean;
+};
+type AfterSaleInspectionExecution = {
+  body: AfterSaleInspectionAcknowledgementResponse;
   replayed: boolean;
 };
 type AcknowledgedAfterSaleCommand = Readonly<{
@@ -349,6 +357,61 @@ export class AfterSalesService {
       this.throwCommandError(error, 'admin');
     }
     return { body: this.acknowledgeCommand(command), replayed: command.replayed };
+  }
+
+  public async adminInspectReturn(input: {
+    afterSaleId: string;
+    body: AfterSaleInspectionRequest;
+    headers: AdminHeaders;
+    idempotencyKey: string;
+    query: AfterSaleAdminStoreQuery;
+  }): Promise<AfterSaleInspectionExecution> {
+    const inspectionContext = await this.admin.authorizeSensitive(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.inspect',
+    );
+    this.assertDirectReviewAuthorization(inspectionContext);
+    if (
+      input.body.items.some((item) =>
+        item.dispositions.some((allocation) => allocation.disposition === 'RESTOCK_SELLABLE'),
+      )
+    ) {
+      const inventoryContext = await this.admin.authorizeSensitive(
+        input.headers,
+        input.query.store_id,
+        'store.inventory.adjust',
+      );
+      this.assertDirectReviewAuthorization(inventoryContext);
+      this.assertMatchingAdminScopes(inspectionContext, inventoryContext);
+    }
+    await this.consumeWriteLimit(inspectionContext, 'ADMIN');
+    this.assertFulfillmentCommandsEnabled();
+    let command: Awaited<ReturnType<typeof inspectAfterSaleReturn>>;
+    try {
+      command = await inspectAfterSaleReturn(this.database, inspectionContext, {
+        afterSaleId: input.afterSaleId,
+        body: input.body,
+        idempotencyKey: input.idempotencyKey,
+        ...(input.headers.sourceIp === undefined ? {} : { sourceIp: input.headers.sourceIp }),
+      });
+    } catch (error) {
+      this.throwCommandError(error, 'admin');
+    }
+    return {
+      body: afterSaleInspectionAcknowledgementResponseSchema.parse({
+        id: command.afterSaleId,
+        inspection_version: command.inspectionVersion,
+        public_number: command.publicCaseNumber,
+        restored_items: command.restoredItems.map((item) => ({
+          order_item_id: item.orderItemId,
+          quantity: item.quantity,
+        })),
+        status: command.status,
+        version: command.version,
+      }),
+      replayed: command.replayed,
+    };
   }
 
   public async adminRequestRefund(input: {
@@ -754,6 +817,15 @@ export class AfterSalesService {
   private assertReturnCommandsEnabled(): void {
     if (!this.config.AFTER_SALE_RETURN_COMMANDS_ENABLED || this.config.NODE_ENV === 'production') {
       throw new ServiceUnavailableException('After-sale return commands are unavailable');
+    }
+  }
+
+  private assertFulfillmentCommandsEnabled(): void {
+    if (
+      !this.config.AFTER_SALE_FULFILLMENT_COMMANDS_ENABLED ||
+      this.config.NODE_ENV === 'production'
+    ) {
+      throw new ServiceUnavailableException('After-sale fulfillment commands are unavailable');
     }
   }
 

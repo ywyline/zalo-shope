@@ -56,9 +56,10 @@ B3 default-disabled repository implementation + local/test validation 已完成�
 B5 已完成默认关闭的会员返件登记、管理员可信 `IN_TRANSIT/DELIVERED` 物流事实与 B1 待验收读取复用；
 B6 已完成默认关闭的 ONLINE settlement、M5 refund/link 原子协调和 provider 结果向售后同步；B7 已完成
 基于精确 MATCHED COD 回款事实的 pending settlement、加密回执和异人确认。
-四者均只完成 repository implementation + local/test validation；真实物流/支付商/银行资金、验收、库存恢复、
-换货、UI、生产配置、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`，B2/B2b、M6.3、M6 和 P0
-仍未完成。
+四者均只完成 repository implementation + local/test validation。P0-M6-008 随后开始 M6.4；Slice A 已
+完成默认关闭的完整返件验收、exactly-once 可售库存恢复及退款/换货资格派生，Slice B 的替换预留和
+`EXCHANGE_OUTBOUND` 仍未实现。真实物流/支付商/银行资金/仓库、换货、UI、生产配置、部署与 rollout
+均为 `NOT_AUTHORIZED / NOT_RUN`，B2/B2b、M6.3、M6、P0-M6-008 和 P0 仍未完成。
 
 ## 1. 决策范围
 
@@ -819,6 +820,31 @@ docs/
 - `AFTER_SALE_REFUND_COMMANDS_ENABLED` 默认 `false` 且 production 配置与 service 双重拒绝开启。B7
   不执行真实转账、provider 调用、库存恢复、返件验收、换货、UI、部署或 rollout；B2/B2b、M6.3、M6、
   P0 与 Production Ready 继续未完成。
+
+### M6.4 Slice A 默认关闭的返件验收与库存恢复边界
+
+- 新管理员 `POST /v1/admin/after-sales/{afterSaleId}/inspection` 只处理由 B5 可信送达推进到
+  `INSPECTION_PENDING` 的 `RETURN_REFUND/EXCHANGE`。严格 DTO 必须用公开 `order_item_id` 完整、
+  唯一覆盖全部 approved 行，并只允许 `RESTOCK_SELLABLE/QUARANTINE/SCRAP/RETURN_TO_MEMBER`
+  正整数处置；SKU、warehouse、金额、库存 operation、目标状态和未知字段都被拒绝。
+- 命令先取得商城/幂等 advisory lock，再按售后、approved 行/订单、原已消费 reservation、验收版本、
+  库存余额/operation 的固定顺序锁定。目标商城直接 `store.after-sales.inspect`、近期 MFA 和有效
+  session/Bearer 在锁等待后最终重验；含可售恢复时还要求直接 `store.inventory.adjust`。cross-access-only
+  不替代任何直接权限，等待期间撤权或会话/MFA 失效在首笔业务事实前原子失败。
+- inspection/allocation 保存完整不可变验收；显式立即执行完整性 constraint 后才派生 transition。存在
+  accepted 数量时 `RETURN_REFUND -> REFUND_PENDING`、`EXCHANGE -> EXCHANGE_PENDING`，全部拒绝才
+  `REJECTED`。该资格状态不代表退款成功、换货预留、出库或完成。
+- 只有 `RESTOCK_SELLABLE` 创建 `AFTER_SALE_RESTORE` 的 M3 RESTORE operation、单一 movement 和
+  action，并把 `on_hand` 增加精确数量。仓库只能取自原订单已消费 reservation 中目标 SKU 的唯一原仓；
+  累计恢复同时受累计可售验收量、订单行数量和原消费量限制。其它三种处置不增加库存。
+- `ADMIN_INSPECT_RETURN` operation、inspection/allocation、inventory operation/movement/action、
+  transition 与 audit 在同一事务成套提交。并发唯一冲突回滚后只用新 ReadCommitted 事务重放 request
+  hash、已提交状态和严格 result schema 都匹配的 winner；重放、异参或 worker 重试不能生成第二次恢复。
+- 第 57 段迁移保持既有表/RLS/guard，增加最小 runtime EXECUTE、最终授权与 atomicity/completion
+  definer guard。前向或 down 遇到 inspection/action/transition/operation/audit 事实均以 `55000` 失败；
+  有事实环境只允许前向修复。`AFTER_SALE_FULFILLMENT_COMMANDS_ENABLED=false` 默认关闭且 production
+  拒绝启用。Slice A 不创建替换 reservation、`EXCHANGE_OUTBOUND`、provider 请求或 UI；这些仍属于
+  P0-M6-008 Slice B/P0-M6-011。
 
 ## 7. 身份、安全与隐私
 

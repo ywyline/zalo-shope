@@ -502,6 +502,85 @@ export const afterSaleReturnFactRequestSchema = z
   })
   .strict();
 
+export const afterSaleInspectionDispositionSchema = z.enum([
+  'RESTOCK_SELLABLE',
+  'QUARANTINE',
+  'SCRAP',
+  'RETURN_TO_MEMBER',
+]);
+
+const afterSaleInspectionAllocationRequestSchema = z
+  .object({
+    disposition: afterSaleInspectionDispositionSchema,
+    quantity: z.number().int().positive().max(1_000),
+  })
+  .strict();
+
+const afterSaleInspectionItemRequestSchema = z
+  .object({
+    dispositions: z.array(afterSaleInspectionAllocationRequestSchema).min(1).max(4),
+    order_item_id: uuidSchema,
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const dispositions = input.dispositions.map((allocation) => allocation.disposition);
+    if (new Set(dispositions).size !== dispositions.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Inspection dispositions must be unique for each order item',
+        path: ['dispositions'],
+      });
+    }
+  });
+
+export const afterSaleInspectionRequestSchema = z
+  .object({
+    confirmation_code: z.literal('CONFIRM_RETURN_INSPECTION'),
+    expected_inspection_version: z.number().int().nonnegative(),
+    expected_version: z.number().int().positive(),
+    items: z.array(afterSaleInspectionItemRequestSchema).min(1).max(20),
+    reason: z.string().trim().min(10).max(500),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const orderItemIds = input.items.map((item) => item.order_item_id);
+    if (new Set(orderItemIds).size !== orderItemIds.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Inspected order items must be unique',
+        path: ['items'],
+      });
+    }
+  });
+
+export const afterSaleInspectionAcknowledgementResponseSchema = z
+  .object({
+    id: uuidSchema,
+    inspection_version: z.number().int().positive(),
+    public_number: afterSalePublicNumberSchema,
+    restored_items: z.array(
+      z
+        .object({
+          order_item_id: uuidSchema,
+          quantity: z.number().int().positive(),
+        })
+        .strict(),
+    ),
+    status: z.enum(['REFUND_PENDING', 'EXCHANGE_PENDING', 'REJECTED']),
+    version: z.number().int().positive(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const orderItemIds = input.restored_items.map((item) => item.order_item_id);
+    if (new Set(orderItemIds).size !== orderItemIds.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Restored order items must be unique',
+        path: ['restored_items'],
+      });
+    }
+  });
+
 const afterSaleApprovedItemSchema = z
   .object({
     approved_quantity: z.number().int().min(0).max(1_000),
@@ -862,6 +941,10 @@ export type MerchantAfterSaleCreateRequest = z.infer<typeof merchantAfterSaleCre
 export type AfterSaleCancelRequest = z.infer<typeof afterSaleCancelRequestSchema>;
 export type AfterSaleReturnShipmentRequest = z.infer<typeof afterSaleReturnShipmentRequestSchema>;
 export type AfterSaleReturnFactRequest = z.infer<typeof afterSaleReturnFactRequestSchema>;
+export type AfterSaleInspectionRequest = z.infer<typeof afterSaleInspectionRequestSchema>;
+export type AfterSaleInspectionAcknowledgementResponse = z.infer<
+  typeof afterSaleInspectionAcknowledgementResponseSchema
+>;
 export type AfterSaleRefundRequest = z.infer<typeof afterSaleRefundRequestSchema>;
 export type AfterSaleCodRefundConfirmRequest = z.infer<
   typeof afterSaleCodRefundConfirmRequestSchema
