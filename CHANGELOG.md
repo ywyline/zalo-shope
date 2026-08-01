@@ -2,6 +2,32 @@
 
 This file records completed repository changes. Each entry uses `Date`, `Added`, `Changed`, `Fixed`, `Removed` and `Docs`. Task status and future work belong only in `TASKS.md`.
 
+## 2026-08-01 - Task Tree Recovery (`0.1.0`)
+
+### Added
+
+- An explicit eligible queue that separates immediately executable implementation slices from external acceptance gates.
+
+### Changed
+
+- Rebased P0, P1 and P2 task dependencies on the completed domain foundations each slice actually consumes.
+- Selected `P0-M5-005` as Current Task and `P0-M6-007` as Next Task while preserving every existing task ID and the approximately 64% weighted progress estimate.
+- Classified Zalo OA/share attribution and Vietnam accounting integration as genuinely externally blocked instead of leaving them as misleading Todo nodes.
+
+### Fixed
+
+- Removed the dependency pattern that made all P1/P2 work wait for `P0-M7-006` and made unrelated P0 implementation wait for provider, legal or production acceptance.
+- Restored a non-empty, priority-ordered development path without changing product scope, business rules or delivered capability.
+
+### Removed
+
+- None.
+
+### Docs
+
+- Updated `TASKS.md` control state, dependencies, blocked-task list, eligible queue and unchanged project-progress evidence.
+- No business code, `AGENTS.md` or `REQUIREMENTS.md` changes were made.
+
 ## 2026-08-01 - End Of Development Gate (`0.1.0`)
 
 ### Added
