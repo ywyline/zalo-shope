@@ -188,6 +188,7 @@ This file records completed repository changes. Each entry uses `Date`, `Added`,
 - Added `TASKS.md`, this changelog and `docs/reports/project-baseline-2026-08-01.md`.
 - Recovered current completion, blockers, P0 risks and external dependencies from code, tests and Git history.
 - Upgraded `AGENTS.md` with the continuous AI development workflow.
+- Git Recovery reconciled the previously untracked audit artifact to `docs(P0-WF-001): recover project baseline report` without changing its historical snapshot.
 
 ## 2026-07-31 - M6.3 After-Sale Commands (`3f64086..978446d`)
 
