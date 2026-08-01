@@ -333,7 +333,55 @@ REJECTED/DEAD_LETTER` 的开始、完成和错误字段组合由数据库约束�
   provider status、secret reference 或上游响应。查询先按认证 `member_id` 锁定订单关系，不能
   通过同商城任意退款 ID 横向读取。
 
-## 9. RLS、最小权限与审计
+## 9. P0-M5-005 Slice A 财务对账批次
+
+### 9.1 `financial_reconciliation_batches`
+
+支付/退款结算批次是商城隔离、只追加的财务事实，不是供应商文件或资金到账的替代品。字段与约束：
+
+| 字段                                                  | 类型/语义             | 约束                                                 |
+| ----------------------------------------------------- | --------------------- | ---------------------------------------------------- |
+| `id/store_id`                                         | uuid                  | `UNIQUE(store_id,id)`；FORCE RLS                     |
+| `payment_channel_id`                                  | uuid                  | 与 `store_id` 复合绑定当前商城支付渠道               |
+| `source`                                              | enum                  | Slice A 仅 `PAYMENT_PROVIDER`                        |
+| `business_date/currency`                              | date/char(3)          | 日期由财务输入；币种固定 `VND`                       |
+| `batch_reference_digest/masked`                       | char(64)/varchar(160) | 原文不落库；同商城、渠道、摘要唯一                   |
+| `input_digest/idempotency_key_hash`                   | char(64)              | 同商城/source 幂等；同键异参冲突                     |
+| `status`                                              | enum                  | `MATCHED` 或 `REVIEW_REQUIRED`，必须与异常数量一致   |
+| `record_count/matched_count/exception_count`          | integer               | 1..500；总数必须等于匹配与异常之和                   |
+| `gross/fee/net/local_expected/difference_amount_vnd`  | bigint                | 服务端按逐笔计算；API 只返回 JavaScript safe integer |
+| `reason/created_by/correlation_id/version/created_at` | 审计元数据            | 原因 10..500；版本固定 1；批次不可更新或删除         |
+
+延迟约束触发器在提交时重算全部逐笔汇总并与 batch header 精确比较。它同时确认支付/退款匹配目标
+属于批次绑定的支付渠道；创建后再追加逐笔而使 header 失真也会整事务拒绝。
+
+### 9.2 `financial_reconciliation_lines`
+
+| 字段                                   | 类型/语义             | 约束                                                             |
+| -------------------------------------- | --------------------- | ---------------------------------------------------------------- |
+| `id/store_id/batch_id/line_number`     | uuid/integer          | 批次复合 FK；同批次行号唯一，1..500                              |
+| `type/status`                          | enum                  | `PAYMENT`/`REFUND`；匹配、金额差异、引用不存在、非终态或重复引用 |
+| `record_reference_digest/masked`       | char(64)/varchar(160) | 同批次记录引用唯一；原文不落库                                   |
+| `provider_reference_digest/masked`     | char(64)/varchar(160) | 摘要绑定商城、渠道与类型；API/审计只返回掩码                     |
+| `occurred_at`                          | timestamptz           | 规范化输入的发生时间，不作为供应商权威时间证明                   |
+| `gross/fee/net_amount_vnd`             | bigint                | 支付净额 `gross-fee`；退款净额 `-(gross+fee)`                    |
+| `local_expected/difference_amount_vnd` | bigint nullable       | 找到事实时差异固定 `gross-local_expected`；未找到/重复时均为空   |
+| `payment_attempt_id/refund_id`         | uuid nullable         | 按类型恰好绑定一个同商城事实；异常引用可均为空                   |
+
+只有同商城、同渠道且已有供应商引用的支付/退款事实参与匹配。`SUCCEEDED` 且金额相等才是
+`MATCHED`；其他状态只形成复核事实，不修改支付、退款、订单、库存、运单或供应商状态。
+
+### 9.3 权限、迁移与回滚
+
+- `store.finance.read` 只读批次/逐笔；`store.finance.reconcile` 要求直接商城角色、近期 MFA、
+  `Idempotency-Key`、固定确认码与原因。迁移只登记权限，production 角色不自动获得。
+- runtime role 仅有两表 `SELECT/INSERT`，显式撤销 `UPDATE/DELETE`；两表 FORCE RLS。
+- `20260801090000_p0_m5_005_financial_reconciliation` 只增加枚举、两表、索引、约束、触发器和权限目录，
+  不回填批次，不创建渠道，不生成供应商成功事实。
+- `down.sql` 仅供没有任何 batch/line 的 local/test scratch；存在事实时以 SQLSTATE `55000` 拒绝。
+  已有事实或 production 环境只能向前修复。
+
+## 10. RLS、最小权限与审计
 
 - API 运行角色只能在事务级 `app.store_id` 下访问渠道、支付、退款、物流和消息事实；回调入口
   使用不具备 RLS bypass 的专用解析流程，先由全局唯一公开 App/Shop 引用解析单个候选商城，
@@ -345,7 +393,7 @@ REJECTED/DEAD_LETTER` 的开始、完成和错误字段组合由数据库约束�
 - worker、Redis key、队列、对象键和导出均包含 store ID。指标只使用商城 code、provider、
   environment、operation 和错误类别等受控低基数标签。
 
-## 10. 迁移、兼容与回滚门禁
+## 11. 迁移、兼容与回滚门禁
 
 - M5.2 以四条前向迁移实施本字典：`20260725090000_m52_payment_shipping_foundation` 创建 14 张表、
   枚举、复合外键、约束、索引、强制 RLS 和不可变保护；`20260725093000_m52_permission_catalog`
@@ -364,6 +412,9 @@ REJECTED/DEAD_LETTER` 的开始、完成和错误字段组合由数据库约束�
 - M5.7 新增 `20260727001000_m57_refund_review_capacity_guard`，不新增表或字段，只将
   `REVIEW_REQUIRED` 纳入应用与数据库退款容量占用，防止供应商结果不确定时重复退款；存在人工
   复核退款事实时，down 以 SQLSTATE `55000` 拒绝。
+- P0-M5-005 Slice A 新增 `20260801090000_p0_m5_005_financial_reconciliation`，建立上述只追加
+  支付/退款对账批次、延迟汇总/渠道完整性 guard、FORCE RLS 与两项财务权限；不解析供应商文件，
+  不生成真实结算或资金事实。空 scratch 可执行 down；存在任一批次/逐笔时以 `55000` 拒绝。
 - local/test seed 只登记权限，不创建持久化支付/物流渠道或任何业务事实。集成测试仅在回滚事务
   中创建禁用、非秘密测试渠道，避免把虚构商户配置误认为可用 sandbox。
 - fresh deploy、M2-to-current、重复 deploy、生产运行角色权限、RLS、指纹和索引均需自动化

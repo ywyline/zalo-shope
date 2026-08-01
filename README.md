@@ -2,7 +2,7 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.7 已完成支付/物流/退款仓库底座；P0-M5-002 现已补齐 Mini App ONLINE 报价、下单、显式 Zalo Checkout 拉起、服务端权威查询、重试和订单恢复入口，但真实凭据、sandbox、回调、结算、COD 回款和真机仍未验收。M6.1/M6.2、M6.3-A/B0/B1/B2a 与 B2b-D0-D5 的各自 repository/local-test 边界已经完成。M6.3-B3 三条售后申请/取消/商家主动退款命令、B4 管理员审核/人工复核与 SYSTEM 寄回到期、B5 会员返件登记/管理员可信物流事实与待验收读取，以及 B6 ONLINE 售后退款权威协调也已完成 default-disabled repository implementation + local/test validation；这些能力只返回稳定投影或追加受限事实，production 配置与服务层均拒绝启用。P0-M6-009 已完成商城/会员隔离的收藏、最近商品浏览历史、会员汇总、同意/隐私请求运行时，以及越南语、中文、英文 Mini App 会员中心页面。B2/B2b 整体、B7、M6.3、M6、分享与完整售后 UI 和 P0 仍未完成；所有生产政策/enforcement、TTL、对象存储、真实供应商、部署和 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。当前没有真实物流 provider、返件验收、真实支付商退款验收、COD 结算、库存恢复或换货履约运行时，不能把 B3-B6 或会员本地完成状态表述为完整售后或生产就绪。生产依赖审计另保留 3 项 React Router moderate 公告，不得写成零漏洞。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.7 已完成支付/物流/退款仓库底座；P0-M5-002 现已补齐 Mini App ONLINE 报价、下单、显式 Zalo Checkout 拉起、服务端权威查询、重试和订单恢复入口。P0-M5-005 Slice A 已增加商城隔离、只追加的规范化支付/退款结算批次、差异读取和三语财务工作台，但 Slice B COD/GHN 回款与 Slice C 双人复核尚未实施，真实凭据、sandbox、结算文件、资金、回调、COD 回款和真机仍未验收。M6.1/M6.2、M6.3-A/B0/B1/B2a 与 B2b-D0-D5 的各自 repository/local-test 边界已经完成。M6.3-B3 三条售后申请/取消/商家主动退款命令、B4 管理员审核/人工复核与 SYSTEM 寄回到期、B5 会员返件登记/管理员可信物流事实与待验收读取，以及 B6 ONLINE 售后退款权威协调也已完成 default-disabled repository implementation + local/test validation；这些能力只返回稳定投影或追加受限事实，production 配置与服务层均拒绝启用。P0-M6-009 已完成商城/会员隔离的收藏、最近商品浏览历史、会员汇总、同意/隐私请求运行时，以及越南语、中文、英文 Mini App 会员中心页面。B2/B2b 整体、B7、M6.3、M6、分享与完整售后 UI 和 P0 仍未完成；所有生产政策/enforcement、TTL、对象存储、真实供应商、部署和 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。当前没有真实物流 provider、返件验收、真实支付商退款验收、COD 结算、库存恢复或换货履约运行时，不能把 Slice A、B3-B6 或会员本地完成状态表述为完整对账、完整售后或生产就绪。生产依赖审计另保留 3 项 React Router moderate 公告，不得写成零漏洞。
 
 M6.3-B2b-D1 已完成专用 `AfterSaleEvidenceObjectStorageProvider`、默认失败关闭配置、本地/测试
 MinIO 独立 bucket 与 upload/read/delete 最小 IAM，以及真实对象长度、SHA-256、Content-Type 和
@@ -194,6 +194,11 @@ corepack pnpm --filter @zalo-shop/database preflight:m63-b2b-d0
 
 M1 包含商城、身份、RBAC、会话、同意和审计表，并强制 runtime role RLS。M4 迁移新增三级行政区、地址、配送策略、订单、订单行、快照、转换、幂等与会员券核销门禁；权限迁移只登记 M4 权限 code，不给生产角色自动扩权。M6.2 的十一段前向迁移新增售后政策/快照、售后事实、会员收藏/历史、最小隐私请求与分享数据基础，并扩展运单 purpose、容量占用和 M5/M6 退款锁序保护；12 项 M6 STORE 权限同样只登记、不自动赋予生产角色。M6.3-A 的四段前向迁移让快照 guard 支持最近主类目祖先解析，为既有商城补稳定 OFF settings 行，增加当前商城受限行锁，并为后续新增商城自动 provision 同样的 OFF 行；迁移不创建政策、不启用 enforcement，也不扩生产角色权限。B0 前向迁移 `20260728104000_m63_b0_after_sale_contract_guards` 增加售后 header 精确 policy/version 身份、跨行同 policy/hash、逐行整数 VND 余数与窄 SYSTEM transition guard；它不开放任何售后运行时，事实环境只允许向前修复。B1 前向迁移 `20260728110000_m63_b1_after_sale_admin_read_index` 只增加管理员无状态筛选时使用的 `(store_id, updated_at DESC, id DESC)` 读取索引；Prisma 同时补记数据库原有的 `after_sale_refunds(store_id, settlement_id)` 唯一约束以消除 schema drift，不重复创建该索引。D0 迁移增加凭证 ledger/生命周期/可靠排队数据库底座，不新增 STORE 权限、不注册路由或 worker，也不创建生产/真实对象事实。种子仅创建可识别的 local/test 商城、行政区测试夹具、三语配置、配送策略、权限目录和系统商城角色，不创建默认管理员、会员、订单、售后政策、售后/分享事实或真实 Zalo ID。staging/production 必须先为每个商城导入并复核带 `source_version` 的越南权威省/区/坊数据；没有有效父链时地址写入和未知偏远省份配置会被服务端拒绝。
 
+P0-M5-005 Slice A 前向迁移 `20260801090000_p0_m5_005_financial_reconciliation` 增加只追加、
+FORCE RLS 的支付/退款对账批次与逐笔、延迟汇总/渠道 guard 和两项只登记不自动扩权的财务权限。
+它不回填或伪造结算事实；空白 local/test scratch 可人工执行同目录 `down.sql`，已有任一对账事实
+会在删除前以 SQLSTATE `55000` 拒绝，production 与事实环境只允许向前修复。
+
 D1 不修改 Prisma、RLS 或数据库迁移；M2→current 仍为 43 段，不能把 storage adapter 记作第 44
 段迁移。D1 回滚通过保持 evidence provider disabled 完成，不能通过删除 bucket 或数据库事实清理未来
 真实对象。
@@ -311,6 +316,22 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
 - 当前对账只覆盖逐笔权威查询、本地异常与死信视图，不代表商户日结完成。真实两商城退款、
   商户结算文件/手续费、GHN COD 回款和 Zalo 宿主验收保持 `BLOCKED/NOT_RUN`；M5/M5.7/P0 不标记
   完成，但 2026-07-27 的受限双轨批准允许继续仓库内 M6，外部上线门禁不变。
+
+## P0-M5-005 Slice A 支付/退款财务对账
+
+- `POST /v1/admin/financial-reconciliation/payment-batches` 只接受财务复核后的规范化逐笔，按目标
+  商城和 Zalo Checkout/ZaloPay 渠道匹配已有支付/退款事实；不解析供应商文件、不发网络请求、
+  不信任客户端业务状态，也不修改支付、退款、订单、库存或运单。
+- 导入要求直接商城 `store.finance.reconcile`、近期 MFA、幂等键、固定确认码和原因。批次与逐笔
+  FORCE RLS、只追加且由延迟约束在提交时重算汇总/渠道归属；完整批次、记录和供应商引用不落库，
+  API 与审计只保存摘要、掩码和整数 VND 汇总。
+- `GET /v1/admin/financial-reconciliation/batches` 与详情提供稳定游标、日期/状态筛选、逐笔差异和
+  越南语/中文/英文管理工作台。生产角色不自动获得新增权限；local/test seed 仅为测试角色显式授权。
+- 本节只代表 P0-M5-005 Slice A repository implementation + local/test validation。COD 应收/GHN
+  回款、maker-checker 差异关闭、真实 provider/sandbox/资金/生产均未完成，不能据此标记任务完成。
+- 实施边界见 `docs/plans/p0-m5-005-financial-reconciliation-plan.md`；契约、数据与权限分别见
+  `docs/api/openapi.m5.yaml`、`docs/database/m5-data-dictionary.md` 和
+  `docs/security/m5-permission-matrix.md`。
 
 ## M6.2 售后、会员与分享数据基础
 

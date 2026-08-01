@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   paymentAttemptCreateRequestSchema,
   paymentProviderOrderBindRequestSchema,
+  paymentSettlementBatchImportSchema,
   refundCreateRequestSchema,
   shipmentCreateRequestSchema,
   shippingQuoteRequestSchema,
@@ -94,6 +95,66 @@ describe('M5 strict shipment DTOs', () => {
         reason: 'Warehouse handoff approved',
         service_code: 'GHN_STANDARD',
         status: 'DELIVERED',
+      }),
+    ).toThrow();
+  });
+});
+
+describe('P0-M5-005 strict financial reconciliation DTOs', () => {
+  const validBatch = {
+    batch_reference: 'settlement-2026-08-01-001',
+    business_date: '2026-08-01',
+    confirmation_code: 'IMPORT_PAYMENT_SETTLEMENT',
+    provider_code: 'ZALO_CHECKOUT_ZALOPAY',
+    provider_environment: 'SANDBOX',
+    reason: 'Finance reviewed the normalized provider statement',
+    records: [
+      {
+        fee_amount_vnd: 2_000,
+        gross_amount_vnd: 100_000,
+        occurred_at: '2026-08-01T03:00:00.000Z',
+        provider_reference: 'payment-provider-reference',
+        record_reference: 'statement-line-1',
+        type: 'PAYMENT',
+      },
+    ],
+  } as const;
+
+  it('accepts normalized integer-VND settlement records and coerces occurred_at', () => {
+    const parsed = paymentSettlementBatchImportSchema.parse(validBatch);
+    expect(parsed.records[0]!.occurred_at).toBeInstanceOf(Date);
+    expect(parsed.records[0]!.gross_amount_vnd).toBe(100_000);
+  });
+
+  it('rejects duplicate record references and payment fees above gross', () => {
+    expect(() =>
+      paymentSettlementBatchImportSchema.parse({
+        ...validBatch,
+        records: [validBatch.records[0], validBatch.records[0]],
+      }),
+    ).toThrow();
+    expect(() =>
+      paymentSettlementBatchImportSchema.parse({
+        ...validBatch,
+        records: [{ ...validBatch.records[0], fee_amount_vnd: 100_001 }],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects client business facts, malformed dates and fractional VND', () => {
+    expect(() =>
+      paymentSettlementBatchImportSchema.parse({
+        ...validBatch,
+        payment_status: 'SUCCEEDED',
+      }),
+    ).toThrow();
+    expect(() =>
+      paymentSettlementBatchImportSchema.parse({ ...validBatch, business_date: '2026-02-30' }),
+    ).toThrow();
+    expect(() =>
+      paymentSettlementBatchImportSchema.parse({
+        ...validBatch,
+        records: [{ ...validBatch.records[0], gross_amount_vnd: 100_000.5 }],
       }),
     ).toThrow();
   });

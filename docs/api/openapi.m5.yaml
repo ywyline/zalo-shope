@@ -1,13 +1,15 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M5 Payment, Refund, Shipping and Integration API
-  version: 0.5.7-automation
+  version: 0.5.8-financial-reconciliation
   description: >-
     M5.5 已实施在线订单、支付尝试、异步 launch、provider-order 绑定、本人查询/重试、
     Zalo Checkout 主动查单和验签 webhook；M5.6 已实施 GHN 报价、运单命令、面单代理、
     权威轨迹查询和未签名 webhook hint。M5.7 已实施商城隔离的支付/退款列表、部分或全额
-    退款命令、支付与退款主动查询、脱敏集成任务列表及受审 dead-letter 重放。真实商户退款、
-    结算文件、GHN COD 回款和 Zalo 宿主验收仍为 BLOCKED/NOT_RUN。
+    退款命令、支付与退款主动查询、脱敏集成任务列表及受审 dead-letter 重放。P0-M5-005
+    Slice A 已增加规范化支付/退款结算批次导入、脱敏列表和差异详情；它不解析供应商文件，
+    不调用供应商，也不推进支付、退款、订单或库存状态。真实商户退款、结算文件、GHN COD
+    回款和 Zalo 宿主验收仍为 BLOCKED/NOT_RUN。
     本文与 openapi.m1-m4.yaml 共同描述增量 API。
     支付采用 ZaloPay through Zalo Checkout，物流采用 GHN，两个商城使用独立渠道配置。
     客户端 Checkout/PaymentDone、供应商回调和 GHN webhook 均不能直接修改金额、库存或状态。
@@ -20,6 +22,7 @@ tags:
   - { name: Provider webhooks }
   - { name: Admin payments }
   - { name: Admin refunds }
+  - { name: Admin financial reconciliation }
   - { name: Admin shipping }
   - { name: Admin integrations }
 paths:
@@ -363,6 +366,93 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/financial-reconciliation/payment-batches:
+    post:
+      tags: [Admin financial reconciliation]
+      summary: 导入规范化支付/退款结算批次
+      description: >-
+        仅接受财务已复核的规范化逐笔输入。服务端按目标商城和支付渠道匹配已有支付/退款事实，
+        计算整数 VND 毛额、手续费、带方向净额、本地预期与差异，并原子追加批次、逐笔和脱敏审计。
+        需要直接商城角色、近期 MFA、固定确认码、原因和幂等键；不能仅凭平台跨商城权限写入。
+        本接口不解析 ZaloPay 文件、不发起供应商请求，也不改变任何业务状态。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaymentSettlementBatchImportRequest' }
+      responses:
+        '201':
+          description: 已原子追加批次；同键同请求重放返回 replayed=true
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinancialReconciliationImportResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/financial-reconciliation/batches:
+    get:
+      tags: [Admin financial reconciliation]
+      summary: 分页读取目标商城财务对账批次
+      description: >-
+        只返回批次引用掩码和整数 VND 汇总。平台跨商城只读仍需显式目标商城与访问原因；
+        游标按 created_at、id 稳定倒序推进。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: source
+          in: query
+          schema: { type: string, const: PAYMENT_PROVIDER }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/FinancialReconciliationBatchStatus' }
+        - name: business_date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: business_date_to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: 当前商城批次页
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinancialReconciliationBatchPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/financial-reconciliation/batches/{batchId}:
+    get:
+      tags: [Admin financial reconciliation]
+      summary: 读取目标商城财务对账批次及逐笔差异
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - name: batchId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 批次与逐笔差异；记录和供应商引用只返回掩码
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinancialReconciliationBatchDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/admin/shipping/quotes:
     post:
       tags: [Admin shipping]
@@ -783,6 +873,152 @@ components:
       properties:
         provider_order_id: { type: string, minLength: 1, maxLength: 160 }
         launch_token: { type: string, minLength: 32, maxLength: 4096 }
+    PaymentSettlementRecord:
+      type: object
+      additionalProperties: false
+      required:
+        [type, record_reference, provider_reference, occurred_at, gross_amount_vnd, fee_amount_vnd]
+      properties:
+        type: { type: string, enum: [PAYMENT, REFUND] }
+        record_reference: { type: string, minLength: 1, maxLength: 160 }
+        provider_reference: { type: string, minLength: 1, maxLength: 160 }
+        occurred_at: { type: string, format: date-time }
+        gross_amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        fee_amount_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+    PaymentSettlementBatchImportRequest:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          batch_reference,
+          business_date,
+          provider_code,
+          provider_environment,
+          confirmation_code,
+          reason,
+          records,
+        ]
+      properties:
+        batch_reference: { type: string, minLength: 1, maxLength: 160 }
+        business_date: { type: string, format: date }
+        provider_code: { type: string, const: ZALO_CHECKOUT_ZALOPAY }
+        provider_environment: { type: string, enum: [SANDBOX, PRODUCTION] }
+        confirmation_code: { type: string, const: IMPORT_PAYMENT_SETTLEMENT }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+        records:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/PaymentSettlementRecord' }
+    FinancialReconciliationBatchStatus:
+      type: string
+      enum: [MATCHED, REVIEW_REQUIRED]
+    FinancialReconciliationLineStatus:
+      type: string
+      enum: [MATCHED, AMOUNT_MISMATCH, REFERENCE_NOT_FOUND, FACT_NOT_FINAL, DUPLICATE_REFERENCE]
+    FinancialReconciliationLine:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          line_number,
+          type,
+          status,
+          record_reference_masked,
+          provider_reference_masked,
+          occurred_at,
+          gross_amount_vnd,
+          fee_amount_vnd,
+          net_amount_vnd,
+          local_expected_amount_vnd,
+          difference_vnd,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        line_number: { type: integer, minimum: 1, maximum: 500 }
+        type: { type: string, enum: [PAYMENT, REFUND] }
+        status: { $ref: '#/components/schemas/FinancialReconciliationLineStatus' }
+        record_reference_masked: { type: string, minLength: 1, maxLength: 160 }
+        provider_reference_masked: { type: string, minLength: 1, maxLength: 160 }
+        occurred_at: { type: string, format: date-time }
+        gross_amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        fee_amount_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        net_amount_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+        local_expected_amount_vnd:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 9007199254740991
+        difference_vnd:
+          type: [integer, 'null']
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+    FinancialReconciliationBatchSummary:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          source,
+          status,
+          batch_reference_masked,
+          business_date,
+          currency,
+          record_count,
+          matched_count,
+          exception_count,
+          gross_amount_vnd,
+          fee_amount_vnd,
+          net_amount_vnd,
+          local_expected_amount_vnd,
+          difference_vnd,
+          version,
+          created_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        source: { type: string, const: PAYMENT_PROVIDER }
+        status: { $ref: '#/components/schemas/FinancialReconciliationBatchStatus' }
+        batch_reference_masked: { type: string, minLength: 1, maxLength: 160 }
+        business_date: { type: string, format: date }
+        currency: { type: string, const: VND }
+        record_count: { type: integer, minimum: 1, maximum: 500 }
+        matched_count: { type: integer, minimum: 0, maximum: 500 }
+        exception_count: { type: integer, minimum: 0, maximum: 500 }
+        gross_amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        fee_amount_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        net_amount_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+        local_expected_amount_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        difference_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+        version: { type: integer, const: 1 }
+        created_at: { type: string, format: date-time }
+    FinancialReconciliationBatchDetail:
+      allOf:
+        - $ref: '#/components/schemas/FinancialReconciliationBatchSummary'
+        - type: object
+          required: [lines]
+          properties:
+            lines:
+              type: array
+              minItems: 1
+              maxItems: 500
+              items: { $ref: '#/components/schemas/FinancialReconciliationLine' }
+    FinancialReconciliationImportResult:
+      allOf:
+        - $ref: '#/components/schemas/FinancialReconciliationBatchDetail'
+        - type: object
+          required: [replayed]
+          properties:
+            replayed: { type: boolean }
+    FinancialReconciliationBatchPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/FinancialReconciliationBatchSummary' }
+        next_cursor: { type: [string, 'null'], format: uuid }
     PaymentAttemptStatus:
       type: string
       enum: [CREATED, PROVIDER_PENDING, SUCCEEDED, FAILED, EXPIRED, CANCELLED, REVIEW_REQUIRED]
