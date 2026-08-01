@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M6 incremental API contract
-  version: 0.6.3-b6
+  version: 0.6.3-b7
   description: >-
     M6 incremental contract combined with the M1-M5 contracts. M6.3-A implements the after-sale
     settings GET/PUT routes, M6.3-B1 implements the member/admin after-sale list and detail GET
@@ -15,18 +15,21 @@ info:
     return-expiration worker. M6.3-B5 implements member return registration, audited trusted
     return-logistics facts and reuse of the B1 inspection-pending read projection. M6.3-B6 implements
     the server-calculated ONLINE settlement, M5 refund/link atomic coordinator and versioned
-    after-sale refund synchronization worker. These capabilities remain behind independent
+    after-sale refund synchronization worker. M6.3-B7 extends the shared refund route with a
+    server-selected COD branch backed by exact matched COD remittance facts, then implements an
+    encrypted receipt-recording route and a different-administrator confirmation route. These
+    capabilities remain behind independent
     repository/local-test-only, default-disabled gates. This does not
     establish production readiness: legal-hold/dead-letter management, external alerting,
     production TTL policy, IAM/KMS/versioning/Object
     Lock/lifecycle certification, bearer-URL risk acceptance, deployment and rollout remain
-    NOT_AUTHORIZED / NOT_RUN. Operations assigned to B7 and later milestones remain contract-only.
+    NOT_AUTHORIZED / NOT_RUN. Operations assigned to later milestones remain contract-only.
     Buyer store ownership comes from the authenticated member and X-Store-Code. Admin routes
     additionally require the matching store_id query parameter. D5 protected-read routes generate
     X-Correlation-Id on the server and do not accept a client correlation identifier; the generated
     value is propagated through authorization, audit, logs and error bodies.
 x-after-sale-b0-contract:
-  runtime_status: m6_3_a_b1_b2a_d3_d5_b3_b4_b5_and_b6_repository_local_test_implemented
+  runtime_status: m6_3_a_b1_b2a_d3_d5_b3_b4_b5_b6_and_b7_repository_local_test_implemented
   runtime_operations:
     implemented_m6_3_a: [getAfterSaleSettings, setAfterSalePolicyEnforcement]
     implemented_m6_3_b1:
@@ -52,7 +55,9 @@ x-after-sale-b0-contract:
     implemented_m6_3_b4: [reviewAfterSale, resolveAfterSaleManualReview]
     implemented_m6_3_b5: [submitAfterSaleReturnShipment, recordAfterSaleReturnFact]
     implemented_m6_3_b6: [requestAfterSaleRefund]
-    contract_only_m6_3_b2_b7: all_after_sale_operations_not_listed_as_implemented_above
+    implemented_m6_3_b7:
+      [requestAfterSaleRefund, recordAfterSaleCodRefundReceipt, confirmAfterSaleCodRefund]
+    contract_only_m6_3_b2_and_later: all_after_sale_operations_not_listed_as_implemented_above
   protected_evidence_read:
     status: complete_repository_local_test_default_disabled
     repository_gates: pass
@@ -85,7 +90,7 @@ x-after-sale-b0-contract:
       member_read: implemented_m6_3_b1_m6_3_b2b_d3_and_d5
       admin_read: implemented_m6_3_b1_m6_3_b2a_and_m6_3_b2b_d5
       member_write: implemented_m6_3_b2b_d3_b3_and_b5
-      admin_write: implemented_m6_3_b2a_b3_b4_b5_and_b6
+      admin_write: implemented_m6_3_b2a_b3_b4_b5_b6_and_b7
     read_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
     write_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
   b3_commands:
@@ -93,7 +98,7 @@ x-after-sale-b0-contract:
     repository_gates: pass
     production_status: not_authorized_not_run_and_rejected_by_runtime_configuration
     admin_authorization: direct_target_store_review_only_cross_access_only_forbidden
-    cod_admission: fail_closed_no_repository_confirmed_receipt_fact
+    cod_admission: exact_matched_cod_remittance_for_the_same_store_order_shipment_and_amount
     command_response: immutable_operation_acknowledgement_get_reads_current_aggregate
     serialization_attempts: maximum_three_expected_version_conflict_not_retried
     creation_transition: SUBMIT_null_to_pending_review_or_legacy_review_required
@@ -135,6 +140,20 @@ x-after-sale-b0-contract:
     transaction: serializable_settlement_m5_refund_unique_link_transitions_audit_and_sync_outbox
     provider_projection: succeeded_failed_cancelled_or_review_required_from_locked_m5_refund
     excluded_side_effects: real_provider_cod_inspection_inventory_exchange_ui_rollout
+  b7_cod_refund:
+    status: complete_repository_local_test_default_disabled
+    repository_gates: pass
+    migration_range: '56'
+    production_status: not_authorized_not_run_and_rejected_by_runtime_configuration
+    command_gate: AFTER_SALE_REFUND_COMMANDS_ENABLED_false
+    admission: exact_immutable_cod_remittance_matched_fact_for_delivered_order_outbound_shipment
+    request_authorization: direct_target_store_after_sale_read_and_cod_refund_request_recent_mfa
+    receipt_authorization: requester_with_direct_target_store_after_sale_read_and_cod_refund_request_recent_mfa
+    confirmation_authorization: different_admin_with_direct_target_store_after_sale_read_and_cod_refund_confirm_recent_mfa
+    amount_authority: server_approved_total_vnd_only_client_amount_forbidden
+    receipt_storage: keyed_digests_mask_and_encrypted_evidence_plaintext_not_projected
+    transaction: serializable_pending_settlement_receipt_then_atomic_success_transitions_confirmation_and_audit
+    excluded_side_effects: real_bank_transfer_provider_calls_inventory_inspection_exchange_ui_rollout
   system_principal:
     scope: after-sale-transition
     events:
@@ -667,19 +686,22 @@ paths:
   /v1/admin/after-sales/{afterSaleId}/refund:
     post:
       operationId: requestAfterSaleRefund
-      x-runtime-status: implemented_m6_3_b6_repository_local_test_default_disabled
+      x-runtime-status: implemented_m6_3_b6_b7_repository_local_test_default_disabled
       x-rate-limit-tier: admin_write
-      summary: Request a server-calculated ONLINE refund settlement
+      summary: Request a server-calculated ONLINE or COD refund settlement
       description: >-
-        This B6 repository/local-test route accepts only a trusted ONLINE order and reuses the M5
-        refund capacity, provider workflow and outbox. It requires direct target-store after-sales
-        review, refund-create, after-sales-read and refund-read permissions plus recent MFA;
-        cross-access-only cannot substitute for any of the four direct permissions. The amount is the server-approved
-        after-sale total; no client amount or payment branch is accepted. From APPROVED it appends
-        QUEUE_REFUND, creates the pending settlement, then atomically creates and links the M5 refund
-        before projecting REFUND_REQUESTED. A case already at REFUND_PENDING appends only
-        REFUND_REQUESTED. Provider uncertainty converges to REVIEW_REQUIRED. The capability is
-        disabled by default, forbidden in production, and does not represent a live provider rollout.
+        This shared B6/B7 repository/local-test route selects ONLINE or COD from the locked order;
+        no client amount, payment branch, fee, provider reference, inventory action or terminal state
+        is accepted. ONLINE reuses the M5 refund capacity, provider workflow and outbox and requires
+        direct target-store after-sales review, refund-create, after-sales-read and refund-read
+        permissions plus recent MFA. COD requires after-sales-read and direct target-store
+        cod-refund-request permission plus recent MFA, and is admitted only when one immutable
+        COD_REMITTANCE/MATCHED line exactly binds the delivered ORDER_OUTBOUND shipment, order,
+        store and collected amount. The server-approved after-sale total is authoritative. ONLINE
+        proceeds to REFUND_REQUESTED; COD creates only a PENDING settlement and remains at
+        REFUND_PENDING until an immutable receipt is recorded and a different administrator confirms
+        it. Cross-access-only cannot replace direct permissions. The capability is disabled by default,
+        forbidden in production, performs no bank transfer and does not represent a live provider rollout.
       security: [{ AdminBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
@@ -694,7 +716,8 @@ paths:
       responses:
         '202':
           description: >-
-            The ONLINE refund and linked settlement are processing; no client amount is accepted.
+            ONLINE is linked to a processing M5 refund, or COD has a PENDING settlement awaiting
+            receipt and independent confirmation; no client amount is accepted.
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
             Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
@@ -713,7 +736,7 @@ paths:
   /v1/admin/after-sales/{afterSaleId}/exchange:
     post:
       operationId: createAfterSaleExchange
-      x-runtime-status: contract_only_m6_3_b2_b7
+      x-runtime-status: contract_only_m6_3_b2_and_later
       x-rate-limit-tier: admin_write
       summary: Reserve and start an equal-quantity replacement SKU fulfillment
       security: [{ AdminBearer: [] }]
@@ -744,7 +767,7 @@ paths:
   /v1/admin/after-sales/{afterSaleId}/convert-exchange-to-refund:
     post:
       operationId: convertAfterSaleExchangeToRefund
-      x-runtime-status: contract_only_m6_3_b2_b7
+      x-runtime-status: contract_only_m6_3_b2_and_later
       x-rate-limit-tier: admin_write
       summary: Convert an inspected exchange to a refund before replacement fulfillment starts
       description: >-
@@ -826,17 +849,63 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /v1/admin/after-sales/{afterSaleId}/cod-refunds/{settlementNumber}/receipt:
+    post:
+      operationId: recordAfterSaleCodRefundReceipt
+      x-runtime-status: implemented_m6_3_b7_repository_local_test_default_disabled
+      x-rate-limit-tier: admin_write
+      summary: Record encrypted evidence for a pending COD refund settlement
+      description: >-
+        The requesting administrator records the observed external transfer reference, evidence
+        reference and transfer time for the exact store, case and public settlement number. The
+        server reuses the approved integer-VND amount and VND currency; no client amount, fee,
+        terminal state or inventory action is accepted. The normalized transfer reference and
+        evidence are persisted only as keyed digests, a masked reference and encrypted ciphertext.
+        Plaintext and internal receipt identifiers are never projected. Recording a receipt does not
+        confirm success and does not perform a transfer. Direct target-store after-sales-read and
+        cod-refund-request permissions, recent MFA and the original settlement requester are required.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+        - { $ref: '#/components/parameters/SettlementNumber' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleCodRefundReceiptRequest' }
+      responses:
+        '200':
+          description: Receipt recorded; settlement remains pending independent confirmation
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSale' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/admin/after-sales/{afterSaleId}/cod-refunds/{settlementNumber}/confirm:
     post:
       operationId: confirmAfterSaleCodRefund
-      x-runtime-status: contract_only_m6_3_b2_b7
+      x-runtime-status: implemented_m6_3_b7_repository_local_test_default_disabled
       x-rate-limit-tier: admin_write
       summary: Independently confirm a COD refund without accepting client amount or payout reference
       description: >-
-        This command is available only after an approved payout adapter or finance workflow has
-        written an encrypted proof fact. The API cannot create that proof or mark an unsupported
-        transfer successful. After proving different initiating/confirming actors and authoritative
-        transfer evidence, one transaction marks the settlement successful and appends
+        This command is available only after the requesting administrator has recorded an immutable,
+        encrypted receipt fact through the dedicated route. The API cannot create that proof during
+        confirmation or mark an unsupported transfer successful. After proving different
+        initiating/confirming actors and exact authoritative receipt evidence, one transaction marks
+        the settlement successful and appends
         REFUND_REQUESTED then REFUND_SUCCEEDED, ending at REFUNDED. Replay returns the same facts
         without new transitions. settlementNumber is the public_number returned by the refund
         command; the server resolves and locks it only within the supplied store and after-sale case.
@@ -857,6 +926,8 @@ paths:
           description: COD settlement confirmed by a different authorized administrator
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AfterSale' }
@@ -865,7 +936,9 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/admin/after-sales/{afterSaleId}/evidence/{evidenceId}:
     get:
       operationId: getAdminAfterSaleEvidence
@@ -2094,6 +2167,25 @@ components:
         expected_settlement_version: { type: integer, minimum: 1 }
         expected_version: { type: integer, minimum: 1 }
         reason: { type: string, minLength: 10, maxLength: 500 }
+    AfterSaleCodRefundReceiptRequest:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          confirmation_code,
+          evidence_reference,
+          expected_settlement_version,
+          reason,
+          transfer_reference,
+          transferred_at,
+        ]
+      properties:
+        confirmation_code: { type: string, const: RECORD_COD_REFUND_RECEIPT }
+        evidence_reference: { type: string, minLength: 2, maxLength: 2000 }
+        expected_settlement_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+        transfer_reference: { type: string, minLength: 2, maxLength: 160 }
+        transferred_at: { type: string, format: date-time }
     AfterSaleItem:
       type: object
       additionalProperties: false
@@ -2157,7 +2249,8 @@ components:
     AfterSaleSettlementView:
       type: object
       additionalProperties: false
-      required: [public_number, method, status, amount_vnd, created_at, updated_at]
+      required:
+        [public_number, method, status, amount_vnd, receipt_recorded, created_at, updated_at]
       properties:
         public_number:
           type: string
@@ -2168,6 +2261,9 @@ components:
           type: string
           enum: [PENDING, PROCESSING, SUCCEEDED, FAILED, REVIEW_REQUIRED, CANCELLED]
         amount_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        receipt_recorded:
+          type: boolean
+          description: True only when an immutable COD receipt exists; no sensitive receipt fields are projected
         refund_public_number: { type: [string, 'null'], maxLength: 64 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }

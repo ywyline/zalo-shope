@@ -126,6 +126,7 @@ export * from './after-sale-review-primitives';
 export * from './after-sale-return-primitives';
 export * from './after-sale-refund-events';
 export * from './after-sale-refund-primitives';
+export * from './after-sale-cod-refund-primitives';
 export * from './order-primitives';
 export * from './payment-primitives';
 export * from './payment-callback-primitives';

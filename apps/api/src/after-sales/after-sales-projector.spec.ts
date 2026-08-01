@@ -78,6 +78,7 @@ function fixture(): AfterSaleReadRecord {
     settlements: [
       {
         amountVnd: 100_000n,
+        codRefundReceipt: null,
         method: 'ONLINE_ORIGINAL',
         publicSettlementNumber: 'AST-0123456789ABCDEF',
         refunds: [{ refund: { publicRefundNumber: 'RFD-0123456789ABCDEF' } }],
@@ -152,8 +153,15 @@ describe('AfterSalesProjector', () => {
       version: 2,
     });
     expect(response.settlements[0]?.refund_public_number).toBe('RFD-0123456789ABCDEF');
+    expect(response.settlements[0]?.receipt_recorded).toBe(false);
     expect(response.return_shipments[0]?.masked_tracking_number).toBe('GH********89');
     expect(JSON.stringify(response)).not.toContain('Ciphertext');
+
+    const withCodReceipt = fixture();
+    withCodReceipt.settlements[0]!.codRefundReceipt = {
+      id: '70000000-0000-4000-8000-000000000001',
+    };
+    expect(projector.project(withCodReceipt, 'vi').settlements[0]?.receipt_recorded).toBe(true);
   });
 
   it('collapses evidence at the exclusive deadline and all non-public internal states', () => {

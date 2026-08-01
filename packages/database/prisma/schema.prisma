@@ -91,100 +91,102 @@ model Store {
   createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  localizations                  StoreLocalization[]
-  theme                          StoreTheme?
-  zaloApps                       StoreZaloApp[]
-  storeRoles                     StoreRole[]
-  adminStoreRoles                AdminStoreRole[]
-  members                        Member[]
-  memberIdentities               MemberExternalIdentity[]
-  memberPhoneContact             MemberPhoneContact[]
-  consents                       Consent[]
-  memberSessions                 MemberSession[]
-  auditLogs                      AuditLog[]
-  brands                         Brand[]
-  categories                     Category[]
-  attributeTemplates             AttributeTemplate[]
-  products                       Product[]
-  mediaAssets                    MediaAsset[]
-  complianceRequirements         ComplianceRequirement[]
-  pages                          Page[]
-  warehouses                     Warehouse[]
-  warehouseFulfillmentProfiles   WarehouseFulfillmentProfile[]
-  inventoryBalances              InventoryBalance[]
-  inventoryOperations            InventoryOperation[]
-  inventoryReservations          InventoryReservation[]
-  inventoryReservationItems      InventoryReservationItem[]
-  inventoryMovements             InventoryMovement[]
-  productSearchDocuments         ProductSearchDocument[]
-  memberSearchHistory            MemberSearchHistory[]
-  searchQueryStats               SearchQueryStat[]
-  promotions                     Promotion[]
-  promotionVersions              PromotionVersion[]
-  promotionVersionLocalizations  PromotionVersionLocalization[]
-  promotionTargets               PromotionTarget[]
-  promotionOperations            PromotionOperation[]
-  coupons                        Coupon[]
-  memberCoupons                  MemberCoupon[]
-  carts                          Cart[]
-  cartItems                      CartItem[]
-  warehouseLocalizations         WarehouseLocalization[]
-  administrativeAreas            AdministrativeArea[]
-  deliveryPolicy                 StoreDeliveryPolicy?
-  addresses                      Address[]
-  orders                         Order[]
-  orderItems                     OrderItem[]
-  orderSnapshots                 OrderSnapshot[]
-  orderTransitions               OrderTransition[]
-  idempotencyRecords             IdempotencyRecord[]
-  paymentChannels                StorePaymentChannel[]
-  shippingChannels               StoreShippingChannel[]
-  paymentAttempts                PaymentAttempt[]
-  paymentTransitions             PaymentTransition[]
-  providerCallbacks              ProviderCallback[]
-  refunds                        Refund[]
-  refundTransitions              RefundTransition[]
-  shippingQuotes                 ShippingQuote[]
-  shipments                      Shipment[]
-  shipmentItems                  ShipmentItem[]
-  trackingEvents                 TrackingEvent[]
-  shippingOperations             ShippingOperation[]
-  outboxMessages                 OutboxMessage[]
-  inboxMessages                  InboxMessage[]
-  financialReconciliationBatches FinancialReconciliationBatch[]
-  financialReconciliationLines   FinancialReconciliationLine[]
-  financialReconciliationReviews FinancialReconciliationReview[]
-  afterSaleSetting               StoreAfterSaleSetting?
-  afterSalePolicies              AfterSalePolicy[]
-  afterSalePolicyVersions        AfterSalePolicyVersion[]
-  afterSalePolicyLocalizations   AfterSalePolicyLocalization[]
-  afterSalePolicyDraftProducts   AfterSalePolicyDraftProduct[]
-  afterSalePolicyAssignments     AfterSalePolicyVersionAssignment[]
-  activeAfterSalePolicies        AfterSaleActivePolicyAssignment[]
-  orderItemPolicySnapshots       OrderItemAfterSalePolicySnapshot[]
-  afterSales                     AfterSale[]
-  afterSaleItems                 AfterSaleItem[]
-  afterSaleTransitions           AfterSaleTransition[]
-  afterSaleOperations            AfterSaleOperation[]
-  afterSaleLegacyDecisions       AfterSaleLegacyDecision[]
-  afterSaleOrderAllocations      AfterSaleOrderAllocation[]
-  afterSaleInspections           AfterSaleInspection[]
-  afterSaleInspectionAllocations AfterSaleInspectionAllocation[]
-  afterSaleEvidenceFiles         AfterSaleEvidenceFile[]
-  afterSaleEvidenceObjects       AfterSaleEvidenceObject[]
-  afterSaleEvidenceTransitions   AfterSaleEvidenceTransition[]
-  afterSaleSettlements           AfterSaleSettlement[]
-  afterSaleRefunds               AfterSaleRefund[]
-  afterSaleInventoryActions      AfterSaleInventoryAction[]
-  afterSaleReturnShipments       AfterSaleReturnShipment[]
-  exchangeFulfillments           ExchangeFulfillment[]
-  memberFavorites                MemberFavorite[]
-  memberProductViews             MemberProductView[]
-  privacyRequests                PrivacyRequest[]
-  privacyRequestTransitions      PrivacyRequestTransition[]
-  shareLinks                     ShareLink[]
-  shareLinkLocalizations         ShareLinkLocalization[]
-  shareInteractions              ShareInteraction[]
+  localizations                   StoreLocalization[]
+  theme                           StoreTheme?
+  zaloApps                        StoreZaloApp[]
+  storeRoles                      StoreRole[]
+  adminStoreRoles                 AdminStoreRole[]
+  members                         Member[]
+  memberIdentities                MemberExternalIdentity[]
+  memberPhoneContact              MemberPhoneContact[]
+  consents                        Consent[]
+  memberSessions                  MemberSession[]
+  auditLogs                       AuditLog[]
+  brands                          Brand[]
+  categories                      Category[]
+  attributeTemplates              AttributeTemplate[]
+  products                        Product[]
+  mediaAssets                     MediaAsset[]
+  complianceRequirements          ComplianceRequirement[]
+  pages                           Page[]
+  warehouses                      Warehouse[]
+  warehouseFulfillmentProfiles    WarehouseFulfillmentProfile[]
+  inventoryBalances               InventoryBalance[]
+  inventoryOperations             InventoryOperation[]
+  inventoryReservations           InventoryReservation[]
+  inventoryReservationItems       InventoryReservationItem[]
+  inventoryMovements              InventoryMovement[]
+  productSearchDocuments          ProductSearchDocument[]
+  memberSearchHistory             MemberSearchHistory[]
+  searchQueryStats                SearchQueryStat[]
+  promotions                      Promotion[]
+  promotionVersions               PromotionVersion[]
+  promotionVersionLocalizations   PromotionVersionLocalization[]
+  promotionTargets                PromotionTarget[]
+  promotionOperations             PromotionOperation[]
+  coupons                         Coupon[]
+  memberCoupons                   MemberCoupon[]
+  carts                           Cart[]
+  cartItems                       CartItem[]
+  warehouseLocalizations          WarehouseLocalization[]
+  administrativeAreas             AdministrativeArea[]
+  deliveryPolicy                  StoreDeliveryPolicy?
+  addresses                       Address[]
+  orders                          Order[]
+  orderItems                      OrderItem[]
+  orderSnapshots                  OrderSnapshot[]
+  orderTransitions                OrderTransition[]
+  idempotencyRecords              IdempotencyRecord[]
+  paymentChannels                 StorePaymentChannel[]
+  shippingChannels                StoreShippingChannel[]
+  paymentAttempts                 PaymentAttempt[]
+  paymentTransitions              PaymentTransition[]
+  providerCallbacks               ProviderCallback[]
+  refunds                         Refund[]
+  refundTransitions               RefundTransition[]
+  shippingQuotes                  ShippingQuote[]
+  shipments                       Shipment[]
+  shipmentItems                   ShipmentItem[]
+  trackingEvents                  TrackingEvent[]
+  shippingOperations              ShippingOperation[]
+  outboxMessages                  OutboxMessage[]
+  inboxMessages                   InboxMessage[]
+  financialReconciliationBatches  FinancialReconciliationBatch[]
+  financialReconciliationLines    FinancialReconciliationLine[]
+  financialReconciliationReviews  FinancialReconciliationReview[]
+  afterSaleSetting                StoreAfterSaleSetting?
+  afterSalePolicies               AfterSalePolicy[]
+  afterSalePolicyVersions         AfterSalePolicyVersion[]
+  afterSalePolicyLocalizations    AfterSalePolicyLocalization[]
+  afterSalePolicyDraftProducts    AfterSalePolicyDraftProduct[]
+  afterSalePolicyAssignments      AfterSalePolicyVersionAssignment[]
+  activeAfterSalePolicies         AfterSaleActivePolicyAssignment[]
+  orderItemPolicySnapshots        OrderItemAfterSalePolicySnapshot[]
+  afterSales                      AfterSale[]
+  afterSaleItems                  AfterSaleItem[]
+  afterSaleTransitions            AfterSaleTransition[]
+  afterSaleOperations             AfterSaleOperation[]
+  afterSaleLegacyDecisions        AfterSaleLegacyDecision[]
+  afterSaleOrderAllocations       AfterSaleOrderAllocation[]
+  afterSaleInspections            AfterSaleInspection[]
+  afterSaleInspectionAllocations  AfterSaleInspectionAllocation[]
+  afterSaleEvidenceFiles          AfterSaleEvidenceFile[]
+  afterSaleEvidenceObjects        AfterSaleEvidenceObject[]
+  afterSaleEvidenceTransitions    AfterSaleEvidenceTransition[]
+  afterSaleSettlements            AfterSaleSettlement[]
+  afterSaleRefunds                AfterSaleRefund[]
+  afterSaleCodRefundReceipts      AfterSaleCodRefundReceipt[]
+  afterSaleCodRefundConfirmations AfterSaleCodRefundConfirmation[]
+  afterSaleInventoryActions       AfterSaleInventoryAction[]
+  afterSaleReturnShipments        AfterSaleReturnShipment[]
+  exchangeFulfillments            ExchangeFulfillment[]
+  memberFavorites                 MemberFavorite[]
+  memberProductViews              MemberProductView[]
+  privacyRequests                 PrivacyRequest[]
+  privacyRequestTransitions       PrivacyRequestTransition[]
+  shareLinks                      ShareLink[]
+  shareLinkLocalizations          ShareLinkLocalization[]
+  shareInteractions               ShareInteraction[]
 
   @@map("stores")
 }
@@ -250,33 +252,35 @@ model AdminUser {
   createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  platformRolesGranted          AdminPlatformRole[]           @relation("AdminPlatformRoleAdmin")
-  platformRolesGrantedBy        AdminPlatformRole[]           @relation("AdminPlatformRoleGrantor")
-  storeRoles                    AdminStoreRole[]              @relation("AdminStoreRoleAdmin")
-  storeRolesGrantedBy           AdminStoreRole[]              @relation("AdminStoreRoleGrantor")
-  adminSessions                 AdminSession[]
-  inventoryOperations           InventoryOperation[]
-  promotionsCreated             Promotion[]                   @relation("PromotionCreatedBy")
-  promotionsUpdated             Promotion[]                   @relation("PromotionUpdatedBy")
-  promotionVersionsPublished    PromotionVersion[]            @relation("PromotionVersionPublishedBy")
-  promotionOperations           PromotionOperation[]
-  deliveryPoliciesUpdated       StoreDeliveryPolicy[]         @relation("DeliveryPolicyUpdatedBy")
-  warehouseProfilesUpdated      WarehouseFulfillmentProfile[] @relation("WarehouseFulfillmentProfileUpdatedBy")
-  refundsRequested              Refund[]
-  afterSalePoliciesCreated      AfterSalePolicy[]             @relation("AfterSalePolicyCreatedBy")
-  afterSalePoliciesUpdated      AfterSalePolicy[]             @relation("AfterSalePolicyUpdatedBy")
-  afterSaleVersionsPublished    AfterSalePolicyVersion[]
-  afterSaleLegacyDecisions      AfterSaleLegacyDecision[]
-  afterSaleInspections          AfterSaleInspection[]
-  afterSaleSettingsReadiness    StoreAfterSaleSetting[]       @relation("StoreAfterSaleReadinessCheckedBy")
-  afterSaleSettingsUpdated      StoreAfterSaleSetting[]       @relation("StoreAfterSaleSettingUpdatedBy")
-  afterSalesReviewed            AfterSale[]                   @relation("AfterSaleReviewedBy")
-  afterSaleItemsInspected       AfterSaleItem[]               @relation("AfterSaleItemInspectedBy")
-  afterSaleEvidenceHeld         AfterSaleEvidenceFile[]       @relation("AfterSaleEvidenceHeldBy")
-  afterSaleSettlementsRequested AfterSaleSettlement[]         @relation("AfterSaleSettlementRequestedBy")
-  afterSaleSettlementsConfirmed AfterSaleSettlement[]         @relation("AfterSaleSettlementConfirmedBy")
-  financialReconciliationBatches FinancialReconciliationBatch[]
-  financialReconciliationReviews FinancialReconciliationReview[] @relation("FinancialReconciliationReviewReviewer")
+  platformRolesGranted                AdminPlatformRole[]              @relation("AdminPlatformRoleAdmin")
+  platformRolesGrantedBy              AdminPlatformRole[]              @relation("AdminPlatformRoleGrantor")
+  storeRoles                          AdminStoreRole[]                 @relation("AdminStoreRoleAdmin")
+  storeRolesGrantedBy                 AdminStoreRole[]                 @relation("AdminStoreRoleGrantor")
+  adminSessions                       AdminSession[]
+  inventoryOperations                 InventoryOperation[]
+  promotionsCreated                   Promotion[]                      @relation("PromotionCreatedBy")
+  promotionsUpdated                   Promotion[]                      @relation("PromotionUpdatedBy")
+  promotionVersionsPublished          PromotionVersion[]               @relation("PromotionVersionPublishedBy")
+  promotionOperations                 PromotionOperation[]
+  deliveryPoliciesUpdated             StoreDeliveryPolicy[]            @relation("DeliveryPolicyUpdatedBy")
+  warehouseProfilesUpdated            WarehouseFulfillmentProfile[]    @relation("WarehouseFulfillmentProfileUpdatedBy")
+  refundsRequested                    Refund[]
+  afterSalePoliciesCreated            AfterSalePolicy[]                @relation("AfterSalePolicyCreatedBy")
+  afterSalePoliciesUpdated            AfterSalePolicy[]                @relation("AfterSalePolicyUpdatedBy")
+  afterSaleVersionsPublished          AfterSalePolicyVersion[]
+  afterSaleLegacyDecisions            AfterSaleLegacyDecision[]
+  afterSaleInspections                AfterSaleInspection[]
+  afterSaleSettingsReadiness          StoreAfterSaleSetting[]          @relation("StoreAfterSaleReadinessCheckedBy")
+  afterSaleSettingsUpdated            StoreAfterSaleSetting[]          @relation("StoreAfterSaleSettingUpdatedBy")
+  afterSalesReviewed                  AfterSale[]                      @relation("AfterSaleReviewedBy")
+  afterSaleItemsInspected             AfterSaleItem[]                  @relation("AfterSaleItemInspectedBy")
+  afterSaleEvidenceHeld               AfterSaleEvidenceFile[]          @relation("AfterSaleEvidenceHeldBy")
+  afterSaleSettlementsRequested       AfterSaleSettlement[]            @relation("AfterSaleSettlementRequestedBy")
+  afterSaleSettlementsConfirmed       AfterSaleSettlement[]            @relation("AfterSaleSettlementConfirmedBy")
+  afterSaleCodRefundReceiptsRecorded  AfterSaleCodRefundReceipt[]      @relation("AfterSaleCodRefundReceiptRecordedBy")
+  afterSaleCodRefundConfirmationsMade AfterSaleCodRefundConfirmation[] @relation("AfterSaleCodRefundConfirmationConfirmedBy")
+  financialReconciliationBatches      FinancialReconciliationBatch[]
+  financialReconciliationReviews      FinancialReconciliationReview[]  @relation("FinancialReconciliationReviewReviewer")
 
   @@map("admin_users")
 }
@@ -1587,21 +1591,23 @@ model AfterSale {
   createdAt              DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt              DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store            Store                      @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sales_store_id_fkey")
-  order            Order                      @relation(fields: [storeId, orderId, memberId], references: [storeId, id, memberId], onDelete: Restrict, map: "after_sales_order_owner_fkey")
-  policy           AfterSalePolicy?           @relation("AfterSalePolicyCases", fields: [storeId, policyId], references: [storeId, id], onDelete: Restrict, map: "after_sales_policy_fkey")
-  policyVersion    AfterSalePolicyVersion?    @relation("AfterSalePolicyVersionCases", fields: [storeId, policyVersionId, policyId], references: [storeId, id, policyId], onDelete: Restrict, map: "after_sales_policy_version_fkey")
-  reviewer         AdminUser?                 @relation("AfterSaleReviewedBy", fields: [reviewedBy], references: [id], onDelete: Restrict, map: "after_sales_reviewed_by_fkey")
-  items            AfterSaleItem[]
-  transitions      AfterSaleTransition[]
-  operations       AfterSaleOperation[]
-  legacyDecision   AfterSaleLegacyDecision?
-  orderAllocations AfterSaleOrderAllocation[]
-  inspections      AfterSaleInspection[]
-  evidenceFiles    AfterSaleEvidenceFile[]
-  settlements      AfterSaleSettlement[]
-  returnShipments  AfterSaleReturnShipment[]
-  shipments        Shipment[]
+  store                  Store                            @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sales_store_id_fkey")
+  order                  Order                            @relation(fields: [storeId, orderId, memberId], references: [storeId, id, memberId], onDelete: Restrict, map: "after_sales_order_owner_fkey")
+  policy                 AfterSalePolicy?                 @relation("AfterSalePolicyCases", fields: [storeId, policyId], references: [storeId, id], onDelete: Restrict, map: "after_sales_policy_fkey")
+  policyVersion          AfterSalePolicyVersion?          @relation("AfterSalePolicyVersionCases", fields: [storeId, policyVersionId, policyId], references: [storeId, id, policyId], onDelete: Restrict, map: "after_sales_policy_version_fkey")
+  reviewer               AdminUser?                       @relation("AfterSaleReviewedBy", fields: [reviewedBy], references: [id], onDelete: Restrict, map: "after_sales_reviewed_by_fkey")
+  items                  AfterSaleItem[]
+  transitions            AfterSaleTransition[]
+  operations             AfterSaleOperation[]
+  legacyDecision         AfterSaleLegacyDecision?
+  orderAllocations       AfterSaleOrderAllocation[]
+  inspections            AfterSaleInspection[]
+  evidenceFiles          AfterSaleEvidenceFile[]
+  settlements            AfterSaleSettlement[]
+  codRefundReceipts      AfterSaleCodRefundReceipt[]
+  codRefundConfirmations AfterSaleCodRefundConfirmation[]
+  returnShipments        AfterSaleReturnShipment[]
+  shipments              Shipment[]
 
   @@unique([storeId, id])
   @@unique([storeId, id, orderId])
@@ -1706,8 +1712,8 @@ model AfterSaleOperation {
   createdAt          DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store     Store     @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_operations_store_id_fkey")
-  afterSale AfterSale @relation(fields: [storeId, afterSaleId], references: [storeId, id], onDelete: Restrict, map: "after_sale_operations_case_fkey")
+  store       Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_operations_store_id_fkey")
+  afterSale   AfterSale             @relation(fields: [storeId, afterSaleId], references: [storeId, id], onDelete: Restrict, map: "after_sale_operations_case_fkey")
   transitions AfterSaleTransition[]
 
   @@unique([storeId, id])
@@ -1918,14 +1924,17 @@ model AfterSaleSettlement {
   completedAt                DateTime?                 @map("completed_at") @db.Timestamptz(6)
   updatedAt                  DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store          Store             @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_settlements_store_id_fkey")
-  afterSale      AfterSale         @relation(fields: [storeId, afterSaleId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "after_sale_settlements_case_order_fkey")
-  paymentAttempt PaymentAttempt?   @relation(fields: [storeId, paymentAttemptId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "after_sale_settlements_payment_fkey")
-  requester      AdminUser         @relation("AfterSaleSettlementRequestedBy", fields: [requestedBy], references: [id], onDelete: Restrict, map: "after_sale_settlements_requested_by_fkey")
-  confirmer      AdminUser?        @relation("AfterSaleSettlementConfirmedBy", fields: [confirmedBy], references: [id], onDelete: Restrict, map: "after_sale_settlements_confirmed_by_fkey")
-  refunds        AfterSaleRefund[]
+  store                 Store                           @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_settlements_store_id_fkey")
+  afterSale             AfterSale                       @relation(fields: [storeId, afterSaleId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "after_sale_settlements_case_order_fkey")
+  paymentAttempt        PaymentAttempt?                 @relation(fields: [storeId, paymentAttemptId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "after_sale_settlements_payment_fkey")
+  requester             AdminUser                       @relation("AfterSaleSettlementRequestedBy", fields: [requestedBy], references: [id], onDelete: Restrict, map: "after_sale_settlements_requested_by_fkey")
+  confirmer             AdminUser?                      @relation("AfterSaleSettlementConfirmedBy", fields: [confirmedBy], references: [id], onDelete: Restrict, map: "after_sale_settlements_confirmed_by_fkey")
+  refunds               AfterSaleRefund[]
+  codRefundReceipt      AfterSaleCodRefundReceipt?
+  codRefundConfirmation AfterSaleCodRefundConfirmation?
 
   @@unique([storeId, id])
+  @@unique([storeId, id, afterSaleId, orderId, amountVnd], map: "after_sale_settlements_cod_receipt_identity_key")
   @@unique([storeId, id, afterSaleId, orderId, paymentAttemptId, amountVnd])
   @@unique([storeId, method, idempotencyKeyHash])
   @@index([storeId, afterSaleId, status])
@@ -1951,6 +1960,71 @@ model AfterSaleRefund {
   @@unique([storeId, refundId])
   @@index([storeId, afterSaleId])
   @@map("after_sale_refunds")
+}
+
+model AfterSaleCodRefundReceipt {
+  id                        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                   String   @map("store_id") @db.Uuid
+  settlementId              String   @map("settlement_id") @db.Uuid
+  afterSaleId               String   @map("after_sale_id") @db.Uuid
+  orderId                   String   @map("order_id") @db.Uuid
+  amountVnd                 BigInt   @map("amount_vnd")
+  currency                  String   @default("VND") @db.Char(3)
+  transferReferenceDigest   String   @map("transfer_reference_digest") @db.Char(64)
+  transferReferenceMasked   String   @map("transfer_reference_masked") @db.VarChar(160)
+  evidenceDigest            String   @map("evidence_digest") @db.Char(64)
+  evidenceCiphertext        String   @map("evidence_ciphertext") @db.Text
+  transferredAt             DateTime @map("transferred_at") @db.Timestamptz(6)
+  expectedSettlementVersion Int      @map("expected_settlement_version")
+  recordedBy                String   @map("recorded_by") @db.Uuid
+  idempotencyKeyHash        String   @map("idempotency_key_hash") @db.Char(64)
+  requestHash               String   @map("request_hash") @db.Char(64)
+  correlationId             String   @map("correlation_id") @db.VarChar(128)
+  recordedAt                DateTime @default(now()) @map("recorded_at") @db.Timestamptz(6)
+
+  store      Store               @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_cod_refund_receipts_store_id_fkey")
+  afterSale  AfterSale           @relation(fields: [storeId, afterSaleId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "after_sale_cod_refund_receipts_case_order_fkey")
+  settlement AfterSaleSettlement @relation(fields: [storeId, settlementId, afterSaleId, orderId, amountVnd], references: [storeId, id, afterSaleId, orderId, amountVnd], onDelete: Restrict, map: "after_sale_cod_refund_receipts_settlement_fkey")
+  recorder   AdminUser           @relation("AfterSaleCodRefundReceiptRecordedBy", fields: [recordedBy], references: [id], onDelete: Restrict, map: "after_sale_cod_refund_receipts_recorded_by_fkey")
+
+  @@unique([storeId, id])
+  @@unique([storeId, settlementId])
+  @@unique([storeId, settlementId, afterSaleId, orderId, amountVnd], map: "after_sale_cod_refund_receipts_settlement_identity_key")
+  @@unique([storeId, transferReferenceDigest])
+  @@unique([storeId, idempotencyKeyHash])
+  @@index([storeId, afterSaleId, recordedAt(sort: Desc), id(sort: Desc)])
+  @@map("after_sale_cod_refund_receipts")
+}
+
+model AfterSaleCodRefundConfirmation {
+  id                        String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                   String          @map("store_id") @db.Uuid
+  settlementId              String          @map("settlement_id") @db.Uuid
+  afterSaleId               String          @map("after_sale_id") @db.Uuid
+  orderId                   String          @map("order_id") @db.Uuid
+  amountVnd                 BigInt          @map("amount_vnd")
+  expectedAfterSaleVersion  Int             @map("expected_after_sale_version")
+  expectedSettlementVersion Int             @map("expected_settlement_version")
+  resultAfterSaleVersion    Int             @map("result_after_sale_version")
+  resultSettlementVersion   Int             @map("result_settlement_version")
+  resultStatus              AfterSaleStatus @map("result_status")
+  confirmedBy               String          @map("confirmed_by") @db.Uuid
+  idempotencyKeyHash        String          @map("idempotency_key_hash") @db.Char(64)
+  requestHash               String          @map("request_hash") @db.Char(64)
+  correlationId             String          @map("correlation_id") @db.VarChar(128)
+  confirmedAt               DateTime        @default(now()) @map("confirmed_at") @db.Timestamptz(6)
+
+  store      Store               @relation(fields: [storeId], references: [id], onDelete: Restrict, map: "after_sale_cod_refund_confirmations_store_id_fkey")
+  afterSale  AfterSale           @relation(fields: [storeId, afterSaleId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "after_sale_cod_refund_confirmations_case_order_fkey")
+  settlement AfterSaleSettlement @relation(fields: [storeId, settlementId, afterSaleId, orderId, amountVnd], references: [storeId, id, afterSaleId, orderId, amountVnd], onDelete: Restrict, map: "after_sale_cod_refund_confirmations_settlement_fkey")
+  confirmer  AdminUser           @relation("AfterSaleCodRefundConfirmationConfirmedBy", fields: [confirmedBy], references: [id], onDelete: Restrict, map: "after_sale_cod_refund_confirmations_confirmed_by_fkey")
+
+  @@unique([storeId, id])
+  @@unique([storeId, settlementId])
+  @@unique([storeId, settlementId, afterSaleId, orderId, amountVnd], map: "after_sale_cod_refund_confirmations_settlement_identity_key")
+  @@unique([storeId, idempotencyKeyHash])
+  @@index([storeId, afterSaleId, confirmedAt(sort: Desc), id(sort: Desc)])
+  @@map("after_sale_cod_refund_confirmations")
 }
 
 model AfterSaleInventoryAction {
@@ -2735,9 +2809,9 @@ model StorePaymentChannel {
   createdAt             DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt             DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store           Store            @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  zaloApp         StoreZaloApp     @relation(fields: [storeId, deploymentEnvironment, checkoutAppId], references: [storeId, environment, miniAppId], onDelete: Restrict)
-  paymentAttempts PaymentAttempt[]
+  store                 Store                          @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  zaloApp               StoreZaloApp                   @relation(fields: [storeId, deploymentEnvironment, checkoutAppId], references: [storeId, environment, miniAppId], onDelete: Restrict)
+  paymentAttempts       PaymentAttempt[]
   reconciliationBatches FinancialReconciliationBatch[] @relation("FinancialReconciliationPaymentChannel")
 
   @@unique([storeId, id])
@@ -2764,10 +2838,10 @@ model StoreShippingChannel {
   createdAt            DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store              Store               @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  shippingQuotes     ShippingQuote[]
-  shipments          Shipment[]
-  shippingOperations ShippingOperation[]
+  store                 Store                          @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  shippingQuotes        ShippingQuote[]
+  shipments             Shipment[]
+  shippingOperations    ShippingOperation[]
   reconciliationBatches FinancialReconciliationBatch[] @relation("FinancialReconciliationShippingChannel")
 
   @@unique([storeId, id])
@@ -2805,9 +2879,9 @@ model PaymentAttempt {
   createdAt                DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store                Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  order                Order                 @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
-  channel              StorePaymentChannel   @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
+  store                Store                         @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order                Order                         @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  channel              StorePaymentChannel           @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
   transitions          PaymentTransition[]
   refunds              Refund[]
   afterSaleSettlements AfterSaleSettlement[]
@@ -2898,12 +2972,12 @@ model Refund {
   createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store            Store              @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  order            Order              @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
-  paymentAttempt   PaymentAttempt     @relation(fields: [storeId, paymentAttemptId, orderId], references: [storeId, id, orderId], onDelete: Restrict)
-  requester        AdminUser          @relation(fields: [requestedBy], references: [id], onDelete: Restrict)
-  transitions      RefundTransition[]
-  afterSaleRefunds AfterSaleRefund[]
+  store               Store                         @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order               Order                         @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  paymentAttempt      PaymentAttempt                @relation(fields: [storeId, paymentAttemptId, orderId], references: [storeId, id, orderId], onDelete: Restrict)
+  requester           AdminUser                     @relation(fields: [requestedBy], references: [id], onDelete: Restrict)
+  transitions         RefundTransition[]
+  afterSaleRefunds    AfterSaleRefund[]
   reconciliationLines FinancialReconciliationLine[]
 
   @@unique([storeId, id])
@@ -2998,16 +3072,16 @@ model Shipment {
   createdAt                 DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                 DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  store                Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  order                Order                 @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
-  warehouse            Warehouse             @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict)
-  channel              StoreShippingChannel  @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
+  store                Store                         @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  order                Order                         @relation(fields: [storeId, orderId], references: [storeId, id], onDelete: Restrict)
+  warehouse            Warehouse                     @relation(fields: [storeId, warehouseId], references: [storeId, id], onDelete: Restrict)
+  channel              StoreShippingChannel          @relation(fields: [storeId, channelId], references: [storeId, id], onDelete: Restrict)
   items                ShipmentItem[]
   events               TrackingEvent[]
   operations           ShippingOperation[]
-  afterSale            AfterSale?            @relation(fields: [storeId, afterSaleId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "shipments_after_sale_fkey")
+  afterSale            AfterSale?                    @relation(fields: [storeId, afterSaleId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "shipments_after_sale_fkey")
   exchangeFulfillments ExchangeFulfillment[]
-  reconciliationLines FinancialReconciliationLine[]
+  reconciliationLines  FinancialReconciliationLine[]
 
   @@unique([storeId, id])
   @@unique([storeId, id, orderId])
@@ -3145,40 +3219,40 @@ model InboxMessage {
 }
 
 model FinancialReconciliationBatch {
-  id                     String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId                String                             @map("store_id") @db.Uuid
-  paymentChannelId       String?                            @map("payment_channel_id") @db.Uuid
-  shippingChannelId      String?                            @map("shipping_channel_id") @db.Uuid
-  source                 FinancialReconciliationSource      @default(PAYMENT_PROVIDER)
-  businessDate           DateTime                           @map("business_date") @db.Date
-  currency               String                             @default("VND") @db.Char(3)
-  batchReferenceDigest   String                             @map("batch_reference_digest") @db.Char(64)
-  batchReferenceMasked   String                             @map("batch_reference_masked") @db.VarChar(160)
-  inputDigest            String                             @map("input_digest") @db.Char(64)
-  idempotencyKeyHash     String                             @map("idempotency_key_hash") @db.Char(64)
-  status                 FinancialReconciliationBatchStatus
-  recordCount            Int                                @map("record_count")
-  matchedCount           Int                                @map("matched_count")
-  exceptionCount         Int                                @map("exception_count")
-  grossAmountVnd         BigInt                             @map("gross_amount_vnd")
-  feeAmountVnd           BigInt                             @map("fee_amount_vnd")
-  netAmountVnd           BigInt                             @map("net_amount_vnd")
-  localExpectedAmountVnd BigInt                             @map("local_expected_amount_vnd")
-  differenceVnd          BigInt                             @map("difference_vnd")
-  localExpectedFeeAmountVnd BigInt                          @default(0) @map("local_expected_fee_amount_vnd")
-  feeDifferenceVnd       BigInt                             @default(0) @map("fee_difference_vnd")
-  reason                 String                             @db.VarChar(500)
-  createdBy              String                             @map("created_by") @db.Uuid
-  correlationId          String                             @map("correlation_id") @db.VarChar(128)
-  version                Int                                @default(1)
-  createdAt              DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                        String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                   String                             @map("store_id") @db.Uuid
+  paymentChannelId          String?                            @map("payment_channel_id") @db.Uuid
+  shippingChannelId         String?                            @map("shipping_channel_id") @db.Uuid
+  source                    FinancialReconciliationSource      @default(PAYMENT_PROVIDER)
+  businessDate              DateTime                           @map("business_date") @db.Date
+  currency                  String                             @default("VND") @db.Char(3)
+  batchReferenceDigest      String                             @map("batch_reference_digest") @db.Char(64)
+  batchReferenceMasked      String                             @map("batch_reference_masked") @db.VarChar(160)
+  inputDigest               String                             @map("input_digest") @db.Char(64)
+  idempotencyKeyHash        String                             @map("idempotency_key_hash") @db.Char(64)
+  status                    FinancialReconciliationBatchStatus
+  recordCount               Int                                @map("record_count")
+  matchedCount              Int                                @map("matched_count")
+  exceptionCount            Int                                @map("exception_count")
+  grossAmountVnd            BigInt                             @map("gross_amount_vnd")
+  feeAmountVnd              BigInt                             @map("fee_amount_vnd")
+  netAmountVnd              BigInt                             @map("net_amount_vnd")
+  localExpectedAmountVnd    BigInt                             @map("local_expected_amount_vnd")
+  differenceVnd             BigInt                             @map("difference_vnd")
+  localExpectedFeeAmountVnd BigInt                             @default(0) @map("local_expected_fee_amount_vnd")
+  feeDifferenceVnd          BigInt                             @default(0) @map("fee_difference_vnd")
+  reason                    String                             @db.VarChar(500)
+  createdBy                 String                             @map("created_by") @db.Uuid
+  correlationId             String                             @map("correlation_id") @db.VarChar(128)
+  version                   Int                                @default(1)
+  createdAt                 DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  store          Store                         @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  paymentChannel StorePaymentChannel?          @relation("FinancialReconciliationPaymentChannel", fields: [storeId, paymentChannelId], references: [storeId, id], onDelete: Restrict)
-  shippingChannel StoreShippingChannel?        @relation("FinancialReconciliationShippingChannel", fields: [storeId, shippingChannelId], references: [storeId, id], onDelete: Restrict)
-  creator        AdminUser                     @relation(fields: [createdBy], references: [id], onDelete: Restrict)
-  lines          FinancialReconciliationLine[]
-  review         FinancialReconciliationReview?
+  store           Store                          @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  paymentChannel  StorePaymentChannel?           @relation("FinancialReconciliationPaymentChannel", fields: [storeId, paymentChannelId], references: [storeId, id], onDelete: Restrict)
+  shippingChannel StoreShippingChannel?          @relation("FinancialReconciliationShippingChannel", fields: [storeId, shippingChannelId], references: [storeId, id], onDelete: Restrict)
+  creator         AdminUser                      @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  lines           FinancialReconciliationLine[]
+  review          FinancialReconciliationReview?
 
   @@unique([storeId, id])
   @@unique([storeId, paymentChannelId, batchReferenceDigest])
@@ -3190,17 +3264,17 @@ model FinancialReconciliationBatch {
 }
 
 model FinancialReconciliationReview {
-  id                   String                              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId              String                              @map("store_id") @db.Uuid
-  batchId              String                              @map("batch_id") @db.Uuid
+  id                   String                                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId              String                                @map("store_id") @db.Uuid
+  batchId              String                                @map("batch_id") @db.Uuid
   decision             FinancialReconciliationReviewDecision
-  expectedBatchVersion Int                                 @map("expected_batch_version")
-  reason               String                              @db.VarChar(500)
-  idempotencyKeyHash   String                              @map("idempotency_key_hash") @db.Char(64)
-  requestHash          String                              @map("request_hash") @db.Char(64)
-  reviewedBy           String                              @map("reviewed_by") @db.Uuid
-  correlationId        String                              @map("correlation_id") @db.VarChar(128)
-  createdAt            DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
+  expectedBatchVersion Int                                   @map("expected_batch_version")
+  reason               String                                @db.VarChar(500)
+  idempotencyKeyHash   String                                @map("idempotency_key_hash") @db.Char(64)
+  requestHash          String                                @map("request_hash") @db.Char(64)
+  reviewedBy           String                                @map("reviewed_by") @db.Uuid
+  correlationId        String                                @map("correlation_id") @db.VarChar(128)
+  createdAt            DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
 
   store    Store                        @relation(fields: [storeId], references: [id], onDelete: Restrict)
   batch    FinancialReconciliationBatch @relation(fields: [storeId, batchId], references: [storeId, id], onDelete: Restrict)
@@ -3214,28 +3288,28 @@ model FinancialReconciliationReview {
 }
 
 model FinancialReconciliationLine {
-  id                      String                            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeId                 String                            @map("store_id") @db.Uuid
-  batchId                 String                            @map("batch_id") @db.Uuid
-  lineNumber              Int                               @map("line_number")
-  type                    FinancialReconciliationLineType
-  status                  FinancialReconciliationLineStatus
-  recordReferenceDigest   String                            @map("record_reference_digest") @db.Char(64)
-  recordReferenceMasked   String                            @map("record_reference_masked") @db.VarChar(160)
-  providerReferenceDigest String                            @map("provider_reference_digest") @db.Char(64)
-  providerReferenceMasked String                            @map("provider_reference_masked") @db.VarChar(160)
-  occurredAt              DateTime                          @map("occurred_at") @db.Timestamptz(6)
-  grossAmountVnd          BigInt                            @map("gross_amount_vnd")
-  feeAmountVnd            BigInt                            @map("fee_amount_vnd")
-  netAmountVnd            BigInt                            @map("net_amount_vnd")
-  localExpectedAmountVnd  BigInt?                           @map("local_expected_amount_vnd")
-  differenceVnd           BigInt?                           @map("difference_vnd")
-  localExpectedFeeAmountVnd BigInt?                         @map("local_expected_fee_amount_vnd")
-  feeDifferenceVnd        BigInt?                           @map("fee_difference_vnd")
-  paymentAttemptId        String?                           @map("payment_attempt_id") @db.Uuid
-  refundId                String?                           @map("refund_id") @db.Uuid
-  shipmentId              String?                           @map("shipment_id") @db.Uuid
-  createdAt               DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                        String                            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                   String                            @map("store_id") @db.Uuid
+  batchId                   String                            @map("batch_id") @db.Uuid
+  lineNumber                Int                               @map("line_number")
+  type                      FinancialReconciliationLineType
+  status                    FinancialReconciliationLineStatus
+  recordReferenceDigest     String                            @map("record_reference_digest") @db.Char(64)
+  recordReferenceMasked     String                            @map("record_reference_masked") @db.VarChar(160)
+  providerReferenceDigest   String                            @map("provider_reference_digest") @db.Char(64)
+  providerReferenceMasked   String                            @map("provider_reference_masked") @db.VarChar(160)
+  occurredAt                DateTime                          @map("occurred_at") @db.Timestamptz(6)
+  grossAmountVnd            BigInt                            @map("gross_amount_vnd")
+  feeAmountVnd              BigInt                            @map("fee_amount_vnd")
+  netAmountVnd              BigInt                            @map("net_amount_vnd")
+  localExpectedAmountVnd    BigInt?                           @map("local_expected_amount_vnd")
+  differenceVnd             BigInt?                           @map("difference_vnd")
+  localExpectedFeeAmountVnd BigInt?                           @map("local_expected_fee_amount_vnd")
+  feeDifferenceVnd          BigInt?                           @map("fee_difference_vnd")
+  paymentAttemptId          String?                           @map("payment_attempt_id") @db.Uuid
+  refundId                  String?                           @map("refund_id") @db.Uuid
+  shipmentId                String?                           @map("shipment_id") @db.Uuid
+  createdAt                 DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
 
   store          Store                        @relation(fields: [storeId], references: [id], onDelete: Restrict)
   batch          FinancialReconciliationBatch @relation(fields: [storeId, batchId], references: [storeId, id], onDelete: Restrict)

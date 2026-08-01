@@ -52,11 +52,12 @@ B3 default-disabled repository implementation + local/test validation 已完成�
 真实供应商、部署和 rollout 均保持
 `NOT_AUTHORIZED / NOT_RUN`，不因仓库实现而改变既有外部上线门禁。
 
-用户随后按相邻切片授权 B4、B5 与 B6。B4 已完成默认关闭的管理员审核/人工复核和 SYSTEM 寄回到期；
+用户随后按相邻切片授权 B4、B5、B6 与 B7。B4 已完成默认关闭的管理员审核/人工复核和 SYSTEM 寄回到期；
 B5 已完成默认关闭的会员返件登记、管理员可信 `IN_TRANSIT/DELIVERED` 物流事实与 B1 待验收读取复用；
-B6 已完成默认关闭的 ONLINE settlement、M5 refund/link 原子协调和 provider 结果向售后同步。
-三者均只完成 repository implementation + local/test validation；真实物流/支付商、验收、库存恢复、COD、
-换货、UI、生产配置、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`，B2/B2b、B7、M6.3、M6 和 P0
+B6 已完成默认关闭的 ONLINE settlement、M5 refund/link 原子协调和 provider 结果向售后同步；B7 已完成
+基于精确 MATCHED COD 回款事实的 pending settlement、加密回执和异人确认。
+四者均只完成 repository implementation + local/test validation；真实物流/支付商/银行资金、验收、库存恢复、
+换货、UI、生产配置、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`，B2/B2b、M6.3、M6 和 P0
 仍未完成。
 
 ## 1. 决策范围
@@ -506,7 +507,7 @@ docs/
   这一历史读，又无法隐藏 ACTIVE head 行内草稿列；管理操作由应用层独立 RBAC 和显式 store scope 叠加 FORCE RLS 保护。
 - 旧数据库允许下划线 code 与非严格 object payload，新 API 不接受这些事实。仓库的只读分批预检已在本地测试库通过
   （`policies=0, versions=0`）；适用仓库门禁均已通过，B2a 仓库实施为 `COMPLETE`。每个目标库在 rollout 前仍必须重新执行并留证；
-  B2/B2b、B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭；B3-B6 的局部完成
+  B2/B2b、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭；B3-B7 的局部完成
   不构成 M6.3 或生产启用。
 
 ### M6.3-B2b-D0 凭证数据库生命周期与可靠排队边界
@@ -717,8 +718,9 @@ docs/
 - 应用 primitive 使用 `Serializable` 事务锁定订单、订单行、售后容量、政策快照、支付和
   `ORDER_OUTBOUND` 交付事实。服务端计算整数 VND 逐行权益、每订单一次 merchant-paid 运费权益和
   exchange 等价性；reason 必须命中政策 allowlist，越南自然日窗口排他截止，legacy 只进入
-  `REVIEW_REQUIRED`。当前仓库只证明唯一 ONLINE 成功收款；没有可锁定复验的 COD 已确认收款事实，
-  因此 COD 与任何无法证明的 payment/delivery/policy 条件都失败关闭。
+  `REVIEW_REQUIRED`。ONLINE 要求唯一成功 payment；B7 后续把 COD 准入收窄为唯一不可变
+  `COD_REMITTANCE/MATCHED` 行精确匹配商城、订单、已签收运单和金额。其它无法证明的
+  payment/delivery/policy 条件都失败关闭。
 - evidence 要求或 evidence id 非空时，upload validation、malware scan、claim、protected read 和 deletion
   compensation 以及显式 `ordinary < retention` TTL 必须全部可用；D0 claim 与 header/items/operation/
   transition/audit 同事务提交。取消只追加 `CANCELLED`、operation 和审计，不 unclaim、不缩短期限、不
@@ -796,6 +798,27 @@ docs/
   `AFTER_SALE_REFUND_COMMANDS_ENABLED` 默认 `false` 且 production 配置与 service 双重拒绝开启。应用回滚
   保持命令关闭并继续收敛已提交 M5 退款，不能删除或逆转资金事实。真实支付商、COD、inspection、库存
   恢复、换货、UI、部署与 rollout 未交付；B2/B2b、B7、M6.3、M6 和 P0 继续未完成。
+
+### M6.3-B7 默认关闭的 COD 售后退款结算边界
+
+- 共享 `/refund` 入口先用目标商城只读权限和 RLS 读取订单支付方式，再由服务端选择 B6 ONLINE 或 B7
+  COD。COD 只有在 M5 财务对账存在唯一 `COD_REMITTANCE/MATCHED` 行，且该行精确绑定目标商城、订单、
+  已签收 `ORDER_OUTBOUND` 运单及应收/回款整数 VND 时才获准；客户端分支、金额和终态均不可信。
+- COD request 只创建 `COD_OFFLINE/PENDING` settlement 并把售后推进到 `REFUND_PENDING`，不创建 M5
+  refund、provider outbox 或资金成功。回执入口只允许 requester 记录规范化转账观察值，持久化为 keyed
+  digest、掩码和加密证据；公开 settlement 仅投影 `receipt_recorded`，不暴露明文或内部 receipt/confirmation ID。
+- confirm 要求另一名管理员具备目标商城直接 `store.after-sales.cod-refunds.confirm` 与
+  `store.after-sales.read`、近期 MFA 和有效会话。确认事务锁定 settlement、回执和 case，逐字段重验商城、
+  订单、金额、VND、版本与 actor 后，原子写入 `SUCCEEDED`、`REFUND_REQUESTED/REFUND_SUCCEEDED`、确认和审计。
+- request、receipt 与 confirm 复用售后命令幂等 advisory lock、共享 M5 订单退款锁和固定行锁序；全部等待
+  结束后在数据库内最终重验 ACTIVE 商城、actor/session/MFA 和直接 RBAC。同键同参重放不重复事实，同键
+  异参或并发竞争稳定失败；只重试真正的 Serializable 冲突。
+- 第 56 段迁移增加两张 FORCE RLS、append-only 表、复合外键、唯一索引、最小 runtime ACL、受限 definer
+  和 deferred atomicity guard，并扩展 settlement/B3 guard 支持可信 COD。发现既有 COD settlement 时前向
+  迁移 `55000` 停止；产生 B7 资金/审计/transition 事实后禁止 down，只允许前向修复。
+- `AFTER_SALE_REFUND_COMMANDS_ENABLED` 默认 `false` 且 production 配置与 service 双重拒绝开启。B7
+  不执行真实转账、provider 调用、库存恢复、返件验收、换货、UI、部署或 rollout；B2/B2b、M6.3、M6、
+  P0 与 Production Ready 继续未完成。
 
 ## 7. 身份、安全与隐私
 

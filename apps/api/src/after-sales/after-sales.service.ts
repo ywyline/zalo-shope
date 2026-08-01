@@ -17,6 +17,8 @@ import type {
   AfterSaleAdminReadQuery,
   AfterSaleAdminStoreQuery,
   AfterSaleCancelRequest,
+  AfterSaleCodRefundConfirmRequest,
+  AfterSaleCodRefundReceiptRequest,
   AfterSaleCommandAcknowledgementResponse,
   AfterSaleCreateRequest,
   AfterSaleListQuery,
@@ -38,10 +40,14 @@ import {
   AfterSaleRefundCommandError,
   Prisma,
   cancelMemberAfterSaleCommand,
+  confirmAfterSaleCodRefund,
   createMemberAfterSaleCommand,
   createMerchantRefundAfterSaleCommand,
+  recordAfterSaleCodRefundReceipt,
   recordAfterSaleReturnFact,
   requestAfterSaleOnlineRefund,
+  requestAfterSaleCodRefund,
+  resolveAfterSaleRefundMethod,
   resolveAfterSaleReviewCommand,
   reviewAfterSaleCommand,
   submitMemberAfterSaleReturn,
@@ -345,13 +351,51 @@ export class AfterSalesService {
     return { body: this.acknowledgeCommand(command), replayed: command.replayed };
   }
 
-  public async adminRequestOnlineRefund(input: {
+  public async adminRequestRefund(input: {
     afterSaleId: string;
     body: AfterSaleRefundRequest;
     headers: AdminHeaders;
     idempotencyKey: string;
     query: AfterSaleAdminStoreQuery;
   }): Promise<{ body: AfterSaleResponse; replayed: boolean }> {
+    const readContext = await this.admin.authorize(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.read',
+    );
+    this.assertDirectReviewAuthorization(readContext);
+    let method: Awaited<ReturnType<typeof resolveAfterSaleRefundMethod>>;
+    try {
+      method = await resolveAfterSaleRefundMethod(this.database, readContext, input.afterSaleId);
+    } catch (error) {
+      this.throwRefundCommandError(error);
+    }
+    if (method === 'COD_OFFLINE') {
+      const context = await this.admin.authorizeSensitive(
+        input.headers,
+        input.query.store_id,
+        'store.after-sales.cod-refunds.request',
+      );
+      this.assertDirectReviewAuthorization(context);
+      this.assertMatchingAdminScopes(readContext, context);
+      await this.consumeWriteLimit(context, 'ADMIN');
+      this.assertRefundCommandsEnabled();
+      let command: Awaited<ReturnType<typeof requestAfterSaleCodRefund>>;
+      try {
+        command = await requestAfterSaleCodRefund(this.database, context, {
+          afterSaleId: input.afterSaleId,
+          expectedVersion: input.body.expected_version,
+          idempotencyKey: input.idempotencyKey,
+          reason: input.body.reason,
+          ...(input.headers.sourceIp === undefined ? {} : { sourceIp: input.headers.sourceIp }),
+        });
+      } catch (error) {
+        this.throwRefundCommandError(error);
+      }
+      const body = await this.projectAdminDetail(context, input.afterSaleId);
+      return { body, replayed: command.replayed };
+    }
+
     const context = await this.admin.authorizeSensitive(
       input.headers,
       input.query.store_id,
@@ -367,12 +411,6 @@ export class AfterSalesService {
     if (refundContext.actor.id !== context.actor.id || refundContext.storeId !== context.storeId) {
       throw new ForbiddenException('Refund authorization scope is invalid');
     }
-    const readContext = await this.admin.authorize(
-      input.headers,
-      input.query.store_id,
-      'store.after-sales.read',
-    );
-    this.assertDirectReviewAuthorization(readContext);
     const refundReadContext = await this.admin.authorize(
       input.headers,
       input.query.store_id,
@@ -396,6 +434,92 @@ export class AfterSalesService {
         expectedVersion: input.body.expected_version,
         idempotencyKey: input.idempotencyKey,
         reason: input.body.reason,
+      });
+    } catch (error) {
+      this.throwRefundCommandError(error);
+    }
+    const body = await this.projectAdminDetail(context, input.afterSaleId);
+    return { body, replayed: command.replayed };
+  }
+
+  public async adminRecordCodRefundReceipt(input: {
+    afterSaleId: string;
+    body: AfterSaleCodRefundReceiptRequest;
+    headers: AdminHeaders;
+    idempotencyKey: string;
+    query: AfterSaleAdminStoreQuery;
+    settlementNumber: string;
+  }): Promise<{ body: AfterSaleResponse; replayed: boolean }> {
+    const context = await this.admin.authorizeSensitive(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.cod-refunds.request',
+    );
+    this.assertDirectReviewAuthorization(context);
+    const readContext = await this.admin.authorize(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.read',
+    );
+    this.assertDirectReviewAuthorization(readContext);
+    this.assertMatchingAdminScopes(context, readContext);
+    await this.consumeWriteLimit(context, 'ADMIN');
+    this.assertRefundCommandsEnabled();
+    let command: Awaited<ReturnType<typeof recordAfterSaleCodRefundReceipt>>;
+    try {
+      command = await recordAfterSaleCodRefundReceipt(this.database, context, {
+        afterSaleId: input.afterSaleId,
+        encryptionKey: this.config.PII_ENCRYPTION_KEY,
+        evidenceReference: input.body.evidence_reference,
+        expectedSettlementVersion: input.body.expected_settlement_version,
+        hashKey: this.config.PII_HASH_KEY,
+        idempotencyKey: input.idempotencyKey,
+        reason: input.body.reason,
+        settlementNumber: input.settlementNumber,
+        ...(input.headers.sourceIp === undefined ? {} : { sourceIp: input.headers.sourceIp }),
+        transferredAt: input.body.transferred_at,
+        transferReference: input.body.transfer_reference,
+      });
+    } catch (error) {
+      this.throwRefundCommandError(error);
+    }
+    const body = await this.projectAdminDetail(context, input.afterSaleId);
+    return { body, replayed: command.replayed };
+  }
+
+  public async adminConfirmCodRefund(input: {
+    afterSaleId: string;
+    body: AfterSaleCodRefundConfirmRequest;
+    headers: AdminHeaders;
+    idempotencyKey: string;
+    query: AfterSaleAdminStoreQuery;
+    settlementNumber: string;
+  }): Promise<{ body: AfterSaleResponse; replayed: boolean }> {
+    const context = await this.admin.authorizeSensitive(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.cod-refunds.confirm',
+    );
+    this.assertDirectReviewAuthorization(context);
+    const readContext = await this.admin.authorize(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.read',
+    );
+    this.assertDirectReviewAuthorization(readContext);
+    this.assertMatchingAdminScopes(context, readContext);
+    await this.consumeWriteLimit(context, 'ADMIN');
+    this.assertRefundCommandsEnabled();
+    let command: Awaited<ReturnType<typeof confirmAfterSaleCodRefund>>;
+    try {
+      command = await confirmAfterSaleCodRefund(this.database, context, {
+        afterSaleId: input.afterSaleId,
+        expectedSettlementVersion: input.body.expected_settlement_version,
+        expectedVersion: input.body.expected_version,
+        idempotencyKey: input.idempotencyKey,
+        reason: input.body.reason,
+        settlementNumber: input.settlementNumber,
+        ...(input.headers.sourceIp === undefined ? {} : { sourceIp: input.headers.sourceIp }),
       });
     } catch (error) {
       this.throwRefundCommandError(error);
@@ -612,6 +736,12 @@ export class AfterSalesService {
     // existing admin routes retain their frozen authorization contract.
     if (context.adminAuthorizationScope !== 'STORE') {
       throw new ForbiddenException('Target store after-sale review permission is required');
+    }
+  }
+
+  private assertMatchingAdminScopes(left: StoreContext, right: StoreContext): void {
+    if (left.actor.id !== right.actor.id || left.storeId !== right.storeId) {
+      throw new ForbiddenException('Refund authorization scope is invalid');
     }
   }
 

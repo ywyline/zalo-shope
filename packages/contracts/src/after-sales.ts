@@ -214,6 +214,7 @@ export const afterSaleSettlementResponseSchema = z
     created_at: afterSaleWireDateTimeSchema,
     method: z.enum(['ONLINE_ORIGINAL', 'COD_OFFLINE', 'NO_PAYOUT']),
     public_number: z.string().regex(/^AST-[A-Z0-9]{16,32}$/),
+    receipt_recorded: z.boolean(),
     refund_public_number: z.string().max(64).nullable().optional(),
     status: z.enum([
       'PENDING',
@@ -615,6 +616,17 @@ export const afterSaleCodRefundConfirmRequestSchema = z
   })
   .strict();
 
+export const afterSaleCodRefundReceiptRequestSchema = z
+  .object({
+    confirmation_code: z.literal('RECORD_COD_REFUND_RECEIPT'),
+    evidence_reference: z.string().trim().min(2).max(2_000),
+    expected_settlement_version: z.number().int().positive(),
+    reason: z.string().trim().min(10).max(500),
+    transfer_reference: z.string().trim().min(2).max(160),
+    transferred_at: afterSaleWireDateTimeSchema.transform((value) => new Date(value)),
+  })
+  .strict();
+
 export const afterSalePolicyListQuerySchema = paginationSchema
   .extend({ status: afterSalePolicyStatusSchema.optional(), store_id: uuidSchema })
   .strict();
@@ -851,6 +863,12 @@ export type AfterSaleCancelRequest = z.infer<typeof afterSaleCancelRequestSchema
 export type AfterSaleReturnShipmentRequest = z.infer<typeof afterSaleReturnShipmentRequestSchema>;
 export type AfterSaleReturnFactRequest = z.infer<typeof afterSaleReturnFactRequestSchema>;
 export type AfterSaleRefundRequest = z.infer<typeof afterSaleRefundRequestSchema>;
+export type AfterSaleCodRefundConfirmRequest = z.infer<
+  typeof afterSaleCodRefundConfirmRequestSchema
+>;
+export type AfterSaleCodRefundReceiptRequest = z.infer<
+  typeof afterSaleCodRefundReceiptRequestSchema
+>;
 export type AfterSaleReviewRequest = z.infer<typeof afterSaleReviewRequestSchema>;
 export type AfterSaleReviewResolveRequest = z.infer<typeof afterSaleReviewResolveRequestSchema>;
 export type AfterSaleCommandAcknowledgementResponse = z.infer<

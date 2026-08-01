@@ -2,6 +2,34 @@
 
 This file records completed repository changes. Each entry uses `Date`, `Added`, `Changed`, `Fixed`, `Removed` and `Docs`. Task status and future work belong only in `TASKS.md`.
 
+## 2026-08-01 - P0-M6-007 COD Refund Settlement (`0.1.0`)
+
+### Added
+
+- Store-isolated COD after-sale refund settlements admitted only by one exact immutable matched remittance fact.
+- Encrypted immutable payout receipts and distinct maker-checker confirmation with direct-store RBAC, recent MFA, source-IP audit, idempotency and concurrent single-winner behavior.
+- Receipt/confirmation data, FORCE RLS, append-only guards, composite identities and guarded local/test rollback in migration 56.
+
+### Changed
+
+- The shared administrator refund route now selects ONLINE or COD from server-owned order facts; COD creates only a pending settlement until receipt and independent confirmation.
+- B3 after-sale admission now accepts a uniquely proven COD remittance while all missing, mismatched, duplicate or cross-store facts continue to fail closed.
+
+### Fixed
+
+- Preserved the shared M5 order-refund lock order and revalidated active store, administrator, session, token, MFA and both direct permissions after all lock waits.
+- Kept deterministic `REFUND_REQUESTED`/`REFUND_SUCCEEDED` timestamps and removed internal receipt/confirmation identifiers from public projections and audit identities.
+
+### Removed
+
+- None.
+
+### Docs
+
+- Added the P0-M6-007 plan and completion report; synchronized M6 OpenAPI, architecture, data dictionary, permission matrix, README and Task Tree.
+- Verified 637/637 unit, 357/357 integration, 26/26 browser E2E and the 56-migration guarded exercise; OpenAPI, Compose, Gitleaks and diff/security gates passed. Audit remains 3 moderate and 0 high/critical.
+- This is default-disabled repository/local-test completion only. Real funds, provider/sandbox/staging, Zalo host, deployment and production rollout remain `NOT_AUTHORIZED / NOT_RUN`; the project is not Production Ready.
+
 ## 2026-08-01 - P0-M5-005 Financial Reconciliation Closeout Slice C (`0.1.0`)
 
 ### Added

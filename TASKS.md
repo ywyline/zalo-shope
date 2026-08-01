@@ -4,7 +4,7 @@
 >
 > Project version: `0.1.0` (repository package version)
 >
-> Project progress: **approximately 65%** of the full `REQUIREMENTS.md` scope
+> Project progress: **approximately 66%** of the full `REQUIREMENTS.md` scope
 >
 > Production readiness: **Not Ready**
 
@@ -18,30 +18,30 @@ Allowed status values are `Todo`, `In Progress`, `Done` and `Blocked`. `Done` me
 
 ## 2. Current Control State
 
-| Field             | Value                                                                                                                                                                                                                                                           |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Current Sprint    | `S03 - Dependency recovery; execution resumed`                                                                                                                                                                                                                  |
-| Sprint Goal       | Restore independently executable vertical slices without changing product scope or business rules.                                                                                                                                                              |
-| Current Task      | `P0-M6-007` - selected as the next Ready Task; update it from `Todo` to `In Progress` only when implementation starts on its task branch.                                                                                                                       |
-| Next Task         | `P0-M6-008` - implement return inspection, exactly-once inventory restoration, refund eligibility and exchange fulfillment after the current task.                                                                                                              |
-| Production Status | Not Ready; P0 product, external acceptance, compliance and operations gates remain open.                                                                                                                                                                        |
-| Main Sync         | P0-M5-005 Slice A/B/C are synchronized to local `main` at `c624cc8`; local task and integration refs match. No remote push, PR, deployment or production enablement is authorized.                                                                              |
-| Last Verification | 2026-08-01: P0-M5-005 final state passed full verify (633/633 unit), 351/351 integration, 26/26 browser E2E, 55-migration guarded down/forward, OpenAPI 302-reference, Compose, Gitleaks and diff/security gates; audit remains 3 moderate and 0 high/critical. |
-| Task Counts       | `53` total: `17` Done, `24` Todo, `0` In Progress, `12` Blocked. Project progress is approximately `65%`; P0-M5-005 closes one provider-neutral M5 reconciliation point while external provider acceptance remains open.                                        |
-| Eligible Queue    | `17` tasks are currently eligible: six P0 slices beginning with `P0-M6-007`, eight P1 slices including newly eligible `P1-FIN-001`, and three P2 slices.                                                                                                        |
+| Field             | Value                                                                                                                                                                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Current Sprint    | `S05 - M6.4 return inspection and fulfillment`                                                                                                                                                                                         |
+| Sprint Goal       | Select the smallest approved return-inspection, exactly-once inventory restoration and exchange-fulfillment vertical slice without enabling production operations.                                                                     |
+| Current Task      | `P0-M6-008` - selected as the next dependency-ready P0 task; it remains `Todo` until implementation starts on its task branch.                                                                                                         |
+| Next Task         | `P0-M7-001` - implement store-isolated reports and secure export if it remains the nearest dependency-ready task after P0-M6-008.                                                                                                      |
+| Production Status | Not Ready; P0 product, external acceptance, compliance and operations gates remain open.                                                                                                                                               |
+| Main Sync         | The verified P0-M6-007 delivery candidate is based on local `main` `512ed55`; Git history records its conditional local Merge Gate synchronization. No remote push, PR, deployment or production enablement is authorized.             |
+| Last Verification | 2026-08-01: P0-M6-007 passed 637/637 unit, 357/357 integration, 26/26 browser E2E, the 56-migration guarded exercise, OpenAPI 1888-reference, Compose, Gitleaks and diff/security gates; audit remains 3 moderate and 0 high/critical. |
+| Task Counts       | `53` total: `18` Done, `23` Todo, `0` In Progress, `12` Blocked. Weighted project progress is approximately `66%`; real funds/providers, return fulfillment, UI, compliance and operations remain open.                                |
+| Eligible Queue    | `16` dependency-ready tasks remain executable; `P0-M6-008` is the selected next P0 slice, followed by the currently ready `P0-M7-001` if dependency order remains unchanged.                                                           |
 
 ## 3. Progress Baseline
 
 Progress is a recovered engineering estimate, not a release claim. It is weighted by vertical requirement slices rather than task count, commits, files or test volume.
 
-| Workstream                                           |   Weight |  Earned | Evidence Summary                                                                                                              |
-| ---------------------------------------------------- | -------: | ------: | ----------------------------------------------------------------------------------------------------------------------------- |
-| M0-M4 foundation, security, catalog and COD commerce |      42% |     42% | Repository implementation and automated closeout reports exist.                                                               |
-| M5 online payment, refund and GHN integration        |      13% |     10% | Core, buyer launch/recovery and provider-neutral financial reconciliation are closed; real provider acceptance remains open.  |
-| M6 after-sales, member and sharing                   |      23% |     11% | Data/policy/evidence, B3-B6 and member runtime/UI slices exist; B7, fulfillment, sharing and full after-sales UI remain open. |
-| M7 reports, compliance and operations                |      15% |      1% | Evidence templates and readiness tools exist; operational product and release gates remain open.                              |
-| External production acceptance                       |       7% |      1% | One partial iPhone beauty-store Zalo path exists; full provider/device/legal evidence is blocked.                             |
-| **Total**                                            | **100%** | **65%** | **Approximate current completion: 65%; this is not a production-readiness claim.**                                            |
+| Workstream                                           |   Weight |  Earned | Evidence Summary                                                                                                                 |
+| ---------------------------------------------------- | -------: | ------: | -------------------------------------------------------------------------------------------------------------------------------- |
+| M0-M4 foundation, security, catalog and COD commerce |      42% |     42% | Repository implementation and automated closeout reports exist.                                                                  |
+| M5 online payment, refund and GHN integration        |      13% |     10% | Core, buyer launch/recovery and provider-neutral financial reconciliation are closed; real provider acceptance remains open.     |
+| M6 after-sales, member and sharing                   |      23% |     12% | Data/policy/evidence, B3-B7 and member runtime/UI slices exist; return fulfillment, sharing and full after-sales UI remain open. |
+| M7 reports, compliance and operations                |      15% |      1% | Evidence templates and readiness tools exist; operational product and release gates remain open.                                 |
+| External production acceptance                       |       7% |      1% | One partial iPhone beauty-store Zalo path exists; full provider/device/legal evidence is blocked.                                |
+| **Total**                                            | **100%** | **66%** | **Approximate current completion: 66%; this is not a production-readiness claim.**                                               |
 
 ## 4. P0 Task Tree
 
@@ -85,7 +85,7 @@ Progress is a recovered engineering estimate, not a release claim. It is weighte
 | P0-M6-004 | Deliver M6.3-B4 review, manual-review resolution and return-expiry worker as default-disabled repository/local-test capabilities.                                                                    | P0       | P0-M6-003                               | Done    |
 | P0-M6-005 | Deliver M6.3-B5 member return registration, trusted admin shipping facts and inspection-pending reads as default-disabled repository/local-test capabilities.                                        | P0       | P0-M6-004                               | Done    |
 | P0-M6-006 | Close M6.3-B6 authoritative ONLINE after-sale refund coordination: finish completion evidence, final gates and status synchronization for the already implemented default-disabled repository slice. | P0       | P0-M6-005                               | Done    |
-| P0-M6-007 | Implement M6.3-B7 COD refund settlement with trusted receipt facts, maker-checker controls, reconciliation and audit.                                                                                | P0       | P0-M4-001, P0-M6-006                    | Todo    |
+| P0-M6-007 | Implement M6.3-B7 COD refund settlement with trusted receipt facts, maker-checker controls, reconciliation and audit.                                                                                | P0       | P0-M4-001, P0-M5-005, P0-M6-006         | Done    |
 | P0-M6-008 | Implement M6.4 return inspection, exactly-once inventory restoration, refund eligibility and exchange fulfillment.                                                                                   | P0       | P0-M3-001, P0-M6-005, P0-M6-006         | Todo    |
 | P0-M6-009 | Implement M6.5 member favorites, product-view history, consent/privacy request runtime and three-language Mini App pages.                                                                            | P0       | P0-M6-001                               | Done    |
 | P0-M6-010 | Implement M6.6 store/language/object Deep Links, official user-triggered share, three-language share cards and fallback pages.                                                                       | P0       | P0-M6-001, EXT-ZALO-002                 | Blocked |
@@ -150,7 +150,7 @@ The previous tree treated production acceptance as an implementation prerequisit
 
 The queue is ordered by priority and task-tree order. `Current Task` is the first item; `Next Task` is the next P0 slice after it.
 
-`P0-M6-007`, `P0-M6-008`, `P0-M7-001`, `P0-M7-002`, `P0-M7-003`, `P0-M7-005`, `P1-LOG-001`, `P1-INV-001`, `P1-MEM-001`, `P1-MKT-001`, `P1-AFF-001`, `P1-COD-001`, `P1-FIN-001`, `P1-I18N-001`, `P2-TEN-001`, `P2-REC-001` and `P2-AICS-001` can start without any new external input.
+`P0-M6-008`, `P0-M7-001`, `P0-M7-002`, `P0-M7-003`, `P0-M7-005`, `P1-LOG-001`, `P1-INV-001`, `P1-MEM-001`, `P1-MKT-001`, `P1-AFF-001`, `P1-COD-001`, `P1-FIN-001`, `P1-I18N-001`, `P2-TEN-001`, `P2-REC-001` and `P2-AICS-001` can start without any new external input.
 
 ## 8. External Dependencies And Blocked Tasks
 
@@ -180,7 +180,7 @@ External dependency IDs are gates, not implementation tasks. No secret may be co
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
 | Buyer online payment exists only at repository/local-test scope. | Host, merchant, callback and funds defects may surface only in real Zalo/sandbox environments.         | Complete P0-M5-003 external payment acceptance.              |
 | Real payment/refund and GHN/COD flows are unvalidated.           | Amount, callback, settlement, shipping and cash-reconciliation defects may surface only in production. | Complete P0-M5-003 and P0-M5-004 external acceptance.        |
-| Basic after-sales is incomplete end to end.                      | Return inspection, COD refund, stock restore, exchange and customer/admin UX are unavailable.          | Complete P0-M6-007 through P0-M6-011.                        |
+| Basic after-sales is incomplete end to end.                      | Return inspection, stock restore, exchange and customer/admin UX are unavailable.                      | Complete P0-M6-008 and P0-M6-011.                            |
 | Reports and public compliance pages are absent.                  | Operations and Vietnam launch obligations cannot be met.                                               | Complete P0-M7-001 and P0-M7-002 plus professional sign-off. |
 | Deployment, observability, backup and recovery are unproven.     | Incidents, data loss or provider outages cannot be operated safely.                                    | Complete P0-M7-003 and P0-M7-004.                            |
 | Zalo real-device/review matrix is incomplete.                    | Host-specific failures or review rejection remain likely.                                              | Complete P0-M1-002 and P0-M7-006.                            |

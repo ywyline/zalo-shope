@@ -2,7 +2,7 @@
 
 面向越南市场的 Zalo 多品牌自营商城底座。项目使用一套代码支持美妆商城和服装商城，所有商城业务数据与配置必须按 `store_id` 隔离。
 
-当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.7 已完成支付/物流/退款仓库底座；P0-M5-002 现已补齐 Mini App ONLINE 报价、下单、显式 Zalo Checkout 拉起、服务端权威查询、重试和订单恢复入口。P0-M5-005 已完成 Slice A 支付/退款结算、Slice B COD 应收/GHN 规范化回款和 Slice C maker-checker 差异关闭的 repository implementation + local/test validation；真实凭据、sandbox、结算文件、资金、回调、COD 回款和真机仍未验收。M6.1/M6.2、M6.3-A/B0/B1/B2a 与 B2b-D0-D5 的各自 repository/local-test 边界已经完成。M6.3-B3 三条售后申请/取消/商家主动退款命令、B4 管理员审核/人工复核与 SYSTEM 寄回到期、B5 会员返件登记/管理员可信物流事实与待验收读取，以及 B6 ONLINE 售后退款权威协调也已完成 default-disabled repository implementation + local/test validation；这些能力只返回稳定投影或追加受限事实，production 配置与服务层均拒绝启用。P0-M6-009 已完成商城/会员隔离的收藏、最近商品浏览历史、会员汇总、同意/隐私请求运行时，以及越南语、中文、英文 Mini App 会员中心页面。B2/B2b 整体、B7、M6.3、M6、分享与完整售后 UI 和 P0 仍未完成；所有生产政策/enforcement、TTL、对象存储、真实供应商、部署和 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。当前没有真实物流 provider、返件验收、真实支付商退款验收、COD 售后退款结算、库存恢复或换货履约运行时，不能把 P0-M5-005 的 local/test 完成、B3-B6 或会员本地完成状态表述为 provider 已验收、完整售后或生产就绪。生产依赖审计另保留 3 项 React Router moderate 公告，不得写成零漏洞。
+当前状态：M1 商城安全上下文、身份、RBAC、三语、本地化与审计基础已实现；M2 商品目录、媒体、合规、装修、三语管理端、买家目录和受限导入导出已实现；M3.1-M3.7 已完成库存/预留、三语搜索/筛选、促销/优惠券/可信计价、会员购物车、并发与安全回归。M4 已按批准计划实现商城隔离的三级行政区、加密地址、服务端最终报价、COD 幂等下单、订单/快照/状态机、库存消费/释放/恢复、配送策略、买家端交易页面和管理工作台。M5.1-M5.7 已完成支付/物流/退款仓库底座；P0-M5-002 现已补齐 Mini App ONLINE 报价、下单、显式 Zalo Checkout 拉起、服务端权威查询、重试和订单恢复入口。P0-M5-005 已完成 Slice A 支付/退款结算、Slice B COD 应收/GHN 规范化回款和 Slice C maker-checker 差异关闭的 repository implementation + local/test validation；真实凭据、sandbox、结算文件、资金、回调、COD 回款和真机仍未验收。M6.1/M6.2、M6.3-A/B0/B1/B2a 与 B2b-D0-D5 的各自 repository/local-test 边界已经完成。M6.3-B3 三条售后申请/取消/商家主动退款命令、B4 管理员审核/人工复核与 SYSTEM 寄回到期、B5 会员返件登记/管理员可信物流事实与待验收读取、B6 ONLINE 售后退款权威协调，以及 B7 COD 精确回款准入/pending settlement/加密回执/异人确认也已完成 default-disabled repository implementation + local/test validation；这些能力只返回稳定投影或追加受限事实，production 配置与服务层均拒绝启用。P0-M6-009 已完成商城/会员隔离的收藏、最近商品浏览历史、会员汇总、同意/隐私请求运行时，以及越南语、中文、英文 Mini App 会员中心页面。B2/B2b 整体、M6.3、M6、分享与完整售后 UI 和 P0 仍未完成；所有生产政策/enforcement、TTL、对象存储、真实供应商、真实资金、部署和 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`。当前没有真实物流 provider、返件验收、真实支付商退款验收、真实 COD 退款转账/回执验收、库存恢复或换货履约运行时，不能把 P0-M5-005 的 local/test 完成、B3-B7 或会员本地完成状态表述为 provider 已验收、完整售后或生产就绪。生产依赖审计另保留 3 项 React Router moderate 公告，不得写成零漏洞。
 
 M6.3-B2b-D1 已完成专用 `AfterSaleEvidenceObjectStorageProvider`、默认失败关闭配置、本地/测试
 MinIO 独立 bucket 与 upload/read/delete 最小 IAM，以及真实对象长度、SHA-256、Content-Type 和
@@ -42,6 +42,14 @@ session、RBAC、evidence 与提交余量；D5 审计使用服务端生成的 co
 标记 `COMPLETE`；D5 本身不包含 B3 claim。legal-hold/dead-letter 管理、外部告警、production
 IAM/KMS/versioning/Object Lock/lifecycle、bearer-URL 风险接受和 rollout 至今仍为
 `NOT_AUTHORIZED / NOT_RUN`。
+
+M6.3-B7 已完成默认关闭的 COD 售后退款结算仓库切片。共享 `/refund` 路由从锁定订单事实选择
+ONLINE/COD；COD 只承认同商城、同订单、已签收 `ORDER_OUTBOUND` 运单和金额均精确匹配的不可变
+`COD_REMITTANCE/MATCHED` 对账行。request 只创建 `PENDING` settlement；原 requester 通过独立路由
+记录 keyed digest、掩码和加密回执，另一名具备直接权限且近期 MFA 的管理员才能原子确认成功。公开投影
+只有 `receipt_recorded`，不返回转账/证据原文或内部 receipt/confirmation ID。该结论只证明
+repository implementation + local/test validation；未执行真实银行转账、provider 调用、sandbox/staging、
+库存恢复、UI、部署或 rollout，production 继续拒绝启用 `AFTER_SALE_REFUND_COMMANDS_ENABLED`。
 
 B2a 仓库内只读预检的本地测试库结果为 `policies=0, versions=0`。D0 owner preflight 的本地结果为
 `files=0, transitions=0, outbox=0, idempotency=0`；runtime RLS 连接按预期以 SQLSTATE `42501`
@@ -207,7 +215,13 @@ Slice B 前向迁移 `20260801100000_p0_m5_005_cod_reconciliation` 扩展互斥�
 Slice C 前向迁移 `20260801110000_p0_m5_005_reconciliation_closeout` 增加商城隔离的只追加复核表、
 review decision enum、FORCE RLS、最小 runtime grant 和延迟 maker-checker guard，不回填或关闭历史批次。
 空白 local/test scratch 必须按 Slice C → B → A 逆向；存在任一复核事实时 Slice C down 以 SQLSTATE
-`55000` 拒绝。当前 fresh deploy 共 55 条迁移。
+`55000` 拒绝。
+
+P0-M6-007/B7 前向迁移 `20260801120000_p0_m6_007_cod_refund_settlement` 增加商城隔离、只追加且
+FORCE RLS 的 COD 回执/确认表、复合身份外键、最小 runtime ACL、受限授权重验函数及 deferred 原子
+guard，并扩展 settlement/B3 guard 只接纳精确匹配的 COD 回款事实。迁移不回填或伪造历史 COD 结算；
+发现既有 `COD_OFFLINE` settlement 时前向 `55000` 停止，存在 settlement/receipt/confirmation/B7
+audit/transition 事实时 down 同样拒绝。当前 fresh deploy 共 56 条迁移。
 
 D1 不修改 Prisma、RLS 或数据库迁移；M2→current 仍为 43 段，不能把 storage adapter 记作第 44
 段迁移。D1 回滚通过保持 evidence provider disabled 完成，不能通过删除 bucket 或数据库事实清理未来
@@ -635,8 +649,9 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   不能替代该权限并固定返回 `403`。命令只创建
   `MERCHANT_REFUND -> PENDING_REVIEW`。会员取消只允许本人、同商城、非 legacy、无后续副作用的
   `PENDING_REVIEW`，并要求 expected version；取消不 unclaim 或删除凭证，也不缩短任何保留截止点。
-- 当前只接受可证明唯一 ONLINE 成功收款的已交付/完成订单；仓库尚无可证明的 COD 已确认收款事实，
-  因此 COD B3 创建失败关闭。三条写命令仅返回创建/取消时的不可变 acknowledgement，当前金额、状态和
+- 当前接受可证明唯一 ONLINE 成功 payment，或 B7 后续增加的唯一精确
+  `COD_REMITTANCE/MATCHED` 收款事实；其它 COD 或无法证明的收款条件失败关闭。三条写命令仅返回创建/
+  取消时的不可变 acknowledgement，当前金额、状态和
   时间线必须通过 GET 查询。
 - create/cancel 仅对 `P2034`/`40001` 序列化冲突执行最多三次 Serializable 事务尝试；
   `expected_version` 冲突明确不重试并返回版本冲突。
@@ -692,6 +707,23 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
   `docs/plans/m6.3-b6-online-refund-plan.md`，最终证据见
   `docs/reports/m6.3-b6-online-refund-completion-report.md`。B6 不包含真实 provider、COD、返件验收、库存
   恢复、换货、UI 或生产 rollout；B2/B2b、B7、M6.3、M6 与 P0 继续未完成。
+
+## M6.3-B7 COD 售后退款结算
+
+- 共享管理员 `/refund` 路由现在从锁定订单事实选择 ONLINE/COD。COD 只有在唯一不可变的
+  `COD_REMITTANCE/MATCHED` 对账行精确绑定目标商城、订单、已签收 `ORDER_OUTBOUND` 运单与整数 VND
+  金额时才获准；请求只创建 `COD_OFFLINE/PENDING` settlement 并停在 `REFUND_PENDING`。
+- 原 settlement requester 可通过 `POST .../cod-refunds/{settlementNumber}/receipt` 记录外部转账观察值。
+  服务端固定商城/case/订单/金额/VND，只保存 keyed digest、掩码、证据 digest/密文和时间；公开投影只新增
+  `receipt_recorded`，不返回原始引用、证据或内部 receipt/confirmation ID。
+- 另一名具备目标商城直接 `store.after-sales.cod-refunds.confirm`、`store.after-sales.read` 与近期 MFA 的
+  管理员可通过 `/confirm` 完成 maker-checker。确认在单个 Serializable 事务逐字段重验不可变回执，原子
+  写入 settlement `SUCCEEDED`、`REFUND_REQUESTED/REFUND_SUCCEEDED`、confirmation 和 audit。
+- 第 56 段迁移增加两张 FORCE RLS/append-only 表、复合外键、最小 ACL、受限 definer、settlement/B3 guard
+  扩展和 deferred atomicity guard；已有 COD/B7 事实时前向或 down 均以 `55000` 失败关闭。完整范围见
+  `docs/plans/m6.3-b7-cod-refund-settlement-plan.md`，最终证据见
+  `docs/reports/m6.3-b7-cod-refund-settlement-completion-report.md`。B7 不执行真实银行转账、provider 调用、
+  返件验收、库存恢复、换货、UI、部署或 rollout；B2/B2b、M6.3、M6 与 P0 继续未完成。
 
 ## P0-M6-009 会员互动与隐私运行时
 

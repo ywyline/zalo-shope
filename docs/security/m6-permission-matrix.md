@@ -7,11 +7,11 @@
 > local/test deletion worker validation、B2b-D5 default-disabled repository implementation +
 > local/test protected-read validation `COMPLETE`，适用 repository/local-test 门禁 `PASS`；
 > B3 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且适用门禁
-> `PASS`；B4、B5 与 B6 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且
-> 适用门禁 `PASS`；B2/B2b、B7、M6.3、UI 与生产启用仍未完成。生产策略、TTL、对象存储、真实供应商、部署和 rollout 均为
+> `PASS`；B4、B5、B6 与 B7 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且
+> 适用门禁 `PASS`；B2/B2b、M6.3、UI 与生产启用仍未完成。生产策略、TTL、对象存储、真实供应商、真实资金、部署和 rollout 均为
 > `NOT_AUTHORIZED / NOT_RUN` 并保持失败关闭
 >
-> 日期：2026-07-31
+> 日期：2026-08-01
 
 M6.2 已登记下列 12 项 STORE 权限且不自动给生产角色扩权；local/test seed 仅为明确的测试
 `store-admin` 授权。第五段前向迁移把 member actor 限制到本人售后/凭证和隐私请求的有界命令；
@@ -85,8 +85,8 @@ B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transac
 | 恢复可售库存         | `store.after-sales.inspect` + `store.inventory.adjust`                                                             | M6.4；仅验收可售数量、稳定 operation key、同事务审计                                                                                        |
 | 创建换货             | `store.after-sales.exchange`                                                                                       | 同 SPU 等量 SKU、库存预留、近期 MFA、幂等                                                                                                   |
 | 换货运单             | `store.after-sales.exchange` + `store.shipments.create`                                                            | purpose=EXCHANGE_OUTBOUND，不推进原订单                                                                                                     |
-| COD 退款申请         | `store.after-sales.cod-refunds.request`                                                                            | 仅 B7 设计；近期 MFA、服务端金额、真实转账证明入口缺失时保持 PENDING/REVIEW_REQUIRED                                                        |
-| COD 退款确认         | `store.after-sales.cod-refunds.confirm`                                                                            | 仅 B7 设计；公开号、异人复核、近期 MFA；真实证明适配入口前不开放成功按钮                                                                    |
+| COD 退款申请/回执    | 目标商城直接 `store.after-sales.read` + `store.after-sales.cod-refunds.request`                                    | B7 default-disabled repository/local-test `COMPLETE`；近期 MFA、服务端分支/金额、精确 MATCHED 回款、requester 回执、加密敏感事实            |
+| COD 退款确认         | 目标商城直接 `store.after-sales.read` + `store.after-sales.cod-refunds.confirm`                                    | B7 default-disabled repository/local-test `COMPLETE`；近期 MFA、公开号、异人复核、不可变回执和原子 transition/audit                         |
 | 政策/历史查看        | `store.after-sales.policy.read`                                                                                    | B2a 已实现；当前商城、签名微秒游标、不可变版本复验、ADMIN READ 限流/no-store                                                                |
 | 设置/readiness 查看  | `store.after-sales.policy.read`                                                                                    | M6.3-A 已实现；令牌/Header/查询一致；平台跨商城需 AccessReason                                                                              |
 | 政策草稿             | `store.after-sales.policy.manage`                                                                                  | B2a 已实现；严格三语/规范 hash、商城目标、expected version、24h 幂等、ADMIN WRITE 限流与审计                                                |
@@ -340,8 +340,8 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
 - B2a 不改变会员权限。B1 会员仍仅能通过本人售后投影读取已绑定历史政策；不得访问管理草稿路由。新迁移没有改写 RLS，
   不会因政策停用或新版本发布而让历史售后不可读。
 - 定向权限/限流/契约单测、完整 integration 29 个文件/234 项、M2→current 42 段迁移、`verify`、OpenAPI 结构检查、生产依赖/Gitleaks 与
-  独立高风险复审均通过，因此 B2a 仓库实施为 `COMPLETE`。目标库仍须逐库 preflight；后续 B3/B4/B5/B6
-  default-disabled repository/local-test 边界已完成，但 B2/B2b、B7、M6.3、UI、生产政策/
+  独立高风险复审均通过，因此 B2a 仓库实施为 `COMPLETE`。目标库仍须逐库 preflight；后续 B3-B7
+  default-disabled repository/local-test 边界已完成，但 B2/B2b、M6.3、UI、生产政策/
   enforcement/部署继续未完成或未授权且失败关闭。
 
 ## 10. B2b-D0 授权与当前边界
@@ -499,10 +499,10 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
   finalizer 在提交前再次锁定并复验活动商城、actor、session、token 截止及管理员当前 RBAC/MFA，会员
   授权失效映射 `401`，管理员授权失效映射 `403`。
 - 创建服务只接受订单、类型、reason、description、逐行数量、换货 SKU 与 evidence id。服务端在
-  `Serializable` 事务内解析同 policy/version/hash、ONLINE 收款、权威 `ORDER_OUTBOUND` 交付、越南自然
+  `Serializable` 事务内解析同 policy/version/hash、ONLINE 或 B7 精确匹配 COD 收款、权威 `ORDER_OUTBOUND` 交付、越南自然
   日窗口、历史容量、整数 VND 商品/运费权益和 exchange 等价性；商家主动退款只能形成
-  `MERCHANT_REFUND + PENDING_REVIEW`，不审批、不建 provider refund、不修改库存或确认到账。当前没有
-  可供事务锁定复验的 COD 已确认收款事实，因此 COD 创建失败关闭。
+  `MERCHANT_REFUND + PENDING_REVIEW`，不审批、不建 provider refund、不修改库存或确认到账。COD 只有
+  唯一不可变 `COD_REMITTANCE/MATCHED` 行同时匹配商城、订单、已签收运单和金额时获准，其它情况失败关闭。
 - 政策要求证据或请求携带非空 evidence id 时，上传校验、恶意扫描、claim、protected read 和删除补偿必须
   全部可用；ordinary/retention TTL 必须显式存在且 `ordinary < retention`。符合条件的 evidence 通过
   D0 原语在同一创建事务 claim；取消不 unclaim、不缩短期限、不删除对象，也不恢复或扣减库存。
@@ -573,3 +573,25 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
 - `AFTER_SALE_REFUND_COMMANDS_ENABLED=false` 默认关闭且 production 配置/服务层拒绝启用。B6 不新增
   permission code、迁移或生产角色扩权；真实 provider、COD 双人结算、库存恢复、验收、换货、UI、部署和
   rollout 为 `NOT_AUTHORIZED / NOT_RUN`。
+
+## 20. B7 COD 退款结算授权边界
+
+- 共享 `POST /v1/admin/after-sales/{afterSaleId}/refund` 先以目标商城直接
+  `store.after-sales.read` 读取受 RLS 保护的订单支付方式，再由服务端动态选择权限。COD 分支只接受目标
+  商城直接 `store.after-sales.cod-refunds.request`、近期 MFA、有效 session/Bearer 和 ADMIN WRITE 限流；
+  客户端不能提交支付分支、金额、手续费、转账引用、状态或库存动作。
+- `POST .../cod-refunds/{settlementNumber}/receipt` 同时要求直接 `store.after-sales.read` 与
+  `store.after-sales.cod-refunds.request`，并只允许原 settlement requester 记录回执。入口接收外部观察值，
+  但服务端从 settlement 固定商城、case、订单、金额与 VND；持久化前把引用转为 keyed digest/掩码，把证据
+  转为 digest/密文。应用响应、日志和审计都不返回原文或内部 receipt ID。
+- `POST .../cod-refunds/{settlementNumber}/confirm` 同时要求直接 `store.after-sales.read` 与
+  `store.after-sales.cod-refunds.confirm`。确认管理员必须与 requester/recorder 不同；同人确认、缺失回执、
+  stale version、金额/身份不符、重复引用或已有终态都稳定失败，不能由 cross-access-only 或访问原因替代。
+- 服务层预检不是最终授权。request、receipt 和 confirm 在固定 advisory/行锁序之后，以数据库权威时间锁定
+  并重验 ACTIVE 商城、管理员、session、Bearer、近期 MFA、商城角色和所需直接权限；等待期间撤权或会话
+  失效必须在首笔业务写入前原子失败，不留下 settlement/receipt/confirmation/transition/audit。
+- request/receipt/confirm 分别使用商城范围幂等键与规范 request hash；同键同参返回原冻结结果，同键异参
+  冲突。只对 `P2034`/SQLSTATE `40001` 做最多三次 Serializable 整事务重试，明确 version/授权冲突不重试。
+- `AFTER_SALE_REFUND_COMMANDS_ENABLED=false` 同时关闭 B6/B7 创建入口，production 配置与 service 双重拒绝
+  启用。B7 不新增 permission code 或生产角色 grant，不执行真实银行转账或 provider 调用；真实资金、
+  两商城 sandbox/staging、UI、部署和 rollout 仍为 `NOT_AUTHORIZED / NOT_RUN`。

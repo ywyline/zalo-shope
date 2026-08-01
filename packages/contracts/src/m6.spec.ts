@@ -4,6 +4,7 @@ import {
   AFTER_SALE_RATE_LIMIT_POLICY,
   adminAfterSaleListQuerySchema,
   afterSaleCodRefundConfirmRequestSchema,
+  afterSaleCodRefundReceiptRequestSchema,
   afterSaleCommandAcknowledgementResponseSchema,
   afterSaleCreateRequestSchema,
   afterSaleAdminStoreQuerySchema,
@@ -463,6 +464,7 @@ describe('M6 strict after-sale DTOs', () => {
           created_at: '2026-07-30T12:00:00.000Z',
           method: 'ONLINE_ORIGINAL',
           public_number: 'AST-01J9Z6Y4T8K2M7NQ',
+          receipt_recorded: false,
           refund_public_number: 'RFD-01J9Z6Y4T8K2M7NQ',
           status: 'PROCESSING',
           updated_at: '2026-07-30T12:01:00.000Z',
@@ -851,6 +853,41 @@ describe('M6 strict after-sale DTOs', () => {
         expected_version: 4,
         payout_reference: 'client-controlled',
         reason: 'Transfer proof independently verified by finance reviewer',
+      }),
+    ).toThrow();
+    expect(
+      afterSaleCodRefundReceiptRequestSchema.parse({
+        confirmation_code: 'RECORD_COD_REFUND_RECEIPT',
+        evidence_reference: 'bank-statement://local-test/receipt-001',
+        expected_settlement_version: 1,
+        reason: 'Finance recorded the independently verified transfer receipt.',
+        transfer_reference: 'VN-TRANSFER-001',
+        transferred_at: '2026-08-01T12:00:00.000Z',
+      }),
+    ).toMatchObject({
+      confirmation_code: 'RECORD_COD_REFUND_RECEIPT',
+      expected_settlement_version: 1,
+      transferred_at: new Date('2026-08-01T12:00:00.000Z'),
+    });
+    expect(() =>
+      afterSaleCodRefundReceiptRequestSchema.parse({
+        amount_vnd: 100_000,
+        confirmation_code: 'RECORD_COD_REFUND_RECEIPT',
+        evidence_reference: 'bank-statement://local-test/receipt-001',
+        expected_settlement_version: 1,
+        reason: 'Finance recorded the independently verified transfer receipt.',
+        transfer_reference: 'VN-TRANSFER-001',
+        transferred_at: '2026-08-01T12:00:00.000Z',
+      }),
+    ).toThrow();
+    expect(() =>
+      afterSaleCodRefundReceiptRequestSchema.parse({
+        confirmation_code: 'RECORD_COD_REFUND_RECEIPT',
+        evidence_reference: 'bank-statement://local-test/receipt-001',
+        expected_settlement_version: 1,
+        reason: 'Finance recorded the independently verified transfer receipt.',
+        transfer_reference: 'VN-TRANSFER-001',
+        transferred_at: Date.parse('2026-08-01T12:00:00.000Z'),
       }),
     ).toThrow();
     expect(

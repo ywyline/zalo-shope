@@ -33,11 +33,18 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
     beautyRoleId: randomUUID(),
     brandId: randomUUID(),
     categoryId: randomUUID(),
+    codOrderId: randomUUID(),
+    codOrderItemId: randomUUID(),
+    codReconciliationBatchId: randomUUID(),
+    codShipmentId: randomUUID(),
+    codShipmentItemId: randomUUID(),
     fashionRoleId: randomUUID(),
     memberId: randomUUID(),
     memberSessionId: randomUUID(),
     orderId: randomUUID(),
     orderItemId: randomUUID(),
+    otherAdminId: randomUUID(),
+    otherAdminSessionId: randomUUID(),
     otherMemberId: randomUUID(),
     otherMemberSessionId: randomUUID(),
     paymentAttemptId: randomUUID(),
@@ -98,6 +105,7 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
   const policyHash = canonicalAfterSalePolicyHash(policy);
   let app: INestApplication;
   let adminToken: string;
+  let otherAdminToken: string;
   let memberToken: string;
   let otherMemberToken: string;
   let limiterRedis: { del(...keys: string[]): Promise<number> };
@@ -109,8 +117,8 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
     Authorization: `Bearer ${token}`,
     'X-Store-Code': storeCode,
   });
-  const adminHeaders = (storeCode = BEAUTY_STORE_CODE) => ({
-    Authorization: `Bearer ${adminToken}`,
+  const adminHeaders = (storeCode = BEAUTY_STORE_CODE, token = adminToken) => ({
+    Authorization: `Bearer ${token}`,
     'X-Store-Code': storeCode,
   });
   const memberBody = (quantity = 1, type: 'REFUND_ONLY' | 'RETURN_REFUND' = 'REFUND_ONLY') => ({
@@ -161,6 +169,7 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
   beforeAll(async () => {
     if (
       !config.AFTER_SALE_COMMANDS_ENABLED ||
+      !config.AFTER_SALE_REFUND_COMMANDS_ENABLED ||
       !config.AFTER_SALE_RETURN_COMMANDS_ENABLED ||
       config.NODE_ENV !== 'test'
     ) {
@@ -237,14 +246,23 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
           storeId: BEAUTY_STORE_ID,
         },
       });
-      await transaction.adminUser.create({
-        data: {
-          displayName: 'M6.3-B3 API reviewer',
-          email: `m63b3-api-${suffix}@example.invalid`,
-          emailNormalized: `m63b3-api-${suffix}@example.invalid`,
-          id: fixture.adminId,
-          passwordHash: 'test-fixture-not-a-login-hash',
-        },
+      await transaction.adminUser.createMany({
+        data: [
+          {
+            displayName: 'M6.3-B3 API reviewer',
+            email: `m63b3-api-${suffix}@example.invalid`,
+            emailNormalized: `m63b3-api-${suffix}@example.invalid`,
+            id: fixture.adminId,
+            passwordHash: 'test-fixture-not-a-login-hash',
+          },
+          {
+            displayName: 'M6.3-B7 API confirmer',
+            email: `m63b7-api-${suffix}@example.invalid`,
+            emailNormalized: `m63b7-api-${suffix}@example.invalid`,
+            id: fixture.otherAdminId,
+            passwordHash: 'test-fixture-not-a-login-hash',
+          },
+        ],
       });
       await transaction.member.createMany({
         data: [
@@ -272,15 +290,25 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
           },
         ],
       });
-      await transaction.adminSession.create({
-        data: {
-          adminUserId: fixture.adminId,
-          expiresAt,
-          id: fixture.adminSessionId,
-          mfaVerifiedAt: new Date(),
-          refreshTokenHash: digest(`admin-session-${fixture.adminId}`),
-          tokenFamilyId: randomUUID(),
-        },
+      await transaction.adminSession.createMany({
+        data: [
+          {
+            adminUserId: fixture.adminId,
+            expiresAt,
+            id: fixture.adminSessionId,
+            mfaVerifiedAt: new Date(),
+            refreshTokenHash: digest(`admin-session-${fixture.adminId}`),
+            tokenFamilyId: randomUUID(),
+          },
+          {
+            adminUserId: fixture.otherAdminId,
+            expiresAt,
+            id: fixture.otherAdminSessionId,
+            mfaVerifiedAt: new Date(),
+            refreshTokenHash: digest(`admin-session-${fixture.otherAdminId}`),
+            tokenFamilyId: randomUUID(),
+          },
+        ],
       });
       await transaction.platformRole.create({
         data: {
@@ -320,6 +348,16 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
       });
       await transaction.storeRolePermission.createMany({
         data: [
+          {
+            permissionCode: 'store.after-sales.cod-refunds.confirm',
+            roleId: fixture.beautyRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+          {
+            permissionCode: 'store.after-sales.cod-refunds.request',
+            roleId: fixture.beautyRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
           {
             permissionCode: 'store.after-sales.review',
             roleId: fixture.beautyRoleId,
@@ -366,6 +404,12 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
         data: [
           {
             adminUserId: fixture.adminId,
+            grantedBy: fixture.adminId,
+            roleId: fixture.beautyRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+          {
+            adminUserId: fixture.otherAdminId,
             grantedBy: fixture.adminId,
             roleId: fixture.beautyRoleId,
             storeId: BEAUTY_STORE_ID,
@@ -597,6 +641,131 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
           storeId: BEAUTY_STORE_ID,
         },
       });
+      await transaction.order.create({
+        data: {
+          baseSubtotalVnd: 100_000,
+          currency: 'VND',
+          id: fixture.codOrderId,
+          memberId: fixture.memberId,
+          orderNumber: `M63-B7-COD-${suffix}`,
+          payableVnd: 100_000,
+          paymentMethod: 'COD',
+          paymentStatus: 'PENDING',
+          quoteHash: digest(`m63b7-cod-order-${suffix}`),
+          shippingFeeVnd: 0,
+          status: 'DELIVERED',
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+      await transaction.orderItem.create({
+        data: {
+          brandId: fixture.brandId,
+          brandName: 'M6.3-B7 brand',
+          categoryId: fixture.categoryId,
+          id: fixture.codOrderItemId,
+          optionSnapshot: [],
+          orderId: fixture.codOrderId,
+          payableVnd: 100_000,
+          productId: fixture.productId,
+          productName: 'M6.3-B7 COD product',
+          quantity: 1,
+          skuCode: `m63b3-sku-${suffix}`,
+          skuId: fixture.skuId,
+          storeId: BEAUTY_STORE_ID,
+          subtotalVnd: 100_000,
+          unitPriceVnd: 100_000,
+        },
+      });
+      await transaction.orderItemAfterSalePolicySnapshot.create({
+        data: {
+          orderId: fixture.codOrderId,
+          orderItemId: fixture.codOrderItemId,
+          payload: policy,
+          payloadHash: policyHash,
+          policyCode: `m63b3-policy-${suffix}`,
+          policyId: fixture.policyId,
+          policyVersionId: fixture.policyVersionId,
+          policyVersionNumber: 1,
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+      await transaction.shipment.create({
+        data: {
+          addressSnapshotCiphertext: 'm63b7-encrypted-address-fixture',
+          channelId: fixture.shippingChannelId,
+          clientOrderCode: `M63-B7-COD-SHP-${suffix}`,
+          codAmountVnd: 100_000,
+          deliveredAt,
+          id: fixture.codShipmentId,
+          orderId: fixture.codOrderId,
+          parcelSnapshot: { height_cm: 1, length_cm: 1, weight_grams: 1, width_cm: 1 },
+          publicShipmentNumber: `SHP-M63B7-${suffix.toUpperCase()}`,
+          purpose: 'ORDER_OUTBOUND',
+          serviceCode: 'LOCAL_TEST',
+          status: 'DELIVERED',
+          storeId: BEAUTY_STORE_ID,
+          warehouseId: fixture.warehouseId,
+        },
+      });
+      await transaction.shipmentItem.create({
+        data: {
+          id: fixture.codShipmentItemId,
+          orderId: fixture.codOrderId,
+          orderItemId: fixture.codOrderItemId,
+          quantity: 1,
+          shipmentId: fixture.codShipmentId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+      await transaction.financialReconciliationBatch.create({
+        data: {
+          batchReferenceDigest: digest(`m63b7-api-batch-reference-${suffix}`),
+          batchReferenceMasked: `B7-${suffix}`,
+          businessDate: new Date('2026-08-01T00:00:00.000Z'),
+          correlationId: `m63b7-api-reconciliation-${suffix}`,
+          createdBy: fixture.adminId,
+          differenceVnd: 0,
+          exceptionCount: 0,
+          feeAmountVnd: 0,
+          feeDifferenceVnd: 0,
+          grossAmountVnd: 100_000,
+          id: fixture.codReconciliationBatchId,
+          idempotencyKeyHash: digest(`m63b7-api-reconciliation-key-${suffix}`),
+          inputDigest: digest(`m63b7-api-reconciliation-input-${suffix}`),
+          localExpectedAmountVnd: 100_000,
+          localExpectedFeeAmountVnd: 0,
+          matchedCount: 1,
+          netAmountVnd: 100_000,
+          reason: 'Finance imported one normalized local-test COD remittance fact.',
+          recordCount: 1,
+          shippingChannelId: fixture.shippingChannelId,
+          source: 'SHIPPING_PROVIDER',
+          status: 'MATCHED',
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+      await transaction.financialReconciliationLine.create({
+        data: {
+          batchId: fixture.codReconciliationBatchId,
+          differenceVnd: 0,
+          feeAmountVnd: 0,
+          feeDifferenceVnd: 0,
+          grossAmountVnd: 100_000,
+          lineNumber: 1,
+          localExpectedAmountVnd: 100_000,
+          localExpectedFeeAmountVnd: 0,
+          netAmountVnd: 100_000,
+          occurredAt: deliveredAt,
+          providerReferenceDigest: digest(`m63b7-api-provider-reference-${suffix}`),
+          providerReferenceMasked: `PR-${suffix}`,
+          recordReferenceDigest: digest(`m63b7-api-record-reference-${suffix}`),
+          recordReferenceMasked: `RR-${suffix}`,
+          shipmentId: fixture.codShipmentId,
+          status: 'MATCHED',
+          storeId: BEAUTY_STORE_ID,
+          type: 'COD_REMITTANCE',
+        },
+      });
     });
 
     memberToken = accessToken({
@@ -615,6 +784,11 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
       actorType: 'admin',
       sessionId: fixture.adminSessionId,
       subjectId: fixture.adminId,
+    });
+    otherAdminToken = accessToken({
+      actorType: 'admin',
+      sessionId: fixture.otherAdminSessionId,
+      subjectId: fixture.otherAdminId,
     });
 
     const [{ AppModule }, { ApiExceptionFilter }, { AfterSalesRateLimiter }] = await Promise.all([
@@ -637,13 +811,14 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
         rateLimitKey('MEMBER', fixture.otherMemberId, BEAUTY_STORE_ID, offset),
         rateLimitKey('ADMIN', fixture.adminId, BEAUTY_STORE_ID, offset),
         rateLimitKey('ADMIN', fixture.adminId, FASHION_STORE_ID, offset),
+        rateLimitKey('ADMIN', fixture.otherAdminId, BEAUTY_STORE_ID, offset),
       ]),
     ];
     await limiterRedis?.del(...limiterKeys);
     await app?.close();
     const afterSales = await owner.afterSale.findMany({
       select: { id: true },
-      where: { orderId: fixture.orderId, storeId: BEAUTY_STORE_ID },
+      where: { orderId: { in: [fixture.orderId, fixture.codOrderId] }, storeId: BEAUTY_STORE_ID },
     });
     const afterSaleIds = afterSales.map(({ id }) => id);
     await owner.$transaction(async (transaction) => {
@@ -652,6 +827,15 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
         where: { actorId: { in: [fixture.memberId, fixture.otherMemberId, fixture.adminId] } },
       });
       if (afterSaleIds.length > 0) {
+        await transaction.afterSaleCodRefundConfirmation.deleteMany({
+          where: { afterSaleId: { in: afterSaleIds } },
+        });
+        await transaction.afterSaleCodRefundReceipt.deleteMany({
+          where: { afterSaleId: { in: afterSaleIds } },
+        });
+        await transaction.afterSaleSettlement.deleteMany({
+          where: { afterSaleId: { in: afterSaleIds } },
+        });
         await transaction.afterSaleReturnShipment.deleteMany({
           where: { afterSaleId: { in: afterSaleIds } },
         });
@@ -669,6 +853,19 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
         });
         await transaction.afterSale.deleteMany({ where: { id: { in: afterSaleIds } } });
       }
+      await transaction.financialReconciliationLine.deleteMany({
+        where: { batchId: fixture.codReconciliationBatchId },
+      });
+      await transaction.financialReconciliationBatch.deleteMany({
+        where: { id: fixture.codReconciliationBatchId },
+      });
+      await transaction.shipmentItem.deleteMany({ where: { id: fixture.codShipmentItemId } });
+      await transaction.shipment.deleteMany({ where: { id: fixture.codShipmentId } });
+      await transaction.orderItemAfterSalePolicySnapshot.deleteMany({
+        where: { orderItemId: fixture.codOrderItemId, storeId: BEAUTY_STORE_ID },
+      });
+      await transaction.orderItem.deleteMany({ where: { id: fixture.codOrderItemId } });
+      await transaction.order.deleteMany({ where: { id: fixture.codOrderId } });
       await transaction.shipmentItem.deleteMany({ where: { id: fixture.shipmentItemId } });
       await transaction.shipment.deleteMany({ where: { id: fixture.shipmentId } });
       await transaction.paymentAttempt.deleteMany({ where: { id: fixture.paymentAttemptId } });
@@ -707,7 +904,9 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
       await transaction.member.deleteMany({
         where: { id: { in: [fixture.memberId, fixture.otherMemberId] } },
       });
-      await transaction.adminStoreRole.deleteMany({ where: { adminUserId: fixture.adminId } });
+      await transaction.adminStoreRole.deleteMany({
+        where: { adminUserId: { in: [fixture.adminId, fixture.otherAdminId] } },
+      });
       await transaction.adminPlatformRole.deleteMany({ where: { adminUserId: fixture.adminId } });
       await transaction.platformRolePermission.deleteMany({
         where: { platformRoleId: fixture.platformRoleId },
@@ -719,8 +918,12 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
       await transaction.storeRole.deleteMany({
         where: { id: { in: [fixture.beautyRoleId, fixture.fashionRoleId] } },
       });
-      await transaction.adminSession.deleteMany({ where: { id: fixture.adminSessionId } });
-      await transaction.adminUser.deleteMany({ where: { id: fixture.adminId } });
+      await transaction.adminSession.deleteMany({
+        where: { id: { in: [fixture.adminSessionId, fixture.otherAdminSessionId] } },
+      });
+      await transaction.adminUser.deleteMany({
+        where: { id: { in: [fixture.adminId, fixture.otherAdminId] } },
+      });
       await transaction.storeZaloApp.deleteMany({ where: { storeId: BEAUTY_STORE_ID } });
       await transaction.storeAfterSaleSetting.deleteMany({
         where: { storeId: { in: [BEAUTY_STORE_ID, FASHION_STORE_ID] } },
@@ -1337,5 +1540,186 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
       .send(refundBody);
     expect(foreign.status).toBe(404);
     expect(foreign.body).toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
+  });
+
+  it('settles a trusted COD refund through an encrypted receipt and a distinct confirmer', async () => {
+    await limiterRedis.del(
+      ...[-1, 0, 1].flatMap((offset) => [
+        rateLimitKey('MEMBER', fixture.memberId, BEAUTY_STORE_ID, offset),
+        rateLimitKey('ADMIN', fixture.adminId, BEAUTY_STORE_ID, offset),
+        rateLimitKey('ADMIN', fixture.otherAdminId, BEAUTY_STORE_ID, offset),
+      ]),
+    );
+    const created = await api()
+      .post('/v1/after-sales')
+      .set({
+        ...memberHeaders(),
+        'Idempotency-Key': `m63b7-api-member-create-${suffix}`,
+      })
+      .send({
+        description: 'San pham COD bi loi va can hoan tien sau khi doi chieu thu ho.',
+        evidence_ids: [],
+        items: [{ order_item_id: fixture.codOrderItemId, quantity: 1 }],
+        order_id: fixture.codOrderId,
+        reason_code: 'defective-item',
+        type: 'REFUND_ONLY',
+      });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+
+    const approved = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/review?store_id=${BEAUTY_STORE_ID}`)
+      .set({
+        ...adminHeaders(),
+        'Idempotency-Key': `m63b7-api-review-${suffix}`,
+      })
+      .send({
+        confirmation_code: 'APPROVE_AFTER_SALE',
+        decision: 'APPROVE',
+        expected_version: created.body.version,
+        items: [{ approved_quantity: 1, order_item_id: fixture.codOrderItemId }],
+        reason: 'Approve the COD refund after checking the immutable remittance fact.',
+      });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(approved.body).toMatchObject({
+      status: 'APPROVED',
+      version: 2,
+    });
+
+    const refundKey = `m63b7-api-refund-${suffix}`;
+    const refundBody = {
+      confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
+      expected_version: approved.body.version,
+      reason: 'Queue the approved COD refund using the exact reconciled remittance fact.',
+    };
+    const requested = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/refund?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...adminHeaders(), 'Idempotency-Key': refundKey })
+      .send(refundBody);
+    expect(requested.status, JSON.stringify(requested.body)).toBe(202);
+    expect(requested.headers['idempotency-replayed']).toBe('false');
+    expect(requested.body).toMatchObject({
+      approved_refund_vnd: 100_000,
+      id: created.body.id,
+      status: 'REFUND_PENDING',
+    });
+    expect(requested.body.settlements).toEqual([
+      expect.objectContaining({
+        amount_vnd: 100_000,
+        method: 'COD_OFFLINE',
+        receipt_recorded: false,
+        status: 'PENDING',
+      }),
+    ]);
+    const settlementNumber = requested.body.settlements[0].public_number as string;
+    const persistedSettlement = await owner.afterSaleSettlement.findFirstOrThrow({
+      select: { id: true, version: true },
+      where: { afterSaleId: created.body.id, publicSettlementNumber: settlementNumber },
+    });
+    expect(persistedSettlement.version).toBe(1);
+    expect(JSON.stringify(requested.body)).not.toContain(persistedSettlement.id);
+    expect(JSON.stringify(requested.body)).not.toContain(fixture.codReconciliationBatchId);
+
+    const altered = await api()
+      .post(`/v1/admin/after-sales/${created.body.id}/refund?store_id=${BEAUTY_STORE_ID}`)
+      .set({
+        ...adminHeaders(),
+        'Idempotency-Key': `m63b7-api-refund-invalid-${suffix}`,
+      })
+      .send({ ...refundBody, amount_vnd: 1, transfer_reference: 'client-owned-secret' });
+    expect(altered.status).toBe(400);
+    expect(altered.body).toMatchObject({ code: 'INPUT_INVALID' });
+
+    const transferReference = `VN-TRANSFER-${suffix}`;
+    const evidenceReference = `bank-statement://local-test/${suffix}`;
+    const receiptKey = `m63b7-api-receipt-${suffix}`;
+    const receiptBody = {
+      confirmation_code: 'RECORD_COD_REFUND_RECEIPT',
+      evidence_reference: evidenceReference,
+      expected_settlement_version: persistedSettlement.version,
+      reason: 'Finance recorded the independently verified COD refund transfer receipt.',
+      transfer_reference: transferReference,
+      transferred_at: new Date().toISOString(),
+    };
+    const receipt = await api()
+      .post(
+        `/v1/admin/after-sales/${created.body.id}/cod-refunds/${settlementNumber}/receipt?store_id=${BEAUTY_STORE_ID}`,
+      )
+      .set({ ...adminHeaders(), 'Idempotency-Key': receiptKey })
+      .send(receiptBody);
+    expect(receipt.status, JSON.stringify(receipt.body)).toBe(200);
+    expect(receipt.headers['idempotency-replayed']).toBe('false');
+    expect(receipt.body).toMatchObject({
+      id: created.body.id,
+      status: 'REFUND_PENDING',
+      version: requested.body.version,
+    });
+    expect(receipt.body.settlements).toEqual([
+      expect.objectContaining({
+        amount_vnd: 100_000,
+        method: 'COD_OFFLINE',
+        public_number: settlementNumber,
+        receipt_recorded: true,
+        status: 'PENDING',
+      }),
+    ]);
+    const receiptJson = JSON.stringify(receipt.body);
+    expect(receiptJson).not.toContain(transferReference);
+    expect(receiptJson).not.toContain(evidenceReference);
+    expect(receiptJson).not.toContain(persistedSettlement.id);
+    expect(receiptJson).not.toContain(fixture.codReconciliationBatchId);
+
+    const confirmKey = `m63b7-api-confirm-${suffix}`;
+    const confirmBody = {
+      confirmation_code: 'CONFIRM_COD_REFUND',
+      expected_settlement_version: persistedSettlement.version,
+      expected_version: receipt.body.version,
+      reason: 'A second finance administrator confirmed the exact immutable COD refund receipt.',
+    };
+    const sameActor = await api()
+      .post(
+        `/v1/admin/after-sales/${created.body.id}/cod-refunds/${settlementNumber}/confirm?store_id=${BEAUTY_STORE_ID}`,
+      )
+      .set({ ...adminHeaders(), 'Idempotency-Key': `${confirmKey}-same-actor` })
+      .send(confirmBody);
+    expect(sameActor.status).toBe(409);
+    expect(sameActor.body).toMatchObject({ code: 'CONFLICT' });
+
+    const confirmed = await api()
+      .post(
+        `/v1/admin/after-sales/${created.body.id}/cod-refunds/${settlementNumber}/confirm?store_id=${BEAUTY_STORE_ID}`,
+      )
+      .set({ ...adminHeaders(BEAUTY_STORE_CODE, otherAdminToken), 'Idempotency-Key': confirmKey })
+      .send(confirmBody);
+    expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
+    expect(confirmed.headers['idempotency-replayed']).toBe('false');
+    expect(confirmed.body).toMatchObject({
+      id: created.body.id,
+      status: 'REFUNDED',
+      version: receipt.body.version + 2,
+    });
+    expect(confirmed.body.settlements).toEqual([
+      expect.objectContaining({
+        amount_vnd: 100_000,
+        method: 'COD_OFFLINE',
+        public_number: settlementNumber,
+        receipt_recorded: true,
+        status: 'SUCCEEDED',
+      }),
+    ]);
+    const confirmedJson = JSON.stringify(confirmed.body);
+    expect(confirmedJson).not.toContain(transferReference);
+    expect(confirmedJson).not.toContain(evidenceReference);
+    expect(confirmedJson).not.toContain(persistedSettlement.id);
+    expect(confirmedJson).not.toContain(fixture.codReconciliationBatchId);
+
+    const replay = await api()
+      .post(
+        `/v1/admin/after-sales/${created.body.id}/cod-refunds/${settlementNumber}/confirm?store_id=${BEAUTY_STORE_ID}`,
+      )
+      .set({ ...adminHeaders(BEAUTY_STORE_CODE, otherAdminToken), 'Idempotency-Key': confirmKey })
+      .send(confirmBody);
+    expect(replay.status).toBe(200);
+    expect(replay.headers['idempotency-replayed']).toBe('true');
+    expect(replay.body).toEqual(confirmed.body);
   });
 });

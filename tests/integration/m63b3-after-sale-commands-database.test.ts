@@ -18,10 +18,13 @@ import {
   createMemberAfterSaleCommand,
   createMerchantRefundAfterSaleCommand,
   createRuntimePrismaClient,
+  confirmAfterSaleCodRefund,
   expireDueAfterSales,
   initializeAfterSaleEvidenceUpload,
   resolveAfterSaleReviewCommand,
   recordAfterSaleReturnFact,
+  recordAfterSaleCodRefundReceipt,
+  requestAfterSaleCodRefund,
   requestAfterSaleOnlineRefund,
   reviewAfterSaleCommand,
   submitMemberAfterSaleReturn,
@@ -49,6 +52,10 @@ const SCRATCH_DATABASE_PATTERN = /^zalo_shop_m63b3_[0-9a-f]{12}$/u;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 const digest = (value: string): string => createHash('sha256').update(value, 'utf8').digest('hex');
+const serialize = (value: unknown): string =>
+  JSON.stringify(value, (_key, item: unknown) =>
+    typeof item === 'bigint' ? item.toString() : item,
+  );
 
 const DISABLED_EVIDENCE_CAPABILITIES = {
   claimAvailable: false,
@@ -742,6 +749,136 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
     return { afterSaleId: created.afterSaleId, order, version: approved.version };
   }
 
+  async function createCodReconciliationFact(
+    order: OrderFixture,
+    tag: string,
+    input: { grossAmountVnd?: number; status?: 'AMOUNT_MISMATCH' | 'MATCHED' } = {},
+  ): Promise<void> {
+    const shipment = await requiredOwner().shipment.findFirstOrThrow({
+      where: { orderId: order.id, purpose: 'ORDER_OUTBOUND', storeId: BEAUTY_STORE_ID },
+    });
+    const grossAmountVnd = input.grossAmountVnd ?? order.payableVnd;
+    const status = input.status ?? 'MATCHED';
+    const matched = status === 'MATCHED';
+    const differenceVnd = grossAmountVnd - order.payableVnd;
+    const batchId = randomUUID();
+    await requiredOwner().$transaction(async (transaction) => {
+      await transaction.financialReconciliationBatch.create({
+        data: {
+          batchReferenceDigest: digest(`b7-batch-reference-${tag}-${suffix}`),
+          batchReferenceMasked: `B7-${tag}`.slice(0, 160),
+          businessDate: new Date('2026-08-01T00:00:00.000Z'),
+          correlationId: `m63b7-reconciliation-${tag}-${suffix}`,
+          createdBy: fixture.adminId,
+          differenceVnd,
+          exceptionCount: matched ? 0 : 1,
+          feeAmountVnd: 0,
+          feeDifferenceVnd: 0,
+          grossAmountVnd,
+          id: batchId,
+          idempotencyKeyHash: digest(`b7-reconciliation-key-${tag}-${suffix}`),
+          inputDigest: digest(`b7-reconciliation-input-${tag}-${suffix}`),
+          localExpectedAmountVnd: order.payableVnd,
+          localExpectedFeeAmountVnd: 0,
+          matchedCount: matched ? 1 : 0,
+          netAmountVnd: grossAmountVnd,
+          reason: 'Finance imported a normalized local-test COD remittance fact.',
+          recordCount: 1,
+          shippingChannelId: fixture.shippingChannelId,
+          source: 'SHIPPING_PROVIDER',
+          status: matched ? 'MATCHED' : 'REVIEW_REQUIRED',
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+      await transaction.financialReconciliationLine.create({
+        data: {
+          batchId,
+          differenceVnd,
+          feeAmountVnd: 0,
+          feeDifferenceVnd: 0,
+          grossAmountVnd,
+          lineNumber: 1,
+          localExpectedAmountVnd: order.payableVnd,
+          localExpectedFeeAmountVnd: 0,
+          netAmountVnd: grossAmountVnd,
+          occurredAt: shipment.deliveredAt ?? new Date(),
+          providerReferenceDigest: digest(`b7-provider-reference-${tag}-${suffix}`),
+          providerReferenceMasked: `PR-${tag}`.slice(0, 160),
+          recordReferenceDigest: digest(`b7-record-reference-${tag}-${suffix}`),
+          recordReferenceMasked: `RR-${tag}`.slice(0, 160),
+          shipmentId: shipment.id,
+          status,
+          storeId: BEAUTY_STORE_ID,
+          type: 'COD_REMITTANCE',
+        },
+      });
+    });
+  }
+
+  async function createApprovedCodRefundCase(tag: string): Promise<{
+    afterSaleId: string;
+    order: OrderFixture;
+    version: number;
+  }> {
+    const order = await createOrder({ paymentMethod: 'COD', quantity: 1, tag });
+    await createCodReconciliationFact(order, tag);
+    const privileges = await requiredRuntime().$queryRaw<
+      Array<{ batch_select: boolean; current_user: string; line_select: boolean }>
+    >`
+      SELECT current_user,
+        has_table_privilege(current_user, 'financial_reconciliation_batches', 'SELECT')
+          AS batch_select,
+        has_table_privilege(current_user, 'financial_reconciliation_lines', 'SELECT')
+          AS line_select
+    `;
+    expect(privileges).toEqual([
+      { batch_select: true, current_user: 'zalo_shop_runtime', line_select: true },
+    ]);
+    const created = await createMemberAfterSaleCommand(
+      requiredRuntime(),
+      memberContext(),
+      memberCreateInput(order, tag, 1, { type: 'REFUND_ONLY' }),
+    );
+    const approved = await reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+      afterSaleId: created.afterSaleId,
+      body: {
+        confirmation_code: 'APPROVE_AFTER_SALE',
+        decision: 'APPROVE',
+        expected_version: created.version,
+        items: [{ approved_quantity: 1, order_item_id: order.itemId }],
+        reason: 'Approve the COD refund after checking the exact remittance receipt.',
+      },
+      idempotencyKey: `m63b7-${tag}-approve-${suffix}`,
+    });
+    return { afterSaleId: created.afterSaleId, order, version: approved.version };
+  }
+
+  async function createPendingCodSettlementWithReceipt(tag: string) {
+    const approved = await createApprovedCodRefundCase(tag);
+    const requested = await requestAfterSaleCodRefund(requiredRuntime(), adminContext(), {
+      afterSaleId: approved.afterSaleId,
+      expectedVersion: approved.version,
+      idempotencyKey: `m63b7-${tag}-request-${suffix}`,
+      reason: 'Queue the approved COD refund using the exact reconciled remittance fact.',
+    });
+    const settlement = await requiredOwner().afterSaleSettlement.findUniqueOrThrow({
+      where: { id: requested.settlementId },
+    });
+    const receipt = await recordAfterSaleCodRefundReceipt(requiredRuntime(), adminContext(), {
+      afterSaleId: approved.afterSaleId,
+      encryptionKey: process.env.PII_ENCRYPTION_KEY!,
+      evidenceReference: `bank-statement://local-test/${tag}-${suffix}`,
+      expectedSettlementVersion: settlement.version,
+      hashKey: process.env.PII_HASH_KEY!,
+      idempotencyKey: `m63b7-${tag}-receipt-${suffix}`,
+      reason: 'Finance recorded the independently verified COD refund transfer receipt.',
+      settlementNumber: settlement.publicSettlementNumber,
+      transferredAt: new Date(settlement.requestedAt.getTime() + 1),
+      transferReference: `VN-${tag}-${suffix}`,
+    });
+    return { approved, receipt, requested, settlement };
+  }
+
   beforeAll(async () => {
     assertScratchName();
     await admin.$connect();
@@ -839,6 +976,8 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
     await owner.storeRolePermission.createMany({
       data: [
         'store.after-sales.read',
+        'store.after-sales.cod-refunds.confirm',
+        'store.after-sales.cod-refunds.request',
         'store.after-sales.review',
         'store.refunds.create',
         'store.refunds.read',
@@ -2832,6 +2971,490 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
     expect(transition).toMatchObject({ actorType: 'SYSTEM', event: 'REQUIRE_REVIEW' });
   });
 
+  it('settles one trusted COD refund through an immutable receipt and distinct confirmer', async () => {
+    const approved = await createApprovedCodRefundCase('b7-success');
+    const requestInput = {
+      afterSaleId: approved.afterSaleId,
+      expectedVersion: approved.version,
+      idempotencyKey: `m63b7-request-success-${suffix}`,
+      reason: 'Queue the approved COD refund using the exact reconciled remittance fact.',
+      sourceIp: '127.0.0.1',
+    };
+    const requested = await requestAfterSaleCodRefund(
+      requiredRuntime(),
+      adminContext(),
+      requestInput,
+    );
+    expect(requested).toMatchObject({
+      replayed: false,
+      settlementStatus: 'PENDING',
+      settlementVersion: 1,
+    });
+    await expect(
+      requestAfterSaleCodRefund(requiredRuntime(), adminContext(), requestInput),
+    ).resolves.toMatchObject({
+      publicSettlementNumber: requested.publicSettlementNumber,
+      replayed: true,
+    });
+    await expect(
+      requestAfterSaleCodRefund(requiredRuntime(), adminContext(), {
+        ...requestInput,
+        reason: 'A changed reason must conflict with the original COD refund request.',
+      }),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_IDEMPOTENCY_CONFLICT' });
+
+    const settlement = await requiredOwner().afterSaleSettlement.findUniqueOrThrow({
+      where: { id: requested.settlementId },
+    });
+    expect(settlement).toMatchObject({
+      afterSaleId: approved.afterSaleId,
+      amountVnd: BigInt(approved.order.payableVnd),
+      method: 'COD_OFFLINE',
+      paymentAttemptId: null,
+      status: 'PENDING',
+    });
+    expect(await requiredOwner().refund.count({ where: { orderId: approved.order.id } })).toBe(0);
+
+    const transferReference = `VN-TRANSFER-${suffix}`;
+    const evidenceReference = `bank-statement://local-test/${suffix}`;
+    const receiptInput = {
+      afterSaleId: approved.afterSaleId,
+      encryptionKey: process.env.PII_ENCRYPTION_KEY!,
+      evidenceReference,
+      expectedSettlementVersion: settlement.version,
+      hashKey: process.env.PII_HASH_KEY!,
+      idempotencyKey: `m63b7-receipt-success-${suffix}`,
+      reason: 'Finance recorded the independently verified COD refund transfer receipt.',
+      settlementNumber: settlement.publicSettlementNumber,
+      sourceIp: '127.0.0.1',
+      transferredAt: new Date(settlement.requestedAt.getTime() + 1),
+      transferReference,
+    };
+    const recorded = await recordAfterSaleCodRefundReceipt(
+      requiredRuntime(),
+      adminContext(),
+      receiptInput,
+    );
+    expect(recorded).toMatchObject({ replayed: false, settlementStatus: 'PENDING' });
+    await expect(
+      recordAfterSaleCodRefundReceipt(requiredRuntime(), adminContext(), receiptInput),
+    ).resolves.toMatchObject({ operationId: recorded.operationId, replayed: true });
+
+    const persistedReceipt = await requiredOwner().afterSaleCodRefundReceipt.findUniqueOrThrow({
+      where: { id: recorded.operationId },
+    });
+    expect(persistedReceipt).toMatchObject({
+      amountVnd: BigInt(approved.order.payableVnd),
+      recordedBy: fixture.adminId,
+      settlementId: settlement.id,
+    });
+    expect(persistedReceipt.transferReferenceDigest).toMatch(/^[0-9a-f]{64}$/u);
+    expect(persistedReceipt.evidenceDigest).toMatch(/^[0-9a-f]{64}$/u);
+    expect(persistedReceipt.transferReferenceMasked).not.toBe(transferReference);
+    expect(serialize(persistedReceipt)).not.toContain(transferReference);
+    expect(serialize(persistedReceipt)).not.toContain(evidenceReference);
+
+    const confirmationInput = {
+      afterSaleId: approved.afterSaleId,
+      expectedSettlementVersion: settlement.version,
+      expectedVersion: requested.version,
+      idempotencyKey: `m63b7-confirm-success-${suffix}`,
+      reason: 'A second finance administrator confirmed the exact immutable COD refund receipt.',
+      settlementNumber: settlement.publicSettlementNumber,
+      sourceIp: '127.0.0.2',
+    };
+    await expect(
+      confirmAfterSaleCodRefund(requiredRuntime(), adminContext(), confirmationInput),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_REFUND_FACT_INVALID' });
+    const confirmed = await confirmAfterSaleCodRefund(
+      requiredRuntime(),
+      adminContext(fixture.otherAdminId),
+      confirmationInput,
+    );
+    expect(confirmed).toMatchObject({
+      replayed: false,
+      settlementStatus: 'SUCCEEDED',
+      settlementVersion: settlement.version + 1,
+      status: 'REFUNDED',
+      version: requested.version + 2,
+    });
+    await expect(
+      confirmAfterSaleCodRefund(
+        requiredRuntime(),
+        adminContext(fixture.otherAdminId),
+        confirmationInput,
+      ),
+    ).resolves.toMatchObject({ operationId: confirmed.operationId, replayed: true });
+
+    const [finalSettlement, transitions, confirmations, audits, refunds] = await Promise.all([
+      requiredOwner().afterSaleSettlement.findUniqueOrThrow({ where: { id: settlement.id } }),
+      requiredOwner().afterSaleTransition.findMany({
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        where: { afterSaleId: approved.afterSaleId },
+      }),
+      requiredOwner().afterSaleCodRefundConfirmation.count({
+        where: { settlementId: settlement.id },
+      }),
+      requiredOwner().auditLog.findMany({
+        where: { storeId: BEAUTY_STORE_ID, targetId: approved.afterSaleId },
+      }),
+      requiredOwner().refund.count({ where: { orderId: approved.order.id } }),
+    ]);
+    expect(finalSettlement).toMatchObject({
+      confirmedBy: fixture.otherAdminId,
+      status: 'SUCCEEDED',
+    });
+    expect(finalSettlement.completedAt).not.toBeNull();
+    expect(transitions.slice(-2).map(({ event }) => event)).toEqual([
+      'REFUND_REQUESTED',
+      'REFUND_SUCCEEDED',
+    ]);
+    expect({ confirmations, refunds }).toEqual({ confirmations: 1, refunds: 0 });
+    expect(audits.map(({ action }) => action)).toEqual(
+      expect.arrayContaining([
+        'after-sale.cod-refund.requested',
+        'after-sale.cod-refund.receipt-recorded',
+        'after-sale.cod-refund.confirmed',
+      ]),
+    );
+    expect(
+      audits
+        .filter(({ action }) => action.startsWith('after-sale.cod-refund.'))
+        .map(({ action, sourceIp }) => ({ action, sourceIp })),
+    ).toEqual(
+      expect.arrayContaining([
+        { action: 'after-sale.cod-refund.requested', sourceIp: '127.0.0.1' },
+        { action: 'after-sale.cod-refund.receipt-recorded', sourceIp: '127.0.0.1' },
+        { action: 'after-sale.cod-refund.confirmed', sourceIp: '127.0.0.2' },
+      ]),
+    );
+    expect(serialize(audits)).not.toContain(recorded.operationId);
+    expect(serialize(audits)).not.toContain(confirmed.operationId);
+    expect(serialize({ audits, finalSettlement, transitions })).not.toContain(transferReference);
+    expect(serialize({ audits, finalSettlement, transitions })).not.toContain(evidenceReference);
+  });
+
+  it('rejects missing, mismatched, duplicate and cross-store COD receipt facts', async () => {
+    const missing = await createOrder({ paymentMethod: 'COD', tag: 'b7-missing-receipt' });
+    await expect(
+      createMemberAfterSaleCommand(
+        requiredRuntime(),
+        memberContext(),
+        memberCreateInput(missing, 'b7-missing-receipt'),
+      ),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_PAYMENT_NOT_PROVEN' });
+
+    const mismatched = await createOrder({ paymentMethod: 'COD', tag: 'b7-mismatch' });
+    await createCodReconciliationFact(mismatched, 'b7-mismatch', {
+      grossAmountVnd: mismatched.payableVnd - 1,
+      status: 'AMOUNT_MISMATCH',
+    });
+    await expect(
+      createMemberAfterSaleCommand(
+        requiredRuntime(),
+        memberContext(),
+        memberCreateInput(mismatched, 'b7-mismatch'),
+      ),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_PAYMENT_NOT_PROVEN' });
+
+    const duplicate = await createOrder({ paymentMethod: 'COD', tag: 'b7-duplicate' });
+    await createCodReconciliationFact(duplicate, 'b7-duplicate-a');
+    await createCodReconciliationFact(duplicate, 'b7-duplicate-b');
+    await expect(
+      createMemberAfterSaleCommand(
+        requiredRuntime(),
+        memberContext(),
+        memberCreateInput(duplicate, 'b7-duplicate'),
+      ),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_PAYMENT_NOT_PROVEN' });
+
+    const becameAmbiguous = await createApprovedCodRefundCase('b7-late-duplicate');
+    await createCodReconciliationFact(becameAmbiguous.order, 'b7-late-duplicate-second');
+    await expect(
+      requestAfterSaleCodRefund(requiredRuntime(), adminContext(), {
+        afterSaleId: becameAmbiguous.afterSaleId,
+        expectedVersion: becameAmbiguous.version,
+        idempotencyKey: `m63b7-late-duplicate-request-${suffix}`,
+        reason: 'This request must fail after the receipt fact becomes ambiguous.',
+      }),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_PAYMENT_NOT_PROVEN' });
+
+    const scoped = await createApprovedCodRefundCase('b7-cross-store');
+    await expect(
+      requestAfterSaleCodRefund(
+        requiredRuntime(),
+        context({ actorId: fixture.adminId, actorType: 'admin', store: 'fashion' }),
+        {
+          afterSaleId: scoped.afterSaleId,
+          expectedVersion: scoped.version,
+          idempotencyKey: `m63b7-cross-store-request-${suffix}`,
+          reason: 'A foreign store must not resolve this COD after-sale settlement.',
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'AFTER_SALE_NOT_FOUND' });
+  });
+
+  it('allows exactly one concurrent COD confirmer and persists one terminal fact', async () => {
+    const prepared = await createPendingCodSettlementWithReceipt('b7-confirm-race');
+    const baseInput = {
+      afterSaleId: prepared.approved.afterSaleId,
+      expectedSettlementVersion: prepared.settlement.version,
+      expectedVersion: prepared.requested.version,
+      reason: 'A second finance administrator confirmed the exact immutable COD refund receipt.',
+      settlementNumber: prepared.settlement.publicSettlementNumber,
+    };
+    const outcomes = await Promise.allSettled([
+      confirmAfterSaleCodRefund(requiredRuntime(), adminContext(fixture.otherAdminId), {
+        ...baseInput,
+        idempotencyKey: `m63b7-confirm-race-a-${suffix}`,
+      }),
+      confirmAfterSaleCodRefund(requiredRuntime(), adminContext(fixture.otherAdminId), {
+        ...baseInput,
+        idempotencyKey: `m63b7-confirm-race-b-${suffix}`,
+      }),
+    ]);
+    expect(outcomes.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+    expect(
+      (
+        outcomes.find(({ status }) => status === 'fulfilled') as PromiseFulfilledResult<{
+          settlementStatus: string;
+        }>
+      ).value.settlementStatus,
+    ).toBe('SUCCEEDED');
+    expect(
+      await requiredOwner().afterSaleCodRefundConfirmation.count({
+        where: { settlementId: prepared.settlement.id },
+      }),
+    ).toBe(1);
+    expect(
+      await requiredOwner().afterSaleTransition.count({
+        where: {
+          afterSaleId: prepared.approved.afterSaleId,
+          event: { in: ['REFUND_REQUESTED', 'REFUND_SUCCEEDED'] },
+        },
+      }),
+    ).toBe(2);
+  });
+
+  it('rechecks permission, session and MFA after waiting on the shared refund scope', async () => {
+    for (const revocation of ['permission', 'session', 'mfa'] as const) {
+      const prepared = await createPendingCodSettlementWithReceipt(`b7-${revocation}-race`);
+      let releaseLock!: () => void;
+      let announceLockAcquired!: () => void;
+      const lockRelease = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+      const lockAcquired = new Promise<void>((resolve) => {
+        announceLockAcquired = resolve;
+      });
+      const holder = requiredOwner().$transaction(async (transaction) => {
+        await transaction.$executeRaw`
+          SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
+            ${`m62-refund:${BEAUTY_STORE_ID}:${prepared.approved.order.id}`}, 0
+          ))
+        `;
+        announceLockAcquired();
+        await lockRelease;
+      });
+      await lockAcquired;
+      const command = confirmAfterSaleCodRefund(
+        requiredRuntime(),
+        adminContext(fixture.otherAdminId),
+        {
+          afterSaleId: prepared.approved.afterSaleId,
+          expectedSettlementVersion: prepared.settlement.version,
+          expectedVersion: prepared.requested.version,
+          idempotencyKey: `m63b7-${revocation}-race-confirm-${suffix}`,
+          reason: 'Final authorization must be checked after the shared refund lock wait.',
+          settlementNumber: prepared.settlement.publicSettlementNumber,
+        },
+      );
+      let revoked = false;
+      try {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const waiting = await requiredOwner().$queryRaw<Array<{ count: bigint }>>`
+            SELECT pg_catalog.count(*) AS count
+            FROM pg_catalog.pg_stat_activity
+            WHERE datname = pg_catalog.current_database()
+              AND wait_event = 'advisory'
+              AND query LIKE '%m62-refund:%'
+          `;
+          if ((waiting[0]?.count ?? 0n) > 0n) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          if (attempt === 99) throw new Error(`B7 ${revocation} command did not wait`);
+        }
+        if (revocation === 'permission') {
+          await requiredOwner().storeRolePermission.delete({
+            where: {
+              storeId_roleId_permissionCode: {
+                permissionCode: 'store.after-sales.cod-refunds.confirm',
+                roleId: fixture.adminRoleId,
+                storeId: BEAUTY_STORE_ID,
+              },
+            },
+          });
+        } else if (revocation === 'session') {
+          await requiredOwner().adminSession.update({
+            data: { revokedAt: new Date() },
+            where: { id: fixture.otherAdminSessionId },
+          });
+        } else {
+          await requiredOwner().adminSession.update({
+            data: { mfaVerifiedAt: new Date(Date.now() - 11 * 60_000) },
+            where: { id: fixture.otherAdminSessionId },
+          });
+        }
+        revoked = true;
+        releaseLock();
+        await expect(command).rejects.toMatchObject({ code: 'AFTER_SALE_AUTHORIZATION_DENIED' });
+        expect(
+          await requiredOwner().afterSaleCodRefundConfirmation.count({
+            where: { settlementId: prepared.settlement.id },
+          }),
+        ).toBe(0);
+      } finally {
+        releaseLock();
+        await holder;
+        await command.catch(() => undefined);
+        if (revoked && revocation === 'permission') {
+          await requiredOwner().storeRolePermission.create({
+            data: {
+              permissionCode: 'store.after-sales.cod-refunds.confirm',
+              roleId: fixture.adminRoleId,
+              storeId: BEAUTY_STORE_ID,
+            },
+          });
+        } else if (revoked) {
+          await requiredOwner().adminSession.update({
+            data: { mfaVerifiedAt: new Date(), revokedAt: null },
+            where: { id: fixture.otherAdminSessionId },
+          });
+        }
+      }
+    }
+  });
+
+  it('enforces B7 RLS, append-only ACLs and deferred receipt atomicity', async () => {
+    const prepared = await createPendingCodSettlementWithReceipt('b7-database-guards');
+    const direct = await createApprovedCodRefundCase('b7-direct-atomicity');
+    const directRequest = await requestAfterSaleCodRefund(requiredRuntime(), adminContext(), {
+      afterSaleId: direct.afterSaleId,
+      expectedVersion: direct.version,
+      idempotencyKey: `m63b7-direct-request-${suffix}`,
+      reason: 'Create the pending COD settlement for the direct-write rollback check.',
+    });
+    const directSettlement = await requiredOwner().afterSaleSettlement.findUniqueOrThrow({
+      where: { id: directRequest.settlementId },
+    });
+    const directContext = adminContext();
+    await expect(
+      withStoreTransaction(requiredRuntime(), directContext, (transaction) =>
+        transaction.afterSaleCodRefundReceipt.create({
+          data: {
+            afterSaleId: direct.afterSaleId,
+            amountVnd: directSettlement.amountVnd,
+            correlationId: directContext.correlationId,
+            currency: 'VND',
+            evidenceCiphertext: 'encrypted-local-test-evidence',
+            evidenceDigest: digest(`direct-evidence-${suffix}`),
+            expectedSettlementVersion: directSettlement.version,
+            idempotencyKeyHash: digest(`direct-receipt-key-${suffix}`),
+            orderId: direct.order.id,
+            recordedBy: fixture.adminId,
+            requestHash: digest(`direct-receipt-request-${suffix}`),
+            settlementId: directSettlement.id,
+            storeId: BEAUTY_STORE_ID,
+            transferredAt: new Date(directSettlement.requestedAt.getTime() + 1),
+            transferReferenceDigest: digest(`direct-transfer-${suffix}`),
+            transferReferenceMasked: 'DI********CT',
+          },
+        }),
+      ),
+    ).rejects.toThrow('COD refund receipt and audit must commit atomically');
+    expect(
+      await requiredOwner().afterSaleCodRefundReceipt.count({
+        where: { settlementId: directSettlement.id },
+      }),
+    ).toBe(0);
+
+    await expect(
+      requiredOwner().afterSaleCodRefundReceipt.update({
+        data: { transferReferenceMasked: 'MUTATION-MUST-FAIL' },
+        where: { id: prepared.receipt.operationId },
+      }),
+    ).rejects.toThrow('after_sale_cod_refund_receipts is append-only');
+    expect(
+      await withStoreTransaction(
+        requiredRuntime(),
+        context({ actorId: fixture.adminId, actorType: 'admin', store: 'fashion' }),
+        (transaction) => transaction.afterSaleCodRefundReceipt.count(),
+      ),
+    ).toBe(0);
+
+    await requiredOwner().storeRolePermission.delete({
+      where: {
+        storeId_roleId_permissionCode: {
+          permissionCode: 'store.after-sales.read',
+          roleId: fixture.adminRoleId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      },
+    });
+    try {
+      await expect(
+        withStoreTransaction(requiredRuntime(), directContext, (transaction) =>
+          transaction.afterSaleCodRefundReceipt.create({
+            data: {
+              afterSaleId: direct.afterSaleId,
+              amountVnd: directSettlement.amountVnd,
+              correlationId: directContext.correlationId,
+              currency: 'VND',
+              evidenceCiphertext: 'encrypted-local-test-evidence',
+              evidenceDigest: digest(`direct-auth-evidence-${suffix}`),
+              expectedSettlementVersion: directSettlement.version,
+              idempotencyKeyHash: digest(`direct-auth-receipt-key-${suffix}`),
+              orderId: direct.order.id,
+              recordedBy: fixture.adminId,
+              requestHash: digest(`direct-auth-receipt-request-${suffix}`),
+              settlementId: directSettlement.id,
+              storeId: BEAUTY_STORE_ID,
+              transferredAt: new Date(directSettlement.requestedAt.getTime() + 1),
+              transferReferenceDigest: digest(`direct-auth-transfer-${suffix}`),
+              transferReferenceMasked: 'AU********TH',
+            },
+          }),
+        ),
+      ).rejects.toThrow('COD refund authorization is no longer valid');
+    } finally {
+      await requiredOwner().storeRolePermission.create({
+        data: {
+          permissionCode: 'store.after-sales.read',
+          roleId: fixture.adminRoleId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+    }
+
+    const grants = await requiredOwner().$queryRaw<
+      Array<{ privilege_type: string; table_name: string }>
+    >`
+      SELECT table_name, privilege_type
+      FROM information_schema.role_table_grants
+      WHERE grantee = 'zalo_shop_runtime'
+        AND table_name IN (
+          'after_sale_cod_refund_receipts', 'after_sale_cod_refund_confirmations'
+        )
+      ORDER BY table_name, privilege_type
+    `;
+    expect(grants).toEqual([
+      { privilege_type: 'INSERT', table_name: 'after_sale_cod_refund_confirmations' },
+      { privilege_type: 'SELECT', table_name: 'after_sale_cod_refund_confirmations' },
+      { privilege_type: 'INSERT', table_name: 'after_sale_cod_refund_receipts' },
+      { privilege_type: 'SELECT', table_name: 'after_sale_cod_refund_receipts' },
+    ]);
+  });
+
   it('rejects incomplete, duplicate, all-zero and excessive approval decisions atomically', async () => {
     const order = await createOrder({ quantity: 2, tag: 'b4-invalid-lines' });
     const created = await createMemberAfterSaleCommand(
@@ -3262,13 +3885,23 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
     expect((submission as PromiseRejectedResult).reason).toMatchObject({
       code: 'AFTER_SALE_RETURN_WINDOW_CLOSED',
     });
-    expect(expiration).toMatchObject({ status: 'fulfilled', value: { expired: 1 } });
-    expect(
-      await requiredOwner().afterSale.findUniqueOrThrow({
+    expect(expiration.status).toBe('fulfilled');
+    let current = await requiredOwner().afterSale.findUniqueOrThrow({
+      select: { status: true },
+      where: { id: approved.afterSaleId },
+    });
+    if (current.status === 'APPROVED') {
+      await expect(
+        expireDueAfterSales(requiredRuntime(), systemContext, 100),
+      ).resolves.toMatchObject({
+        expired: 1,
+      });
+      current = await requiredOwner().afterSale.findUniqueOrThrow({
         select: { status: true },
         where: { id: approved.afterSaleId },
-      }),
-    ).toEqual({ status: 'REJECTED' });
+      });
+    }
+    expect(current).toEqual({ status: 'REJECTED' });
     expect(
       await requiredOwner().afterSaleReturnShipment.count({
         where: { afterSaleId: approved.afterSaleId },

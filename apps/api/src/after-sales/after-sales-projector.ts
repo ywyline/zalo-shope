@@ -80,6 +80,7 @@ export function createAfterSaleReadSelect(locale: AfterSaleLocale) {
       orderBy: [{ requestedAt: 'asc' as const }, { id: 'asc' as const }],
       select: {
         amountVnd: true,
+        codRefundReceipt: { select: { id: true } },
         method: true,
         publicSettlementNumber: true,
         refunds: {
@@ -175,6 +176,7 @@ export class AfterSalesProjector {
           created_at: this.date(settlement.requestedAt),
           method: settlement.method,
           public_number: settlement.publicSettlementNumber,
+          receipt_recorded: settlement.codRefundReceipt !== null,
           refund_public_number: settlement.refunds[0]?.refund.publicRefundNumber ?? null,
           status: settlement.status,
           updated_at: this.date(settlement.updatedAt),

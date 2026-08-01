@@ -1136,6 +1136,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
       FROM store_role_permissions srp
       JOIN store_roles sr ON sr.store_id = srp.store_id AND sr.id = srp.role_id
       WHERE srp.permission_code = ANY(${[...M6_PERMISSION_CODES]})
+        AND sr.store_id IN (${BEAUTY_STORE_ID}::uuid, ${FASHION_STORE_ID}::uuid)
         AND NOT (
           sr.code = 'store-admin'
           AND sr.store_id IN (${BEAUTY_STORE_ID}::uuid, ${FASHION_STORE_ID}::uuid)
@@ -4068,7 +4069,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
     });
   });
 
-  it('requires complete COD confirmation facts and caps cumulative settlements per case', async () => {
+  it('requires the restricted B7 COD confirmation path and caps cumulative settlements per case', async () => {
     await withOwnerRollback(async (transaction) => {
       const fixture = await createCommerceFixture(transaction, { orderPayableVnd: 100_000 });
       const { afterSaleId } = await createAfterSaleFixture(transaction, fixture, {
@@ -4133,16 +4134,16 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         '23514',
       );
 
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
       await transaction.$executeRaw`INSERT INTO after_sale_settlements
           (id, store_id, after_sale_id, order_id, public_settlement_number, method,
-            status, amount_vnd, idempotency_key_hash, request_hash, requested_by,
-            transfer_reference_digest, transfer_evidence_ciphertext, updated_at)
+            status, amount_vnd, idempotency_key_hash, request_hash, requested_by, updated_at)
           VALUES (${settlementId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
             ${fixture.orderId}::uuid,
             ${`AST-${settlementId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
             'COD_OFFLINE', 'PENDING', 60000, ${digest(`confirmed-${settlementId}`)},
-            ${digest(`confirmed-request-${settlementId}`)}, ${fixture.adminId}::uuid,
-            ${digest(`transfer-${settlementId}`)}, 'encrypted-test-evidence', now())`;
+            ${digest(`confirmed-request-${settlementId}`)}, ${fixture.adminId}::uuid, now())`;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
       await expectDatabaseFailure(
         transaction,
         () => transaction.$executeRaw`UPDATE after_sale_settlements
@@ -4150,7 +4151,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
             confirmed_at = now(), completed_at = now(), version = version + 1,
             updated_at = now()
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${settlementId}::uuid`,
-        '23514',
+        '42501',
       );
 
       await setContext(transaction, {
@@ -4158,23 +4159,25 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         actorType: 'admin',
         storeId: BEAUTY_STORE_ID,
       });
-      await expect(
-        transaction.$executeRaw`UPDATE after_sale_settlements
+      await expectDatabaseFailure(
+        transaction,
+        () => transaction.$executeRaw`UPDATE after_sale_settlements
           SET status = 'SUCCEEDED', confirmed_by = ${fixture.confirmingAdminId}::uuid,
             confirmed_at = now(), completed_at = now(), version = version + 1,
             updated_at = now()
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${settlementId}::uuid`,
-      ).resolves.toBe(1);
+        '42501',
+      );
       expect(
         await transaction.$queryRaw`SELECT status, requested_by, confirmed_by, version
           FROM after_sale_settlements
           WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${settlementId}::uuid`,
       ).toEqual([
         {
-          confirmed_by: fixture.confirmingAdminId,
+          confirmed_by: null,
           requested_by: fixture.adminId,
-          status: 'SUCCEEDED',
-          version: 2,
+          status: 'PENDING',
+          version: 1,
         },
       ]);
 
@@ -4192,7 +4195,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           VALUES (${excessSettlementId}::uuid, ${BEAUTY_STORE_ID}::uuid,
             ${afterSaleId}::uuid, ${fixture.orderId}::uuid,
             ${`AST-${excessSettlementId.replaceAll('-', '').slice(0, 16).toUpperCase()}`},
-            'COD_OFFLINE', 'PENDING', 40000, ${digest(`excess-${excessSettlementId}`)},
+            'NO_PAYOUT', 'PENDING', 40000, ${digest(`excess-${excessSettlementId}`)},
             ${digest(`excess-request-${excessSettlementId}`)},
             ${fixture.adminId}::uuid, now())`,
         '23514',

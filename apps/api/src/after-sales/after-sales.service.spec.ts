@@ -18,10 +18,14 @@ import type { AfterSalesRateLimiter } from './after-sales-rate-limiter';
 
 const commandMocks = vi.hoisted(() => ({
   cancel: vi.fn(),
+  confirmCodRefund: vi.fn(),
   createMember: vi.fn(),
   createMerchant: vi.fn(),
+  recordCodRefundReceipt: vi.fn(),
   recordReturnFact: vi.fn(),
+  requestCodRefund: vi.fn(),
   requestOnlineRefund: vi.fn(),
+  resolveRefundMethod: vi.fn(),
   resolveReview: vi.fn(),
   review: vi.fn(),
   submitReturn: vi.fn(),
@@ -33,10 +37,14 @@ vi.mock('@zalo-shop/database', async () => {
   return {
     ...actual,
     cancelMemberAfterSaleCommand: commandMocks.cancel,
+    confirmAfterSaleCodRefund: commandMocks.confirmCodRefund,
     createMemberAfterSaleCommand: commandMocks.createMember,
     createMerchantRefundAfterSaleCommand: commandMocks.createMerchant,
+    recordAfterSaleCodRefundReceipt: commandMocks.recordCodRefundReceipt,
     recordAfterSaleReturnFact: commandMocks.recordReturnFact,
+    requestAfterSaleCodRefund: commandMocks.requestCodRefund,
     requestAfterSaleOnlineRefund: commandMocks.requestOnlineRefund,
+    resolveAfterSaleRefundMethod: commandMocks.resolveRefundMethod,
     resolveAfterSaleReviewCommand: commandMocks.resolveReview,
     reviewAfterSaleCommand: commandMocks.review,
     submitMemberAfterSaleReturn: commandMocks.submitReturn,
@@ -54,6 +62,7 @@ const ORDER_ITEM_ID = '50000000-0000-4000-8000-000000000001';
 const AFTER_SALE_ID = '60000000-0000-4000-8000-000000000001';
 const MEMBER_SESSION_ID = '70000000-0000-4000-8000-000000000001';
 const OPERATION_ID = '80000000-0000-4000-8000-000000000001';
+const SETTLEMENT_NUMBER = 'AST-0123456789ABCDEF';
 const PUBLIC_CASE_NUMBER = 'ASC-60000000000040008000000000000001';
 const ACCESS_SESSION_EXPIRES_AT = new Date('2099-08-01T12:30:00.000Z');
 const ACCESS_TOKEN_EXPIRES_AT = new Date('2099-08-01T12:00:00.000Z');
@@ -202,6 +211,28 @@ describe('AfterSalesService B3 commands', () => {
     commandMocks.review.mockResolvedValue(commandResult('APPROVED', 2));
     commandMocks.submitReturn.mockResolvedValue(commandResult('RETURN_PENDING', 3));
     commandMocks.recordReturnFact.mockResolvedValue(commandResult('RETURN_IN_TRANSIT', 4));
+    commandMocks.requestCodRefund.mockResolvedValue({
+      ...commandResult('REFUND_PROCESSING', 3),
+      publicSettlementNumber: SETTLEMENT_NUMBER,
+      settlementId: '91000000-0000-4000-8000-000000000001',
+      settlementStatus: 'PENDING',
+      settlementVersion: 1,
+    });
+    commandMocks.recordCodRefundReceipt.mockResolvedValue({
+      ...commandResult('REFUND_PROCESSING', 3),
+      publicSettlementNumber: SETTLEMENT_NUMBER,
+      settlementId: '91000000-0000-4000-8000-000000000001',
+      settlementStatus: 'PENDING',
+      settlementVersion: 1,
+    });
+    commandMocks.confirmCodRefund.mockResolvedValue({
+      ...commandResult('REFUND_PROCESSING', 5),
+      publicSettlementNumber: SETTLEMENT_NUMBER,
+      settlementId: '91000000-0000-4000-8000-000000000001',
+      settlementStatus: 'SUCCEEDED',
+      settlementVersion: 2,
+    });
+    commandMocks.resolveRefundMethod.mockResolvedValue('ONLINE_ORIGINAL');
     commandMocks.requestOnlineRefund.mockResolvedValue({
       ...commandResult('REFUND_PROCESSING', 3),
       refundId: '90000000-0000-4000-8000-000000000001',
@@ -752,7 +783,7 @@ describe('AfterSalesService B3 commands', () => {
     project.mockReturnValue({ id: AFTER_SALE_ID });
 
     await expect(
-      service.adminRequestOnlineRefund({
+      service.adminRequestRefund({
         afterSaleId: AFTER_SALE_ID,
         body: {
           confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
@@ -815,7 +846,7 @@ describe('AfterSalesService B3 commands', () => {
     });
 
     await expect(
-      service.adminRequestOnlineRefund({
+      service.adminRequestRefund({
         afterSaleId: AFTER_SALE_ID,
         body: {
           confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
@@ -841,7 +872,7 @@ describe('AfterSalesService B3 commands', () => {
     );
 
     await expect(
-      service.adminRequestOnlineRefund({
+      service.adminRequestRefund({
         afterSaleId: AFTER_SALE_ID,
         body: {
           confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
@@ -857,5 +888,134 @@ describe('AfterSalesService B3 commands', () => {
         query: { store_id: STORE_ID },
       }),
     ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('selects COD from server-owned order facts and requires only direct COD request plus read', async () => {
+    const { authorize, authorizeSensitive, consume, project, service } =
+      harness(commandOnlyConfig());
+    commandMocks.resolveRefundMethod.mockResolvedValueOnce('COD_OFFLINE');
+    commandMocks.withStoreTransaction.mockImplementation(
+      (_client: unknown, _context: unknown, callback: (transaction: unknown) => unknown) =>
+        callback({
+          afterSale: { findFirst: vi.fn().mockResolvedValue({ storeId: STORE_ID }) },
+        }),
+    );
+    project.mockReturnValue({ id: AFTER_SALE_ID, settlements: [] });
+
+    await expect(
+      service.adminRequestRefund({
+        afterSaleId: AFTER_SALE_ID,
+        body: {
+          confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
+          expected_version: 2,
+          reason: 'Queue the approved COD refund after checking receipt reconciliation.',
+        },
+        headers: {
+          accessToken: 'admin-token',
+          correlationId: 'cod-refund-request-correlation',
+          storeCode: 'beauty-local',
+        },
+        idempotencyKey: 'cod-refund-request-idempotency-key',
+        query: { store_id: STORE_ID },
+      }),
+    ).resolves.toEqual({ body: { id: AFTER_SALE_ID, settlements: [] }, replayed: false });
+
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(authorize).toHaveBeenCalledWith(expect.anything(), STORE_ID, 'store.after-sales.read');
+    expect(authorizeSensitive).toHaveBeenCalledTimes(1);
+    expect(authorizeSensitive).toHaveBeenCalledWith(
+      expect.anything(),
+      STORE_ID,
+      'store.after-sales.cod-refunds.request',
+    );
+    expect(consume).toHaveBeenCalledTimes(1);
+    expect(commandMocks.requestOnlineRefund).not.toHaveBeenCalled();
+    expect(commandMocks.requestCodRefund).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ actor: { id: ADMIN_ID, type: 'admin' }, storeId: STORE_ID }),
+      expect.objectContaining({ afterSaleId: AFTER_SALE_ID, expectedVersion: 2 }),
+    );
+  });
+
+  it('records encrypted COD receipt input and confirms through separate direct permissions', async () => {
+    const { authorize, authorizeSensitive, project, service } = harness(commandOnlyConfig());
+    commandMocks.withStoreTransaction.mockImplementation(
+      (_client: unknown, _context: unknown, callback: (transaction: unknown) => unknown) =>
+        callback({
+          afterSale: { findFirst: vi.fn().mockResolvedValue({ storeId: STORE_ID }) },
+        }),
+    );
+    project.mockReturnValue({ id: AFTER_SALE_ID, settlements: [] });
+    const receiptBody = {
+      confirmation_code: 'RECORD_COD_REFUND_RECEIPT' as const,
+      evidence_reference: 'bank-statement://local-test/receipt-001',
+      expected_settlement_version: 1,
+      reason: 'Finance recorded the independently verified transfer receipt.',
+      transfer_reference: 'VN-TRANSFER-001',
+      transferred_at: new Date('2026-08-01T12:00:00.000Z'),
+    };
+
+    await service.adminRecordCodRefundReceipt({
+      afterSaleId: AFTER_SALE_ID,
+      body: receiptBody,
+      headers: {
+        accessToken: 'admin-token',
+        correlationId: 'cod-refund-receipt-correlation',
+        storeCode: 'beauty-local',
+      },
+      idempotencyKey: 'cod-refund-receipt-idempotency-key',
+      query: { store_id: STORE_ID },
+      settlementNumber: SETTLEMENT_NUMBER,
+    });
+    expect(authorizeSensitive).toHaveBeenLastCalledWith(
+      expect.anything(),
+      STORE_ID,
+      'store.after-sales.cod-refunds.request',
+    );
+    expect(commandMocks.recordCodRefundReceipt).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        encryptionKey: enabledConfig().PII_ENCRYPTION_KEY,
+        evidenceReference: receiptBody.evidence_reference,
+        hashKey: enabledConfig().PII_HASH_KEY,
+        settlementNumber: SETTLEMENT_NUMBER,
+        transferReference: receiptBody.transfer_reference,
+      }),
+    );
+
+    await service.adminConfirmCodRefund({
+      afterSaleId: AFTER_SALE_ID,
+      body: {
+        confirmation_code: 'CONFIRM_COD_REFUND',
+        expected_settlement_version: 1,
+        expected_version: 3,
+        reason: 'A second finance administrator confirmed the exact immutable receipt.',
+      },
+      headers: {
+        accessToken: 'admin-token',
+        correlationId: 'cod-refund-confirm-correlation',
+        storeCode: 'beauty-local',
+      },
+      idempotencyKey: 'cod-refund-confirm-idempotency-key',
+      query: { store_id: STORE_ID },
+      settlementNumber: SETTLEMENT_NUMBER,
+    });
+    expect(authorizeSensitive).toHaveBeenLastCalledWith(
+      expect.anything(),
+      STORE_ID,
+      'store.after-sales.cod-refunds.confirm',
+    );
+    expect(authorize).toHaveBeenCalledTimes(2);
+    expect(commandMocks.confirmCodRefund).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        afterSaleId: AFTER_SALE_ID,
+        expectedSettlementVersion: 1,
+        expectedVersion: 3,
+        settlementNumber: SETTLEMENT_NUMBER,
+      }),
+    );
   });
 });

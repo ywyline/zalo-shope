@@ -331,12 +331,12 @@ describe('AfterSalesAdminController B4 commands', () => {
 
 describe('AfterSalesAdminController B6 commands', () => {
   it('strictly binds the server-calculated ONLINE refund request', async () => {
-    const adminRequestOnlineRefund = vi.fn().mockResolvedValue({
+    const adminRequestRefund = vi.fn().mockResolvedValue({
       body: { ...ACKNOWLEDGEMENT, status: 'REFUND_PROCESSING', version: 4 },
       replayed: false,
     });
     const controller = new AfterSalesAdminController({
-      adminRequestOnlineRefund,
+      adminRequestRefund,
     } as unknown as AfterSalesService);
     const httpResponse = response();
     const request = { id: 'client-correlation', ip: '::ffff:127.0.0.1' };
@@ -359,7 +359,7 @@ describe('AfterSalesAdminController B6 commands', () => {
       ),
     ).resolves.toMatchObject({ status: 'REFUND_PROCESSING', version: 4 });
 
-    expect(adminRequestOnlineRefund).toHaveBeenCalledWith(
+    expect(adminRequestRefund).toHaveBeenCalledWith(
       expect.objectContaining({
         afterSaleId: AFTER_SALE_ID,
         body: {
@@ -394,14 +394,108 @@ describe('AfterSalesAdminController B6 commands', () => {
   });
 });
 
+describe('AfterSalesAdminController B7 commands', () => {
+  it('strictly binds receipt and confirmation to the public COD settlement identity', async () => {
+    const adminRecordCodRefundReceipt = vi.fn().mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'REFUND_PROCESSING', version: 3 },
+      replayed: false,
+    });
+    const adminConfirmCodRefund = vi.fn().mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'REFUNDED', version: 5 },
+      replayed: true,
+    });
+    const controller = new AfterSalesAdminController({
+      adminConfirmCodRefund,
+      adminRecordCodRefundReceipt,
+    } as unknown as AfterSalesService);
+
+    await controller.recordCodRefundReceipt(
+      'Bearer admin-token',
+      `${IDEMPOTENCY_KEY}-cod-receipt`,
+      'beauty-store',
+      'Finance transfer evidence review',
+      { afterSaleId: AFTER_SALE_ID, settlementNumber: 'AST-0123456789ABCDEF' },
+      {
+        confirmation_code: 'RECORD_COD_REFUND_RECEIPT',
+        evidence_reference: 'bank-statement://local-test/receipt-001',
+        expected_settlement_version: 1,
+        reason: 'Finance recorded the independently verified transfer receipt.',
+        transfer_reference: 'VN-TRANSFER-001',
+        transferred_at: '2026-08-01T12:00:00.000Z',
+      },
+      { store_id: STORE_ID },
+      { id: 'client-correlation', ip: '::ffff:127.0.0.1' },
+      response(),
+    );
+    expect(adminRecordCodRefundReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        afterSaleId: AFTER_SALE_ID,
+        body: expect.objectContaining({
+          transferred_at: new Date('2026-08-01T12:00:00.000Z'),
+        }),
+        settlementNumber: 'AST-0123456789ABCDEF',
+      }),
+    );
+
+    const confirmResponse = response();
+    await controller.confirmCodRefund(
+      'Bearer admin-token',
+      `${IDEMPOTENCY_KEY}-cod-confirm`,
+      'beauty-store',
+      'Independent finance confirmation',
+      { afterSaleId: AFTER_SALE_ID, settlementNumber: 'AST-0123456789ABCDEF' },
+      {
+        confirmation_code: 'CONFIRM_COD_REFUND',
+        expected_settlement_version: 1,
+        expected_version: 3,
+        reason: 'A second finance administrator confirmed the exact immutable receipt.',
+      },
+      { store_id: STORE_ID },
+      { id: 'client-correlation', ip: '127.0.0.1' },
+      confirmResponse,
+    );
+    expect(adminConfirmCodRefund).toHaveBeenCalledWith(
+      expect.objectContaining({
+        afterSaleId: AFTER_SALE_ID,
+        settlementNumber: 'AST-0123456789ABCDEF',
+      }),
+    );
+    expect(confirmResponse.setHeader).toHaveBeenCalledWith('Idempotency-Replayed', 'true');
+
+    await expect(
+      controller.recordCodRefundReceipt(
+        'Bearer admin-token',
+        `${IDEMPOTENCY_KEY}-cod-receipt-invalid`,
+        'beauty-store',
+        undefined,
+        { afterSaleId: AFTER_SALE_ID, settlementNumber: 'AST-0123456789ABCDEF' },
+        {
+          amount_vnd: 1,
+          confirmation_code: 'RECORD_COD_REFUND_RECEIPT',
+          evidence_reference: 'bank-statement://local-test/receipt-001',
+          expected_settlement_version: 1,
+          reason: 'Finance recorded the independently verified transfer receipt.',
+          transfer_reference: 'VN-TRANSFER-001',
+          transferred_at: '2026-08-01T12:00:00.000Z',
+        },
+        { store_id: STORE_ID },
+        { id: 'client-correlation', ip: '127.0.0.1' },
+        response(),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
 describe('B3 command HTTP routes', () => {
   let app: INestApplication;
   const service = {
     adminCreateMerchantRefund: vi.fn(),
+    adminConfirmCodRefund: vi.fn(),
     adminDetail: vi.fn(),
     adminList: vi.fn(),
+    adminRecordCodRefundReceipt: vi.fn(),
     adminRecordReturnFact: vi.fn(),
-    adminRequestOnlineRefund: vi.fn(),
+    adminRequestRefund: vi.fn(),
     adminResolveReview: vi.fn(),
     adminReview: vi.fn(),
     memberCancel: vi.fn(),
@@ -437,9 +531,17 @@ describe('B3 command HTTP routes', () => {
       body: { ...ACKNOWLEDGEMENT, status: 'INSPECTION_PENDING', version: 5 },
       replayed: true,
     });
-    service.adminRequestOnlineRefund.mockResolvedValue({
+    service.adminRequestRefund.mockResolvedValue({
       body: { ...ACKNOWLEDGEMENT, status: 'REFUND_PROCESSING', version: 4 },
       replayed: false,
+    });
+    service.adminRecordCodRefundReceipt.mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'REFUND_PROCESSING', version: 3 },
+      replayed: false,
+    });
+    service.adminConfirmCodRefund.mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'REFUNDED', version: 5 },
+      replayed: true,
     });
     const module = await Test.createTestingModule({
       controllers: [
@@ -669,6 +771,68 @@ describe('B3 command HTTP routes', () => {
         confirmation_code: 'ISSUE_AFTER_SALE_REFUND',
         expected_version: 3,
         reason: 'Issue the approved online refund after the final review.',
+      });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body).toMatchObject({ code: 'INPUT_INVALID' });
+  });
+
+  it('registers strict COD receipt and maker-checker confirmation routes', async () => {
+    const settlementNumber = 'AST-0123456789ABCDEF';
+    const receipt = await api()
+      .post(
+        `/v1/admin/after-sales/${AFTER_SALE_ID}/cod-refunds/${settlementNumber}/receipt?store_id=${STORE_ID}`,
+      )
+      .set({
+        Authorization: 'Bearer admin-token',
+        'Idempotency-Key': `${IDEMPOTENCY_KEY}-cod-receipt`,
+        'X-Access-Reason': 'Finance transfer evidence review',
+        'X-Store-Code': 'beauty-store',
+      })
+      .send({
+        confirmation_code: 'RECORD_COD_REFUND_RECEIPT',
+        evidence_reference: 'bank-statement://local-test/receipt-001',
+        expected_settlement_version: 1,
+        reason: 'Finance recorded the independently verified transfer receipt.',
+        transfer_reference: 'VN-TRANSFER-001',
+        transferred_at: '2026-08-01T12:00:00.000Z',
+      });
+    expect(receipt.status).toBe(200);
+    expect(receipt.headers['idempotency-replayed']).toBe('false');
+
+    const confirmation = await api()
+      .post(
+        `/v1/admin/after-sales/${AFTER_SALE_ID}/cod-refunds/${settlementNumber}/confirm?store_id=${STORE_ID}`,
+      )
+      .set({
+        Authorization: 'Bearer admin-token',
+        'Idempotency-Key': `${IDEMPOTENCY_KEY}-cod-confirm`,
+        'X-Access-Reason': 'Independent finance confirmation',
+        'X-Store-Code': 'beauty-store',
+      })
+      .send({
+        confirmation_code: 'CONFIRM_COD_REFUND',
+        expected_settlement_version: 1,
+        expected_version: 3,
+        reason: 'A second finance administrator confirmed the exact immutable receipt.',
+      });
+    expect(confirmation.status).toBe(200);
+    expect(confirmation.headers['idempotency-replayed']).toBe('true');
+
+    const invalid = await api()
+      .post(
+        `/v1/admin/after-sales/${AFTER_SALE_ID}/cod-refunds/${settlementNumber}/confirm?store_id=${STORE_ID}`,
+      )
+      .set({
+        Authorization: 'Bearer admin-token',
+        'Idempotency-Key': `${IDEMPOTENCY_KEY}-cod-confirm-invalid`,
+        'X-Store-Code': 'beauty-store',
+      })
+      .send({
+        confirmation_code: 'CONFIRM_COD_REFUND',
+        expected_settlement_version: 1,
+        expected_version: 3,
+        payout_reference: 'client-controlled',
+        reason: 'A second finance administrator confirmed the exact immutable receipt.',
       });
     expect(invalid.status).toBe(400);
     expect(invalid.body).toMatchObject({ code: 'INPUT_INVALID' });

@@ -22,6 +22,8 @@ import {
   afterSaleAdminReadQuerySchema,
   afterSaleAdminStoreQuerySchema,
   afterSaleCancelRequestSchema,
+  afterSaleCodRefundConfirmRequestSchema,
+  afterSaleCodRefundReceiptRequestSchema,
   afterSaleCreateRequestSchema,
   afterSaleIdParamsSchema,
   afterSaleIdempotencyKeySchema,
@@ -29,6 +31,7 @@ import {
   afterSaleMemberReadQuerySchema,
   afterSaleReturnFactRequestSchema,
   afterSaleRefundRequestSchema,
+  afterSaleSettlementNumberParamsSchema,
   afterSaleReturnShipmentRequestSchema,
   afterSaleReviewRequestSchema,
   afterSaleReviewResolveRequestSchema,
@@ -389,7 +392,7 @@ export class AfterSalesAdminController {
     const requestCorrelationId = resolveCorrelationId();
     request.id = requestCorrelationId;
     setReadHeaders(response, requestCorrelationId);
-    const execution = await this.afterSales.adminRequestOnlineRefund({
+    const execution = await this.afterSales.adminRequestRefund({
       afterSaleId: parse(afterSaleIdParamsSchema, params).afterSaleId,
       body: parse(afterSaleRefundRequestSchema, body),
       headers: adminHeaders({
@@ -401,6 +404,76 @@ export class AfterSalesAdminController {
       }),
       idempotencyKey: parse(afterSaleIdempotencyKeySchema, idempotencyKey),
       query: parse(afterSaleAdminStoreQuerySchema, query),
+    });
+    response.setHeader('Idempotency-Replayed', String(execution.replayed));
+    return execution.body;
+  }
+
+  @Post(':afterSaleId/cod-refunds/:settlementNumber/receipt')
+  @HttpCode(HttpStatus.OK)
+  public async recordCodRefundReceipt(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @Param() params: unknown,
+    @Body() body: unknown,
+    @Query() query: unknown,
+    @Req() request: HttpRequest,
+    @Res({ passthrough: true }) response: HttpResponse,
+  ) {
+    const requestCorrelationId = resolveCorrelationId();
+    request.id = requestCorrelationId;
+    setReadHeaders(response, requestCorrelationId);
+    const parsedParams = parse(afterSaleSettlementNumberParamsSchema, params);
+    const execution = await this.afterSales.adminRecordCodRefundReceipt({
+      afterSaleId: parsedParams.afterSaleId,
+      body: parse(afterSaleCodRefundReceiptRequestSchema, body),
+      headers: adminHeaders({
+        accessReason,
+        authorization,
+        correlationId: requestCorrelationId,
+        sourceIp: sourceIp(request.ip),
+        storeCode,
+      }),
+      idempotencyKey: parse(afterSaleIdempotencyKeySchema, idempotencyKey),
+      query: parse(afterSaleAdminStoreQuerySchema, query),
+      settlementNumber: parsedParams.settlementNumber,
+    });
+    response.setHeader('Idempotency-Replayed', String(execution.replayed));
+    return execution.body;
+  }
+
+  @Post(':afterSaleId/cod-refunds/:settlementNumber/confirm')
+  @HttpCode(HttpStatus.OK)
+  public async confirmCodRefund(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @Param() params: unknown,
+    @Body() body: unknown,
+    @Query() query: unknown,
+    @Req() request: HttpRequest,
+    @Res({ passthrough: true }) response: HttpResponse,
+  ) {
+    const requestCorrelationId = resolveCorrelationId();
+    request.id = requestCorrelationId;
+    setReadHeaders(response, requestCorrelationId);
+    const parsedParams = parse(afterSaleSettlementNumberParamsSchema, params);
+    const execution = await this.afterSales.adminConfirmCodRefund({
+      afterSaleId: parsedParams.afterSaleId,
+      body: parse(afterSaleCodRefundConfirmRequestSchema, body),
+      headers: adminHeaders({
+        accessReason,
+        authorization,
+        correlationId: requestCorrelationId,
+        sourceIp: sourceIp(request.ip),
+        storeCode,
+      }),
+      idempotencyKey: parse(afterSaleIdempotencyKeySchema, idempotencyKey),
+      query: parse(afterSaleAdminStoreQuerySchema, query),
+      settlementNumber: parsedParams.settlementNumber,
     });
     response.setHeader('Idempotency-Replayed', String(execution.replayed));
     return execution.body;

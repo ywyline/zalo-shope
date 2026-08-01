@@ -628,7 +628,38 @@ async function lockPaymentFacts(
   order: OrderRow,
 ): Promise<number> {
   if (order.payment_method === 'COD') {
-    throw new AfterSaleCommandDatabaseError('AFTER_SALE_PAYMENT_NOT_PROVEN');
+    const receipts = await transaction.$queryRaw<Array<{ line_id: string }>>`
+      SELECT line.id AS line_id
+      FROM financial_reconciliation_lines line
+      JOIN financial_reconciliation_batches batch
+        ON batch.store_id = line.store_id AND batch.id = line.batch_id
+      JOIN shipments shipment
+        ON shipment.store_id = line.store_id AND shipment.id = line.shipment_id
+      WHERE line.store_id = ${context.storeId}::uuid
+        AND shipment.order_id = ${order.id}::uuid
+        AND shipment.purpose = 'ORDER_OUTBOUND'
+        AND shipment.status = 'DELIVERED'
+        AND shipment.delivered_at IS NOT NULL
+        AND shipment.cod_amount_vnd = ${order.payable_vnd}
+        AND batch.source = 'SHIPPING_PROVIDER'
+        AND batch.shipping_channel_id = shipment.channel_id
+        AND line.type = 'COD_REMITTANCE'
+        AND line.status = 'MATCHED'
+        AND line.gross_amount_vnd = ${order.payable_vnd}
+        AND line.local_expected_amount_vnd = ${order.payable_vnd}
+        AND line.difference_vnd = 0
+      ORDER BY line.id
+    `;
+    assertAfterSaleOrderPaymentAdmissionAllowed({
+      confirmedReceiptFact: receipts.length === 1,
+      orderStatus: order.status,
+      paymentMethod: order.payment_method,
+      paymentStatus: order.payment_status,
+    });
+    if (order.currency !== 'VND' || receipts.length !== 1) {
+      throw new AfterSaleCommandDatabaseError('AFTER_SALE_PAYMENT_NOT_PROVEN');
+    }
+    return 0;
   }
   const attempts = await transaction.$queryRaw<PaymentAttemptRow[]>`
     SELECT id, amount_vnd, currency, status, succeeded_at, provider_transaction_id

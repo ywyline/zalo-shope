@@ -5,11 +5,11 @@
 > local/test scanner worker validation、B2b-D3 repository implementation + local/test member
 > evidence HTTP validation 与 B2b-D4 repository implementation + local/test deletion worker validation
 > 以及 B2b-D5 default-disabled repository implementation + local/test protected-read validation 已完成；
-> B3、B4、B5 与 B6 default-disabled repository implementation + local/test validation 也已 `COMPLETE`。
-> B2/B2b、B7、M6.3 与 UI 未完成；生产策略、TTL、对象存储、真实供应商、部署和 rollout 为
+> B3、B4、B5、B6 与 B7 default-disabled repository implementation + local/test validation 也已 `COMPLETE`。
+> B2/B2b、M6.3 与 UI 未完成；生产策略、TTL、对象存储、真实供应商、真实资金、部署和 rollout 为
 > `NOT_AUTHORIZED / NOT_RUN` 并保持失败关闭
 >
-> 日期：2026-07-31
+> 日期：2026-08-01
 
 M6.2 实施使用 `20260727110000_m62_after_sales_member_share_foundation`、
 `20260727111000_m62_permission_catalog`、`20260727112000_m62_integrity_and_snapshot_guards`、
@@ -477,7 +477,8 @@ SCAN_TEMPORARY`。父表使用 `(store_id,evidence_file_id)` 复合外键，表�
   售后退款 coordinator，也不开放 ONLINE Refund 或 COD 到账确认运行时；表和 guard 存在不等于资金
   流程可用。
 - 后续 B6 已在 default-disabled repository/local-test 边界提取 transaction-scoped M5 refund 原语、注册
-  ONLINE 命令和权威同步 coordinator；B7 COD、真实 provider/凭据、部署和生产启用仍未完成。
+  ONLINE 命令和权威同步 coordinator；B7 已按第 21 节实现可信 COD pending settlement、回执和异人确认。
+  真实 provider/凭据/资金、部署和生产启用仍未完成。
 - `after_sale_settlements` 保存全局唯一且不可猜的 `public_settlement_number`、售后单、方式、批准金额、
   状态、版本、幂等 hash、申请/确认 actor 和时间；内部主键不作为管理工作台命令标识。
 - settlement 冗余不可变 `order_id`；部分唯一索引保证 `(store_id, after_sale_id, method)` 最多一个
@@ -695,8 +696,8 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   `GET/PUT /v1/admin/after-sale-policies/{policyCode}`、
   `GET /v1/admin/after-sale-policies/{policyCode}/versions`、
   `GET /v1/admin/after-sale-policies/{policyCode}/versions/{versionNumber}`、`POST .../publish` 和 `POST .../disable`。
-  B2b 其余能力和 B7 路由仍为 contract-only 或失败关闭；B3 三条路由、B4 两条管理员审核路由、
-  B5 两条返件命令与 B6 ONLINE 退款协调已在 repository/local-test 默认关闭条件下实现，当前边界见第 17-20 节。
+  B2b 其余能力仍为 contract-only 或失败关闭；B3 三条路由、B4 两条管理员审核路由、B5 两条返件命令、
+  B6 ONLINE 退款协调与 B7 COD 结算已在 repository/local-test 默认关闭条件下实现，当前边界见第 17-21 节。
 - head 列表固定 `(updated_at DESC,id DESC)`，version 列表固定 `(published_at DESC,id DESC)`。两者先读 `limit + 1` 个微秒 page key，
   再对白名单 ID 投影；游标绑定管理员、商城、资源、筛选及 policy code，不能跨资源/跨 policy 重放。
 - 草稿创建仅允许 `expected_version=0`；更新、发布和停用要求精确正版本。写命令的幂等 key 只保存 SHA-256，范围为
@@ -886,8 +887,9 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   `MERCHANT_REFUND + PENDING_REVIEW`。三条路由受 `AFTER_SALE_COMMANDS_ENABLED` 默认关闭，production
   配置和服务层均拒绝启用。
 - 创建原语在单个 `Serializable` 商城事务中读取并锁定订单、逐行商品/政策/交付/支付/容量事实。仅
-  VND、已交付或已完成、具有唯一可证明 ONLINE 成功收款事实的订单可进入当前写路径；merchant refund
-  不接受 legacy。当前没有可锁定并复验的 COD 已确认收款事实，因此 COD 失败关闭。服务端按剩余数量和
+  VND、已交付或已完成并具有可证明收款事实的订单可进入当前写路径：ONLINE 要求唯一成功 payment，B7
+  扩展的 COD 路径要求第 21 节唯一精确 `COD_REMITTANCE/MATCHED` 事实；merchant refund 不接受 legacy。
+  其它 COD 或无法证明的收款条件继续失败关闭。服务端按剩余数量和
   剩余 VND 计算逐行申请额，覆盖全部剩余数量时取得全部余数；
   merchant-paid `RETURN_REFUND/EXCHANGE` 的实际已付运费每订单最多占用一次，其他类型/承担方为 0。
 - exchange replacement 必须为当前商城 ACTIVE、同商品 SPU、不同 SKU、等价价格；订单快照的
@@ -987,3 +989,30 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   payment/store 不一致不标记成功；缺少最新版本消息可由命令 replay 或 M5 provider fact 补发。
 - B6 的 settlement/refund/outbox/transition/audit 是不可逆资金事实。能力回滚只关闭新命令并保留兼容
   worker；local/test 之外不执行 down 清理，真实 provider、COD、验收、库存恢复和换货仍不属于本阶段。
+
+## 21. M6.3-B7 COD 退款结算数据边界
+
+- 第 56 段 `20260801120000_p0_m6_007_cod_refund_settlement` 增加不可变
+  `after_sale_cod_refund_receipts` 与 `after_sale_cod_refund_confirmations`。两表都以 `store_id` 绑定
+  settlement、售后、订单和服务端整数 VND 金额，并通过复合外键拒绝跨商城、跨订单、跨 case 或金额漂移；
+  每个 settlement 最多一份回执和一份确认事实。
+- COD 售后申请只承认 M5 对账中唯一、不可变的 `COD_REMITTANCE/MATCHED` 行。该行必须精确绑定目标
+  商城、订单、`ORDER_OUTBOUND` 已签收运单、应收金额、回款金额和 VND；缺失、差异、重复、非终态或
+  其它商城事实都失败关闭。共享 `/refund` 路由从锁定订单事实选择 ONLINE/COD，客户端不能选择分支或金额。
+- COD request 只创建 `COD_OFFLINE/PENDING` settlement，金额固定为 `approved_total_vnd`，从
+  `APPROVED` 追加 `QUEUE_REFUND` 后停在 `REFUND_PENDING`。它不写 M5 `refunds`、不创建 provider
+  outbox、不修改订单、库存或物流，也不伪造转账处理中或成功。
+- 回执表保存规范化外部引用的 keyed digest、掩码、证据 digest/密文、转账时间、expected settlement
+  version、记录 actor、幂等/request hash 与 correlation。原始转账引用和 evidence reference 不进入公开
+  投影、审计、日志或错误；售后 settlement 只新增 `receipt_recorded` 布尔值。
+- 确认表保存 expected/result case 与 settlement version、`REFUNDED` 结果、确认 actor、幂等/request
+  hash、correlation 和时间。确认者必须不同于 settlement requester/receipt recorder；只有回执与
+  settlement 的商城、case、订单、金额、VND、digest、密文和转账时间全部一致时，单个 Serializable
+  事务才把 settlement 置为 `SUCCEEDED`，依次追加 `REFUND_REQUESTED/REFUND_SUCCEEDED` 并写审计。
+- 两表启用 FORCE RLS；runtime 只有 `SELECT/INSERT`，明确无 `UPDATE/DELETE/TRUNCATE`。insert、append-only、
+  settlement lifecycle 及两个 deferred atomicity guard 共同约束回执、确认、transition 和审计的原子性；
+  restricted security-definer 函数使用固定安全 `search_path` 并只授权 runtime 执行所需入口。
+- 前向迁移发现任何既有 `COD_OFFLINE` settlement 时以 SQLSTATE `55000` 停止，因为无法安全回填可信
+  回执。`down.sql` 只允许没有 COD settlement、回执、确认、B7 审计或成对 B7 refund transition 的
+  local/test；产生事实后只允许受审前向修复。该切片不执行真实银行转账、provider 调用、库存恢复、部署
+  或 rollout。

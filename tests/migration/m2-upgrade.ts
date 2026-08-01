@@ -74,6 +74,7 @@ const P0_M5_005_MIGRATION_NAME = '20260801090000_p0_m5_005_financial_reconciliat
 const P0_M5_005_COD_MIGRATION_NAME = '20260801100000_p0_m5_005_cod_reconciliation' as const;
 const P0_M5_005_CLOSURE_MIGRATION_NAME =
   '20260801110000_p0_m5_005_reconciliation_closeout' as const;
+const P0_M6_007_MIGRATION_NAME = '20260801120000_p0_m6_007_cod_refund_settlement' as const;
 
 const M6_MIGRATIONS = [
   '20260727110000_m62_after_sales_member_share_foundation',
@@ -1539,6 +1540,253 @@ async function assertM63B5ReturnBoundary(client: PrismaClientType): Promise<stri
     .digest('hex');
 }
 
+async function assertP0M6007CodRefundBoundary(
+  client: PrismaClientType,
+  shouldExist: boolean,
+): Promise<string> {
+  const [state] = await client.$queryRaw<
+    Array<{
+      b3_cod_guard: boolean;
+      composite_foreign_keys: bigint;
+      confirmation_table: string | null;
+      deferred_triggers: bigint;
+      functions: bigint;
+      identity_index: bigint;
+      policies: bigint;
+      public_executable_functions: bigint;
+      receipt_table: string | null;
+      rls_tables: bigint;
+      runtime_executable_functions: bigint;
+      runtime_forbidden_grants: bigint;
+      runtime_table_grants: bigint;
+      safe_search_path_functions: bigint;
+      security_definer_functions: bigint;
+      settlement_receipt_guard: boolean;
+      triggers: bigint;
+    }>
+  >`
+    SELECT
+      to_regclass('public.after_sale_cod_refund_receipts')::text AS receipt_table,
+      to_regclass('public.after_sale_cod_refund_confirmations')::text AS confirmation_table,
+      (SELECT count(*)
+       FROM pg_catalog.pg_class relation
+       JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
+       WHERE namespace.nspname = 'public'
+         AND relation.relname IN (
+           'after_sale_cod_refund_receipts', 'after_sale_cod_refund_confirmations'
+         )
+         AND relation.relrowsecurity
+         AND relation.relforcerowsecurity) AS rls_tables,
+      (SELECT count(*) FROM pg_catalog.pg_policies policy
+       WHERE policy.schemaname = 'public'
+         AND policy.tablename IN (
+           'after_sale_cod_refund_receipts', 'after_sale_cod_refund_confirmations'
+         )) AS policies,
+      (SELECT count(*) FROM pg_catalog.pg_proc function_definition
+       JOIN pg_catalog.pg_namespace namespace
+         ON namespace.oid = function_definition.pronamespace
+       WHERE namespace.nspname = 'app_security'
+         AND function_definition.proname IN (
+           'assert_p0_m6_007_admin_authorization',
+           'validate_p0_m6_007_receipt',
+           'validate_p0_m6_007_receipt_atomicity',
+           'validate_p0_m6_007_confirmation',
+           'validate_p0_m6_007_confirmation_atomicity'
+         )) AS functions,
+      (SELECT count(*) FROM pg_catalog.pg_proc function_definition
+       JOIN pg_catalog.pg_namespace namespace
+         ON namespace.oid = function_definition.pronamespace
+       WHERE namespace.nspname = 'app_security'
+         AND function_definition.proname IN (
+           'assert_p0_m6_007_admin_authorization',
+           'validate_p0_m6_007_receipt',
+           'validate_p0_m6_007_receipt_atomicity',
+           'validate_p0_m6_007_confirmation',
+           'validate_p0_m6_007_confirmation_atomicity'
+         )
+         AND function_definition.prosecdef) AS security_definer_functions,
+      (SELECT count(*) FROM pg_catalog.pg_proc function_definition
+       JOIN pg_catalog.pg_namespace namespace
+         ON namespace.oid = function_definition.pronamespace
+       WHERE namespace.nspname = 'app_security'
+         AND function_definition.proname IN (
+           'assert_p0_m6_007_admin_authorization',
+           'validate_p0_m6_007_receipt',
+           'validate_p0_m6_007_receipt_atomicity',
+           'validate_p0_m6_007_confirmation',
+           'validate_p0_m6_007_confirmation_atomicity'
+         )
+         AND 'search_path=pg_catalog, public, pg_temp' = ANY(function_definition.proconfig))
+        AS safe_search_path_functions,
+      (SELECT count(*) FROM pg_catalog.pg_proc function_definition
+       JOIN pg_catalog.pg_namespace namespace
+         ON namespace.oid = function_definition.pronamespace
+       WHERE namespace.nspname = 'app_security'
+         AND function_definition.proname IN (
+           'assert_p0_m6_007_admin_authorization',
+           'validate_p0_m6_007_receipt',
+           'validate_p0_m6_007_receipt_atomicity',
+           'validate_p0_m6_007_confirmation',
+           'validate_p0_m6_007_confirmation_atomicity'
+         )
+         AND pg_catalog.has_function_privilege(
+           'zalo_shop_runtime', function_definition.oid, 'EXECUTE'
+         )) AS runtime_executable_functions,
+      (SELECT count(*) FROM pg_catalog.pg_proc function_definition
+       JOIN pg_catalog.pg_namespace namespace
+         ON namespace.oid = function_definition.pronamespace
+       WHERE namespace.nspname = 'app_security'
+         AND function_definition.proname IN (
+           'assert_p0_m6_007_admin_authorization',
+           'validate_p0_m6_007_receipt',
+           'validate_p0_m6_007_receipt_atomicity',
+           'validate_p0_m6_007_confirmation',
+           'validate_p0_m6_007_confirmation_atomicity'
+         )
+         AND EXISTS (
+           SELECT 1
+           FROM pg_catalog.aclexplode(
+             COALESCE(
+               function_definition.proacl,
+               pg_catalog.acldefault('f', function_definition.proowner)
+             )
+           ) AS privilege
+           WHERE privilege.grantee = 0 AND privilege.privilege_type = 'EXECUTE'
+         ))
+        AS public_executable_functions,
+      (SELECT count(*) FROM pg_catalog.pg_trigger trigger_definition
+       WHERE NOT trigger_definition.tgisinternal
+         AND trigger_definition.tgname IN (
+           'after_sale_cod_refund_receipts_insert_guard',
+           'after_sale_cod_refund_receipts_append_only',
+           'after_sale_cod_refund_receipts_atomic_guard',
+           'after_sale_cod_refund_confirmations_insert_guard',
+           'after_sale_cod_refund_confirmations_append_only',
+           'after_sale_cod_refund_confirmations_atomic_guard'
+         )) AS triggers,
+      (SELECT count(*) FROM pg_catalog.pg_trigger trigger_definition
+       WHERE NOT trigger_definition.tgisinternal
+         AND trigger_definition.tgname IN (
+           'after_sale_cod_refund_receipts_atomic_guard',
+           'after_sale_cod_refund_confirmations_atomic_guard'
+         )
+         AND trigger_definition.tgconstraint <> 0
+         AND trigger_definition.tgdeferrable
+         AND trigger_definition.tginitdeferred) AS deferred_triggers,
+      (SELECT count(*) FROM pg_catalog.pg_constraint constraint_definition
+       WHERE constraint_definition.conname IN (
+         'after_sale_cod_refund_receipts_case_order_fkey',
+         'after_sale_cod_refund_receipts_settlement_fkey',
+         'after_sale_cod_refund_confirmations_case_order_fkey',
+         'after_sale_cod_refund_confirmations_settlement_fkey'
+       )
+         AND constraint_definition.contype = 'f'
+         AND constraint_definition.convalidated) AS composite_foreign_keys,
+      (SELECT count(*) FROM pg_catalog.pg_indexes
+       WHERE schemaname = 'public'
+         AND indexname = 'after_sale_settlements_cod_receipt_identity_key') AS identity_index,
+      (SELECT count(*) FROM information_schema.role_table_grants
+       WHERE grantee = 'zalo_shop_runtime'
+         AND table_schema = 'public'
+         AND table_name IN (
+           'after_sale_cod_refund_receipts', 'after_sale_cod_refund_confirmations'
+         )
+         AND privilege_type IN ('SELECT', 'INSERT')) AS runtime_table_grants,
+      (SELECT count(*) FROM information_schema.role_table_grants
+       WHERE grantee = 'zalo_shop_runtime'
+         AND table_schema = 'public'
+         AND table_name IN (
+           'after_sale_cod_refund_receipts', 'after_sale_cod_refund_confirmations'
+         )
+         AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')) AS runtime_forbidden_grants,
+      COALESCE((SELECT
+        pg_catalog.pg_get_functiondef(function_definition.oid) LIKE '%COD_REMITTANCE%'
+        AND pg_catalog.pg_get_functiondef(function_definition.oid)
+          LIKE '%financial_reconciliation_lines%'
+       FROM pg_catalog.pg_proc function_definition
+       JOIN pg_catalog.pg_namespace namespace
+         ON namespace.oid = function_definition.pronamespace
+       WHERE namespace.nspname = 'app_security'
+         AND function_definition.proname = 'validate_m63_b3_command_facts'
+         AND function_definition.proargtypes = '2950'::oidvector), false) AS b3_cod_guard,
+      COALESCE((SELECT
+        pg_catalog.pg_get_functiondef(function_definition.oid)
+          LIKE '%after_sale_cod_refund_receipts%'
+        AND pg_catalog.pg_get_functiondef(function_definition.oid)
+          LIKE '%assert_p0_m6_007_admin_authorization%'
+       FROM pg_catalog.pg_proc function_definition
+       JOIN pg_catalog.pg_namespace namespace
+         ON namespace.oid = function_definition.pronamespace
+       WHERE namespace.nspname = 'app_security'
+         AND function_definition.proname = 'validate_m62_settlement_lifecycle'
+         AND function_definition.proargtypes = ''::oidvector), false)
+        AS settlement_receipt_guard
+  `;
+  const valid = shouldExist
+    ? state?.receipt_table === 'after_sale_cod_refund_receipts' &&
+      state.confirmation_table === 'after_sale_cod_refund_confirmations' &&
+      state.rls_tables === 2n &&
+      state.policies === 2n &&
+      state.functions === 5n &&
+      state.security_definer_functions === 5n &&
+      state.safe_search_path_functions === 5n &&
+      state.runtime_executable_functions === 5n &&
+      state.public_executable_functions === 0n &&
+      state.triggers === 6n &&
+      state.deferred_triggers === 2n &&
+      state.composite_foreign_keys === 4n &&
+      state.identity_index === 1n &&
+      state.runtime_table_grants === 4n &&
+      state.runtime_forbidden_grants === 0n &&
+      state.b3_cod_guard &&
+      state.settlement_receipt_guard
+    : state?.receipt_table === null &&
+      state.confirmation_table === null &&
+      state.rls_tables === 0n &&
+      state.policies === 0n &&
+      state.functions === 0n &&
+      state.security_definer_functions === 0n &&
+      state.safe_search_path_functions === 0n &&
+      state.runtime_executable_functions === 0n &&
+      state.public_executable_functions === 0n &&
+      state.triggers === 0n &&
+      state.deferred_triggers === 0n &&
+      state.composite_foreign_keys === 0n &&
+      state.identity_index === 0n &&
+      state.runtime_table_grants === 0n &&
+      state.runtime_forbidden_grants === 0n &&
+      !state.b3_cod_guard &&
+      !state.settlement_receipt_guard;
+  if (!valid) {
+    fail(
+      `P0-M6-007 COD refund catalog differs: ${JSON.stringify({
+        ...state,
+        composite_foreign_keys: String(state?.composite_foreign_keys),
+        deferred_triggers: String(state?.deferred_triggers),
+        functions: String(state?.functions),
+        identity_index: String(state?.identity_index),
+        policies: String(state?.policies),
+        public_executable_functions: String(state?.public_executable_functions),
+        rls_tables: String(state?.rls_tables),
+        runtime_executable_functions: String(state?.runtime_executable_functions),
+        runtime_forbidden_grants: String(state?.runtime_forbidden_grants),
+        runtime_table_grants: String(state?.runtime_table_grants),
+        safe_search_path_functions: String(state?.safe_search_path_functions),
+        security_definer_functions: String(state?.security_definer_functions),
+        shouldExist,
+        triggers: String(state?.triggers),
+      })}`,
+    );
+  }
+  return createHash('sha256')
+    .update(
+      JSON.stringify(state, (_key: string, value: unknown): unknown =>
+        typeof value === 'bigint' ? value.toString() : value,
+      ),
+    )
+    .digest('hex');
+}
+
 async function assertFinancialReconciliationBoundary(
   client: PrismaClientType,
   shouldExist: boolean,
@@ -2818,9 +3066,10 @@ async function run(): Promise<void> {
   if (M2_MIGRATIONS.some((migrationName, index) => allMigrationNames[index] !== migrationName)) {
     fail('the tracked migration prefix no longer matches the approved M2 boundary');
   }
-  if (allMigrationNames.at(-1) !== P0_M5_005_CLOSURE_MIGRATION_NAME) {
-    fail('the approved P0-M5-005 review closeout migration must be the current tail');
+  if (allMigrationNames.at(-1) !== P0_M6_007_MIGRATION_NAME) {
+    fail('the approved P0-M6-007 COD refund settlement migration must be the current tail');
   }
+  const p0M6007BoundaryMigrationNames = allMigrationNames.slice(0, -1);
   const m5BoundaryIndex = allMigrationNames.indexOf(M5_MIGRATIONS.at(-1) ?? '');
   if (m5BoundaryIndex < 0) fail('the approved M5 boundary migration was not found');
   const m5BoundaryMigrationNames = allMigrationNames.slice(0, m5BoundaryIndex + 1);
@@ -2845,9 +3094,10 @@ async function run(): Promise<void> {
     allMigrationNames[b3MigrationIndex + 3] !== B5_MIGRATION_NAME ||
     allMigrationNames[b3MigrationIndex + 4] !== P0_M5_005_MIGRATION_NAME ||
     allMigrationNames[b3MigrationIndex + 5] !== P0_M5_005_COD_MIGRATION_NAME ||
-    allMigrationNames[b3MigrationIndex + 6] !== P0_M5_005_CLOSURE_MIGRATION_NAME
+    allMigrationNames[b3MigrationIndex + 6] !== P0_M5_005_CLOSURE_MIGRATION_NAME ||
+    allMigrationNames[b3MigrationIndex + 7] !== P0_M6_007_MIGRATION_NAME
   ) {
-    fail('the approved M6.3-B3 to B5 migration boundary was not found');
+    fail('the approved M6.3-B3 to B7 migration boundary was not found');
   }
 
   const adminDatabaseUrl = new URL(ownerDatabaseUrl);
@@ -2891,6 +3141,11 @@ async function run(): Promise<void> {
       tempDirectory,
       'm63-b3-boundary',
       b3BoundaryMigrationNames,
+    );
+    const p0M6007BoundarySchemaPath = await createMigrationTree(
+      tempDirectory,
+      'p0-m6-007-boundary',
+      p0M6007BoundaryMigrationNames,
     );
 
     validateScratchDatabaseName(scratchDatabaseName);
@@ -3055,12 +3310,24 @@ async function run(): Promise<void> {
     const b3DownPath = join(MIGRATIONS_ROOT, B3_MIGRATION_NAME, 'down.sql');
     const b4DownPath = join(MIGRATIONS_ROOT, B4_MIGRATIONS[0], 'down.sql');
     const b5DownPath = join(MIGRATIONS_ROOT, B5_MIGRATION_NAME, 'down.sql');
-    const [d0MigrationSql, d0DownSql, b3DownSql, b4DownSql, b5DownSql] = await Promise.all([
+    const p0M6007MigrationPath = join(MIGRATIONS_ROOT, P0_M6_007_MIGRATION_NAME, 'migration.sql');
+    const p0M6007DownPath = join(MIGRATIONS_ROOT, P0_M6_007_MIGRATION_NAME, 'down.sql');
+    const [
+      d0MigrationSql,
+      d0DownSql,
+      b3DownSql,
+      b4DownSql,
+      b5DownSql,
+      p0M6007MigrationSql,
+      p0M6007DownSql,
+    ] = await Promise.all([
       readFile(d0MigrationPath, 'utf8'),
       readFile(d0DownPath, 'utf8'),
       readFile(b3DownPath, 'utf8'),
       readFile(b4DownPath, 'utf8'),
       readFile(b5DownPath, 'utf8'),
+      readFile(p0M6007MigrationPath, 'utf8'),
+      readFile(p0M6007DownPath, 'utf8'),
     ]);
     const d0ForwardGuardStart = d0MigrationSql.indexOf('DO $$');
     const d0ForwardGuardEnd = d0MigrationSql.indexOf(
@@ -3098,6 +3365,28 @@ async function run(): Promise<void> {
       fail('the M6.3-B5 down migration guard boundaries could not be isolated');
     }
     const b5DownGuardSql = b5DownSql.slice(b5DownGuardStart, b5DownGuardEnd).trim();
+    const p0M6007ForwardGuardStart = p0M6007MigrationSql.indexOf('DO $$');
+    const p0M6007ForwardGuardEnd = p0M6007MigrationSql.indexOf(
+      '-- Extend the existing B3 final database authorization',
+    );
+    const p0M6007DownGuardStart = p0M6007DownSql.indexOf('DO $$');
+    const p0M6007DownGuardEnd = p0M6007DownSql.indexOf(
+      '-- Restore the exact B3 ONLINE-only payment guard',
+    );
+    if (
+      p0M6007ForwardGuardStart < 0 ||
+      p0M6007ForwardGuardEnd <= p0M6007ForwardGuardStart ||
+      p0M6007DownGuardStart < 0 ||
+      p0M6007DownGuardEnd <= p0M6007DownGuardStart
+    ) {
+      fail('the P0-M6-007 migration guard boundaries could not be isolated');
+    }
+    const p0M6007ForwardGuardSql = p0M6007MigrationSql
+      .slice(p0M6007ForwardGuardStart, p0M6007ForwardGuardEnd)
+      .trim();
+    const p0M6007DownGuardSql = p0M6007DownSql
+      .slice(p0M6007DownGuardStart, p0M6007DownGuardEnd)
+      .trim();
     const d0EvidenceId = 'f2e00000-0000-4000-8000-000000000001';
     const d0TransitionId = 'f2e00000-0000-4000-8000-000000000002';
     const d0OutboxId = 'f2e00000-0000-4000-8000-000000000003';
@@ -3563,6 +3852,44 @@ async function run(): Promise<void> {
       `;
     });
 
+    runPrisma(['migrate', 'deploy', '--schema', p0M6007BoundarySchemaPath], scratchDatabaseUrl);
+    await assertMigrationState(scratchClient, p0M6007BoundaryMigrationNames);
+    await assertP0M6007CodRefundBoundary(scratchClient, false);
+    const p0M6007ForwardSettlementId = randomUUID();
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_settlements (
+          id, store_id, after_sale_id, order_id, public_settlement_number,
+          method, status, amount_vnd, currency, idempotency_key_hash, request_hash,
+          requested_by, version, requested_at, updated_at
+        ) VALUES (
+          ${p0M6007ForwardSettlementId}::uuid,
+          ${b3HistoricalPolicyFixture.storeId}::uuid,
+          ${b3HistoricalPolicyFixture.afterSaleId}::uuid,
+          ${m5HistoricalFacts.orderId}::uuid,
+          ${`AST-${p0M6007ForwardSettlementId.replaceAll('-', '').slice(0, 24).toUpperCase()}`},
+          'COD_OFFLINE', 'PENDING', 1, 'VND',
+          ${createHash('sha256').update('p0-m6-007-forward-idempotency').digest('hex')},
+          ${createHash('sha256').update('p0-m6-007-forward-request').digest('hex')},
+          ${m5HistoricalFacts.adminId}::uuid, 1, clock_timestamp(), clock_timestamp()
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(p0M6007ForwardGuardSql),
+      '55000',
+      'P0-M6-007 forward existing COD settlement guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_settlements WHERE id = ${p0M6007ForwardSettlementId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertM63B1ReadIndexes(scratchClient);
@@ -3574,6 +3901,7 @@ async function run(): Promise<void> {
     await assertFinancialReconciliationBoundary(scratchClient, true);
     await assertCodReconciliationBoundary(scratchClient, true);
     await assertFinancialReconciliationReviewBoundary(scratchClient, true);
+    const p0M6007CatalogFingerprint = await assertP0M6007CodRefundBoundary(scratchClient, true);
 
     await scratchClient.$transaction(async (transaction) => {
       await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
@@ -3714,6 +4042,13 @@ async function run(): Promise<void> {
     await assertFinancialReconciliationBoundary(scratchClient, true);
     await assertCodReconciliationBoundary(scratchClient, true);
     await assertFinancialReconciliationReviewBoundary(scratchClient, true);
+    const repeatedP0M6007CatalogFingerprint = await assertP0M6007CodRefundBoundary(
+      scratchClient,
+      true,
+    );
+    if (repeatedP0M6007CatalogFingerprint !== p0M6007CatalogFingerprint) {
+      fail('P0-M6-007 repeated deploy changed the COD refund security catalog');
+    }
     await assertM63B2bD5ProtectedReadLock(scratchClient);
     await exerciseD5MigrationAtomicity(
       scratchClient,
@@ -3895,8 +4230,198 @@ async function run(): Promise<void> {
       fail('M1/M2 fixture fingerprint changed during the M6.3-B4 down/forward exercise');
     }
 
+    const p0M6007GuardStoreId = 'f2000000-0000-4000-8000-000000000001';
+    const p0M6007GuardAfterSaleId = 'f2b70000-0000-4000-8000-000000000001';
+    const p0M6007GuardOrderId = 'f2b70000-0000-4000-8000-000000000002';
+    const p0M6007GuardAdminId = 'f2030000-0000-4000-8000-000000000001';
+    const p0M6007GuardSettlementId = 'f2b70000-0000-4000-8000-000000000003';
+    const p0M6007GuardReceiptId = 'f2b70000-0000-4000-8000-000000000004';
+    const p0M6007GuardConfirmationId = 'f2b70000-0000-4000-8000-000000000005';
+    const p0M6007GuardAuditId = 'f2b70000-0000-4000-8000-000000000006';
+    const p0M6007GuardRequestedTransitionId = 'f2b70000-0000-4000-8000-000000000007';
+    const p0M6007GuardSucceededTransitionId = 'f2b70000-0000-4000-8000-000000000008';
+    const p0M6007Hash = (value: string) => createHash('sha256').update(value).digest('hex');
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_settlements (
+          id, store_id, after_sale_id, order_id, public_settlement_number,
+          method, status, amount_vnd, currency, idempotency_key_hash, request_hash,
+          requested_by, version, requested_at, updated_at
+        ) VALUES (
+          ${p0M6007GuardSettlementId}::uuid, ${p0M6007GuardStoreId}::uuid,
+          ${p0M6007GuardAfterSaleId}::uuid, ${p0M6007GuardOrderId}::uuid,
+          'AST-P0M6007DOWNGUARD', 'COD_OFFLINE', 'PENDING', 100000, 'VND',
+          ${p0M6007Hash('p0-m6-007-down-settlement-idempotency')},
+          ${p0M6007Hash('p0-m6-007-down-settlement-request')},
+          ${p0M6007GuardAdminId}::uuid, 1, clock_timestamp(), clock_timestamp()
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(p0M6007DownGuardSql),
+      '55000',
+      'P0-M6-007 down COD settlement fact guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_settlements WHERE id = ${p0M6007GuardSettlementId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_cod_refund_receipts (
+          id, store_id, settlement_id, after_sale_id, order_id, amount_vnd, currency,
+          transfer_reference_digest, transfer_reference_masked, evidence_digest,
+          evidence_ciphertext, transferred_at, expected_settlement_version, recorded_by,
+          idempotency_key_hash, request_hash, correlation_id, recorded_at
+        ) VALUES (
+          ${p0M6007GuardReceiptId}::uuid, ${p0M6007GuardStoreId}::uuid,
+          ${p0M6007GuardSettlementId}::uuid, ${p0M6007GuardAfterSaleId}::uuid,
+          ${p0M6007GuardOrderId}::uuid, 100000, 'VND',
+          ${p0M6007Hash('p0-m6-007-down-transfer')}, '***GUARD',
+          ${p0M6007Hash('p0-m6-007-down-evidence')}, 'encrypted-guard-evidence',
+          clock_timestamp(), 1, ${p0M6007GuardAdminId}::uuid,
+          ${p0M6007Hash('p0-m6-007-down-receipt-idempotency')},
+          ${p0M6007Hash('p0-m6-007-down-receipt-request')},
+          'p0-m6-007-down-receipt', clock_timestamp()
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(p0M6007DownGuardSql),
+      '55000',
+      'P0-M6-007 down receipt fact guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_cod_refund_receipts WHERE id = ${p0M6007GuardReceiptId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_cod_refund_confirmations (
+          id, store_id, settlement_id, after_sale_id, order_id, amount_vnd,
+          expected_after_sale_version, expected_settlement_version,
+          result_after_sale_version, result_settlement_version, result_status,
+          confirmed_by, idempotency_key_hash, request_hash, correlation_id, confirmed_at
+        ) VALUES (
+          ${p0M6007GuardConfirmationId}::uuid, ${p0M6007GuardStoreId}::uuid,
+          ${p0M6007GuardSettlementId}::uuid, ${p0M6007GuardAfterSaleId}::uuid,
+          ${p0M6007GuardOrderId}::uuid, 100000, 2, 1, 4, 2, 'REFUNDED',
+          ${p0M6007GuardAdminId}::uuid,
+          ${p0M6007Hash('p0-m6-007-down-confirm-idempotency')},
+          ${p0M6007Hash('p0-m6-007-down-confirm-request')},
+          'p0-m6-007-down-confirm', clock_timestamp()
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(p0M6007DownGuardSql),
+      '55000',
+      'P0-M6-007 down confirmation fact guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_cod_refund_confirmations
+        WHERE id = ${p0M6007GuardConfirmationId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO audit_logs (
+          id, store_id, actor_type, actor_id, action, target_type, target_id, correlation_id
+        ) VALUES (
+          ${p0M6007GuardAuditId}::uuid, ${p0M6007GuardStoreId}::uuid,
+          'ADMIN', ${p0M6007GuardAdminId}::uuid, 'after-sale.cod-refund.confirmed',
+          'after_sale', ${p0M6007GuardAfterSaleId}, 'p0-m6-007-down-audit'
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(p0M6007DownGuardSql),
+      '55000',
+      'P0-M6-007 down audit fact guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM audit_logs WHERE id = ${p0M6007GuardAuditId}::uuid
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        INSERT INTO after_sale_transitions (
+          id, store_id, after_sale_id, from_status, to_status, event, actor_type,
+          actor_id, correlation_id, created_at
+        ) VALUES
+          (
+            ${p0M6007GuardRequestedTransitionId}::uuid, ${p0M6007GuardStoreId}::uuid,
+            ${p0M6007GuardAfterSaleId}::uuid, 'REFUND_PENDING', 'REFUND_PROCESSING',
+            'REFUND_REQUESTED', 'ADMIN', ${p0M6007GuardAdminId}::uuid,
+            'p0-m6-007-down-transition', '2026-08-01 00:00:00+00'
+          ),
+          (
+            ${p0M6007GuardSucceededTransitionId}::uuid, ${p0M6007GuardStoreId}::uuid,
+            ${p0M6007GuardAfterSaleId}::uuid, 'REFUND_PROCESSING', 'REFUNDED',
+            'REFUND_SUCCEEDED', 'ADMIN', ${p0M6007GuardAdminId}::uuid,
+            'p0-m6-007-down-transition', '2026-08-01 00:00:00.001+00'
+          )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(p0M6007DownGuardSql),
+      '55000',
+      'P0-M6-007 down transition fact guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_transitions
+        WHERE id IN (
+          ${p0M6007GuardRequestedTransitionId}::uuid,
+          ${p0M6007GuardSucceededTransitionId}::uuid
+        )
+      `;
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    const p0M6007CatalogAfterGuards = await assertP0M6007CodRefundBoundary(scratchClient, true);
+    if (p0M6007CatalogAfterGuards !== repeatedP0M6007CatalogFingerprint) {
+      fail('P0-M6-007 rollback fail-fast changed the COD refund security catalog');
+    }
+
+    runPrisma(
+      ['db', 'execute', '--file', p0M6007DownPath, '--schema', fullSchemaPath],
+      scratchDatabaseUrl,
+    );
+    await assertP0M6007CodRefundBoundary(scratchClient, false);
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations" WHERE migration_name = ${P0_M6_007_MIGRATION_NAME}
+    `;
+
     // B3 cannot be rolled back while B4/B5 functions and triggers still depend on its command
-    // boundary. Remove B5, then B4, and restore all four in one forward deploy.
+    // boundary. Remove B7, B5 and B4, then restore the chain in one forward deploy.
     runPrisma(
       ['db', 'execute', '--file', b5DownPath, '--schema', fullSchemaPath],
       scratchDatabaseUrl,
@@ -3983,6 +4508,13 @@ async function run(): Promise<void> {
     const restoredB5AfterB3CatalogFingerprint = await assertM63B5ReturnBoundary(scratchClient);
     if (restoredB5AfterB3CatalogFingerprint !== repeatedB5CatalogFingerprint) {
       fail('M6.3-B3 down/forward exercise did not restore the dependent B5 catalog');
+    }
+    const restoredP0M6007AfterB3CatalogFingerprint = await assertP0M6007CodRefundBoundary(
+      scratchClient,
+      true,
+    );
+    if (restoredP0M6007AfterB3CatalogFingerprint !== repeatedP0M6007CatalogFingerprint) {
+      fail('M6.3-B3 down/forward exercise did not restore the dependent B7 catalog');
     }
     const afterB3RoundTripFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterB3RoundTripFingerprint !== beforeUpgradeFingerprint) {
@@ -4083,6 +4615,16 @@ async function run(): Promise<void> {
       P0_M5_005_CLOSURE_MIGRATION_NAME,
       'down.sql',
     );
+    const codRefundSettlementDownPath = join(MIGRATIONS_ROOT, P0_M6_007_MIGRATION_NAME, 'down.sql');
+    runPrisma(
+      ['db', 'execute', '--file', codRefundSettlementDownPath, '--schema', fullSchemaPath],
+      scratchDatabaseUrl,
+    );
+    await assertP0M6007CodRefundBoundary(scratchClient, false);
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations"
+      WHERE migration_name = ${P0_M6_007_MIGRATION_NAME}
+    `;
     runPrisma(
       ['db', 'execute', '--file', reconciliationCloseoutDownPath, '--schema', fullSchemaPath],
       scratchDatabaseUrl,
@@ -4118,6 +4660,22 @@ async function run(): Promise<void> {
     await assertFinancialReconciliationBoundary(scratchClient, true);
     await assertCodReconciliationBoundary(scratchClient, true);
     await assertFinancialReconciliationReviewBoundary(scratchClient, true);
+    const restoredP0M6007AfterFinancialFingerprint = await assertP0M6007CodRefundBoundary(
+      scratchClient,
+      true,
+    );
+    if (restoredP0M6007AfterFinancialFingerprint !== repeatedP0M6007CatalogFingerprint) {
+      fail('P0-M5-005 down/forward exercise did not restore the dependent B7 catalog');
+    }
+    runPrisma(
+      ['db', 'execute', '--file', codRefundSettlementDownPath, '--schema', fullSchemaPath],
+      scratchDatabaseUrl,
+    );
+    await assertP0M6007CodRefundBoundary(scratchClient, false);
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations"
+      WHERE migration_name = ${P0_M6_007_MIGRATION_NAME}
+    `;
     runPrisma(
       ['db', 'execute', '--file', reconciliationCloseoutDownPath, '--schema', fullSchemaPath],
       scratchDatabaseUrl,
@@ -4295,6 +4853,13 @@ async function run(): Promise<void> {
     await assertFinancialReconciliationBoundary(scratchClient, true);
     await assertCodReconciliationBoundary(scratchClient, true);
     await assertFinancialReconciliationReviewBoundary(scratchClient, true);
+    const restoredP0M6007AfterM5M6Fingerprint = await assertP0M6007CodRefundBoundary(
+      scratchClient,
+      true,
+    );
+    if (restoredP0M6007AfterM5M6Fingerprint !== repeatedP0M6007CatalogFingerprint) {
+      fail('M5/M6 forward repair did not restore the P0-M6-007 security catalog');
+    }
     const afterForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterForwardRepairFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during the M5/M6 forward repair exercise');
@@ -4489,6 +5054,7 @@ async function run(): Promise<void> {
     await assertFinancialReconciliationBoundary(scratchClient, true);
     await assertCodReconciliationBoundary(scratchClient, true);
     await assertFinancialReconciliationReviewBoundary(scratchClient, true);
+    await assertP0M6007CodRefundBoundary(scratchClient, true);
     const [d0RoundTripShape] = await scratchClient.$queryRaw<
       Array<{ ledger_exists: boolean; object_role_exists: boolean }>
     >`
@@ -4978,9 +5544,10 @@ async function run(): Promise<void> {
     await assertFinancialReconciliationBoundary(scratchClient, true);
     await assertCodReconciliationBoundary(scratchClient, true);
     await assertFinancialReconciliationReviewBoundary(scratchClient, true);
+    await assertP0M6007CodRefundBoundary(scratchClient, true);
 
     console.log(
-      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair, B3 historical policy preflight, B4 review/expiration, B5 return-trust and P0-M5-005 financial reconciliation catalog restoration and rollback guards`,
+      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair, B3 historical policy preflight, B4 review/expiration, B5 return-trust, P0-M5-005 reconciliation and P0-M6-007 COD refund catalog restoration and rollback guards`,
     );
   } catch (error) {
     primaryError = asError(error);
