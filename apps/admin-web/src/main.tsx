@@ -6,6 +6,7 @@ import './styles.css';
 import { CatalogWorkbench } from './catalog-workbench';
 import { ContentEditor } from './content-editor';
 import { DeliveryWorkbench } from './delivery-workbench';
+import { FinancialReconciliationWorkbench } from './financial-reconciliation-workbench';
 import { InventoryWorkbench } from './inventory-workbench';
 import { OrderWorkbench } from './order-workbench';
 import { PromotionWorkbench } from './promotion-workbench';
@@ -17,6 +18,7 @@ type Tab =
   | 'catalog'
   | 'content'
   | 'delivery'
+  | 'finance'
   | 'inventory'
   | 'orders'
   | 'overview'
@@ -40,6 +42,7 @@ const labels = {
     errorAuth: 'Thông tin đăng nhập hoặc mã xác thực không hợp lệ.',
     errorDenied: 'Bạn không có quyền trong phạm vi này. Truy cập chéo cửa hàng cần lý do hợp lệ.',
     errorGeneric: 'Không thể hoàn tất yêu cầu. Vui lòng thử lại.',
+    finance: 'Đối soát tài chính',
     inventory: 'Kho & tồn kho',
     loading: 'Đang tải dữ liệu an toàn…',
     login: 'Đăng nhập an toàn',
@@ -71,6 +74,7 @@ const labels = {
     errorAuth: '登录信息或验证码无效。',
     errorDenied: '你无权访问当前范围；跨商城访问必须填写有效原因。',
     errorGeneric: '请求未能完成，请重试。',
+    finance: '财务对账',
     inventory: '仓库与库存',
     loading: '正在安全加载数据…',
     login: '安全登录',
@@ -102,6 +106,7 @@ const labels = {
     errorAuth: 'The credentials or verification code are invalid.',
     errorDenied: 'You cannot access this scope. Cross-store access requires a valid reason.',
     errorGeneric: 'The request could not be completed. Please retry.',
+    finance: 'Financial reconciliation',
     inventory: 'Warehouses & inventory',
     loading: 'Loading securely…',
     login: 'Secure sign in',
@@ -396,6 +401,9 @@ function AdminApp(): JSX.Element {
           <button className={tab === 'delivery' ? 'active' : ''} onClick={() => setTab('delivery')}>
             ⇢ <span>{t.delivery}</span>
           </button>
+          <button className={tab === 'finance' ? 'active' : ''} onClick={() => setTab('finance')}>
+            $ <span>{t.finance}</span>
+          </button>
           <button
             className={tab === 'roles' ? 'active' : ''}
             onClick={() => {
@@ -456,7 +464,8 @@ function AdminApp(): JSX.Element {
                   tab !== 'inventory' &&
                   tab !== 'promotions' &&
                   tab !== 'orders' &&
-                  tab !== 'delivery'
+                  tab !== 'delivery' &&
+                  tab !== 'finance'
                 ) {
                   void loadScope(next);
                 }
@@ -570,6 +579,15 @@ function AdminApp(): JSX.Element {
         )}
         {tab === 'delivery' && store && (
           <DeliveryWorkbench
+            headers={() => authenticatedHeaders(store)}
+            key={store.id}
+            locale={locale}
+            request={api}
+            store={store}
+          />
+        )}
+        {tab === 'finance' && store && (
+          <FinancialReconciliationWorkbench
             headers={() => authenticatedHeaders(store)}
             key={store.id}
             locale={locale}

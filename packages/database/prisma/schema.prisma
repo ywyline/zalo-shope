@@ -151,6 +151,8 @@ model Store {
   shippingOperations             ShippingOperation[]
   outboxMessages                 OutboxMessage[]
   inboxMessages                  InboxMessage[]
+  financialReconciliationBatches FinancialReconciliationBatch[]
+  financialReconciliationLines   FinancialReconciliationLine[]
   afterSaleSetting               StoreAfterSaleSetting?
   afterSalePolicies              AfterSalePolicy[]
   afterSalePolicyVersions        AfterSalePolicyVersion[]
@@ -272,6 +274,7 @@ model AdminUser {
   afterSaleEvidenceHeld         AfterSaleEvidenceFile[]       @relation("AfterSaleEvidenceHeldBy")
   afterSaleSettlementsRequested AfterSaleSettlement[]         @relation("AfterSaleSettlementRequestedBy")
   afterSaleSettlementsConfirmed AfterSaleSettlement[]         @relation("AfterSaleSettlementConfirmedBy")
+  financialReconciliationBatches FinancialReconciliationBatch[]
 
   @@map("admin_users")
 }
@@ -2733,6 +2736,7 @@ model StorePaymentChannel {
   store           Store            @relation(fields: [storeId], references: [id], onDelete: Restrict)
   zaloApp         StoreZaloApp     @relation(fields: [storeId, deploymentEnvironment, checkoutAppId], references: [storeId, environment, miniAppId], onDelete: Restrict)
   paymentAttempts PaymentAttempt[]
+  reconciliationBatches FinancialReconciliationBatch[]
 
   @@unique([storeId, id])
   @@unique([storeId, deploymentEnvironment, providerCode])
@@ -2804,6 +2808,7 @@ model PaymentAttempt {
   transitions          PaymentTransition[]
   refunds              Refund[]
   afterSaleSettlements AfterSaleSettlement[]
+  reconciliationLines  FinancialReconciliationLine[]
 
   @@unique([storeId, id])
   @@unique([storeId, id, orderId])
@@ -2896,6 +2901,7 @@ model Refund {
   requester        AdminUser          @relation(fields: [requestedBy], references: [id], onDelete: Restrict)
   transitions      RefundTransition[]
   afterSaleRefunds AfterSaleRefund[]
+  reconciliationLines FinancialReconciliationLine[]
 
   @@unique([storeId, id])
   @@unique([storeId, id, paymentAttemptId, orderId, amountVnd])
@@ -3132,6 +3138,80 @@ model InboxMessage {
   @@unique([source, channelId, environment, externalMessageKey])
   @@index([storeId, status, receivedAt, id])
   @@map("inbox_messages")
+}
+
+model FinancialReconciliationBatch {
+  id                     String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                String                             @map("store_id") @db.Uuid
+  paymentChannelId       String                             @map("payment_channel_id") @db.Uuid
+  source                 FinancialReconciliationSource      @default(PAYMENT_PROVIDER)
+  businessDate           DateTime                           @map("business_date") @db.Date
+  currency               String                             @default("VND") @db.Char(3)
+  batchReferenceDigest   String                             @map("batch_reference_digest") @db.Char(64)
+  batchReferenceMasked   String                             @map("batch_reference_masked") @db.VarChar(160)
+  inputDigest            String                             @map("input_digest") @db.Char(64)
+  idempotencyKeyHash     String                             @map("idempotency_key_hash") @db.Char(64)
+  status                 FinancialReconciliationBatchStatus
+  recordCount            Int                                @map("record_count")
+  matchedCount           Int                                @map("matched_count")
+  exceptionCount         Int                                @map("exception_count")
+  grossAmountVnd         BigInt                             @map("gross_amount_vnd")
+  feeAmountVnd           BigInt                             @map("fee_amount_vnd")
+  netAmountVnd           BigInt                             @map("net_amount_vnd")
+  localExpectedAmountVnd BigInt                             @map("local_expected_amount_vnd")
+  differenceVnd          BigInt                             @map("difference_vnd")
+  reason                 String                             @db.VarChar(500)
+  createdBy              String                             @map("created_by") @db.Uuid
+  correlationId          String                             @map("correlation_id") @db.VarChar(128)
+  version                Int                                @default(1)
+  createdAt              DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store          Store                         @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  paymentChannel StorePaymentChannel           @relation(fields: [storeId, paymentChannelId], references: [storeId, id], onDelete: Restrict)
+  creator        AdminUser                     @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  lines          FinancialReconciliationLine[]
+
+  @@unique([storeId, id])
+  @@unique([storeId, paymentChannelId, batchReferenceDigest])
+  @@unique([storeId, source, idempotencyKeyHash])
+  @@index([storeId, businessDate(sort: Desc), createdAt(sort: Desc), id(sort: Desc)])
+  @@index([storeId, status, businessDate(sort: Desc), id(sort: Desc)])
+  @@map("financial_reconciliation_batches")
+}
+
+model FinancialReconciliationLine {
+  id                      String                            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId                 String                            @map("store_id") @db.Uuid
+  batchId                 String                            @map("batch_id") @db.Uuid
+  lineNumber              Int                               @map("line_number")
+  type                    FinancialReconciliationLineType
+  status                  FinancialReconciliationLineStatus
+  recordReferenceDigest   String                            @map("record_reference_digest") @db.Char(64)
+  recordReferenceMasked   String                            @map("record_reference_masked") @db.VarChar(160)
+  providerReferenceDigest String                            @map("provider_reference_digest") @db.Char(64)
+  providerReferenceMasked String                            @map("provider_reference_masked") @db.VarChar(160)
+  occurredAt              DateTime                          @map("occurred_at") @db.Timestamptz(6)
+  grossAmountVnd          BigInt                            @map("gross_amount_vnd")
+  feeAmountVnd            BigInt                            @map("fee_amount_vnd")
+  netAmountVnd            BigInt                            @map("net_amount_vnd")
+  localExpectedAmountVnd  BigInt?                           @map("local_expected_amount_vnd")
+  differenceVnd           BigInt?                           @map("difference_vnd")
+  paymentAttemptId        String?                           @map("payment_attempt_id") @db.Uuid
+  refundId                String?                           @map("refund_id") @db.Uuid
+  createdAt               DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store          Store                        @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  batch          FinancialReconciliationBatch @relation(fields: [storeId, batchId], references: [storeId, id], onDelete: Restrict)
+  paymentAttempt PaymentAttempt?              @relation(fields: [storeId, paymentAttemptId], references: [storeId, id], onDelete: Restrict)
+  refund         Refund?                      @relation(fields: [storeId, refundId], references: [storeId, id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, batchId, lineNumber])
+  @@unique([storeId, batchId, recordReferenceDigest])
+  @@index([storeId, status, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([storeId, paymentAttemptId])
+  @@index([storeId, refundId])
+  @@map("financial_reconciliation_lines")
 }
 
 enum AfterSaleType {
@@ -3539,6 +3619,36 @@ enum RefundStatus {
   REVIEW_REQUIRED
 
   @@map("refund_status")
+}
+
+enum FinancialReconciliationSource {
+  PAYMENT_PROVIDER
+
+  @@map("financial_reconciliation_source")
+}
+
+enum FinancialReconciliationBatchStatus {
+  MATCHED
+  REVIEW_REQUIRED
+
+  @@map("financial_reconciliation_batch_status")
+}
+
+enum FinancialReconciliationLineType {
+  PAYMENT
+  REFUND
+
+  @@map("financial_reconciliation_line_type")
+}
+
+enum FinancialReconciliationLineStatus {
+  MATCHED
+  AMOUNT_MISMATCH
+  REFERENCE_NOT_FOUND
+  FACT_NOT_FINAL
+  DUPLICATE_REFERENCE
+
+  @@map("financial_reconciliation_line_status")
 }
 
 enum ProviderTransitionSource {

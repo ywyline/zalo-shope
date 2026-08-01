@@ -132,5 +132,6 @@ export * from './payment-callback-primitives';
 export * from './refund-primitives';
 export * from './shipping-primitives';
 export * from './shipping-callback-primitives';
+export * from './financial-reconciliation-primitives';
 export * from './search-projection';
 export * from './reliable-messaging';

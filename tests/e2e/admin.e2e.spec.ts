@@ -906,3 +906,148 @@ test('order workbench schedules audited refunds, provider queries and dead-lette
   expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
   expect(browserErrors).toEqual([]);
 });
+
+test('financial reconciliation stays store-scoped, redacted and operable in three languages', async ({
+  page,
+}) => {
+  const browserErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+
+  const batchId = '50000000-0000-4000-8000-000000000001';
+  const fullProviderReference = 'zalo-provider-reference-must-not-render';
+  const batch = {
+    batch_reference_masked: 'se********01',
+    business_date: '2026-08-01',
+    created_at: '2026-08-01T03:00:00.000Z',
+    currency: 'VND',
+    difference_vnd: 0,
+    exception_count: 0,
+    fee_amount_vnd: 2_000,
+    gross_amount_vnd: 120_000,
+    id: batchId,
+    local_expected_amount_vnd: 120_000,
+    matched_count: 1,
+    net_amount_vnd: 118_000,
+    record_count: 1,
+    source: 'PAYMENT_PROVIDER',
+    status: 'MATCHED',
+    version: 1,
+  };
+  const detail = {
+    ...batch,
+    lines: [
+      {
+        difference_vnd: 0,
+        fee_amount_vnd: 2_000,
+        gross_amount_vnd: 120_000,
+        id: '50000000-0000-4000-8000-000000000002',
+        line_number: 1,
+        local_expected_amount_vnd: 120_000,
+        net_amount_vnd: 118_000,
+        occurred_at: '2026-08-01T02:30:00.000Z',
+        provider_reference_masked: 'za********er',
+        record_reference_masked: 'li******01',
+        status: 'MATCHED',
+        type: 'PAYMENT',
+      },
+    ],
+    replayed: false,
+  };
+  let importRequest: Record<string, unknown> | undefined;
+  let importIdempotencyKey = '';
+
+  await page.route('**/v1/admin/financial-reconciliation/batches?*', async (route) => {
+    const url = new URL(route.request().url());
+    await route.fulfill({
+      contentType: 'application/json',
+      json:
+        url.searchParams.get('store_id') === BEAUTY_STORE_ID
+          ? { items: [batch], next_cursor: null }
+          : { items: [], next_cursor: null },
+      status: 200,
+    });
+  });
+  await page.route(`**/v1/admin/financial-reconciliation/batches/${batchId}?*`, async (route) => {
+    await route.fulfill({ contentType: 'application/json', json: detail, status: 200 });
+  });
+  await page.route('**/v1/admin/financial-reconciliation/payment-batches?*', async (route) => {
+    importRequest = route.request().postDataJSON() as Record<string, unknown>;
+    importIdempotencyKey = route.request().headers()['idempotency-key'] ?? '';
+    await route.fulfill({ contentType: 'application/json', json: detail, status: 201 });
+  });
+
+  await signIn(page);
+  await page.getByRole('button', { name: 'Financial reconciliation' }).click();
+  await expect(page.getByRole('heading', { name: 'Financial reconciliation' })).toBeVisible();
+  await expect(page.locator('.reconciliation-table tbody tr')).toHaveCount(1);
+  await expect(page.locator('.reconciliation-workbench')).not.toContainText(fullProviderReference);
+
+  await page.getByRole('button', { name: 'View details' }).click();
+  await expect(page.locator('.reconciliation-detail')).toContainText('za********er');
+  await expect(page.locator('.reconciliation-detail')).not.toContainText(fullProviderReference);
+
+  const language = page.getByLabel('Language');
+  await language.selectOption('zh');
+  await expect(page.getByRole('heading', { name: '财务对账' })).toBeVisible();
+  await expect(page.locator('.reconciliation-detail')).toContainText('已匹配');
+  await language.selectOption('vi');
+  await expect(page.getByRole('heading', { name: 'Đối soát tài chính' })).toBeVisible();
+  await language.selectOption('en');
+
+  const storeSelect = page.getByLabel('Select store');
+  await storeSelect.selectOption(FASHION_STORE_ID);
+  await expect(page.locator('.reconciliation-workbench')).toContainText(
+    'No financial reconciliation batches exist in this scope.',
+  );
+  await storeSelect.selectOption(BEAUTY_STORE_ID);
+  await expect(page.locator('.reconciliation-table tbody tr')).toHaveCount(1);
+
+  await page.getByRole('button', { name: 'Import batch' }).click();
+  const form = page.locator('.reconciliation-import form');
+  await form.getByLabel('Batch reference').fill('settlement-browser-001');
+  await form.getByLabel('Import reason').fill('Finance reviewed the normalized browser statement');
+  await form.getByLabel('Record reference').fill('statement-line-browser-001');
+  await form.getByLabel('Provider reference').fill('provider-browser-001');
+  await form.getByLabel('Gross').fill('120000');
+  await form.getByLabel('Fee').fill('2000');
+  await form.getByLabel('I confirm finance reviewed this normalized data.').check();
+  const importResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes('/v1/admin/financial-reconciliation/payment-batches'),
+  );
+  await form.getByRole('button', { name: 'Record reconciliation batch' }).click();
+  expect((await importResponse).status()).toBe(201);
+  expect(importRequest).toMatchObject({
+    batch_reference: 'settlement-browser-001',
+    confirmation_code: 'IMPORT_PAYMENT_SETTLEMENT',
+    provider_code: 'ZALO_CHECKOUT_ZALOPAY',
+    provider_environment: 'SANDBOX',
+    records: [
+      expect.objectContaining({
+        fee_amount_vnd: 2_000,
+        gross_amount_vnd: 120_000,
+        provider_reference: 'provider-browser-001',
+        record_reference: 'statement-line-browser-001',
+        type: 'PAYMENT',
+      }),
+    ],
+  });
+  expect(importRequest).not.toHaveProperty('store_id');
+  expect(importRequest).not.toHaveProperty('payment_status');
+  expect(importIdempotencyKey).toMatch(/^financial-reconciliation:[0-9a-f-]{36}$/u);
+  await expect(page.locator('.reconciliation-workbench')).toContainText(
+    'The reconciliation batch was recorded.',
+  );
+
+  await page.setViewportSize({ height: 900, width: 640 });
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+  expect(browserErrors).toEqual([]);
+});

@@ -50,6 +50,12 @@ const permissionSeeds = [
   ['store.shipments.cancel', PermissionScope.STORE, 'Cancel current store shipments'],
   ['store.shipments.label.read', PermissionScope.STORE, 'Read current store shipment labels'],
   ['store.shipments.reconcile', PermissionScope.STORE, 'Reconcile current store shipments'],
+  ['store.finance.read', PermissionScope.STORE, 'Read current store financial reconciliation'],
+  [
+    'store.finance.reconcile',
+    PermissionScope.STORE,
+    'Import current store financial reconciliation facts',
+  ],
   ['store.integrations.read', PermissionScope.STORE, 'Read redacted integration configuration'],
   ['store.integrations.manage', PermissionScope.STORE, 'Manage integration secret references'],
   ['store.integration-jobs.retry', PermissionScope.STORE, 'Retry reviewed integration jobs'],

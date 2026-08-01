@@ -113,6 +113,8 @@ import { AFTER_SALE_EVIDENCE_STORAGE_PROVIDER } from './after-sales-evidence/aft
 import { MemberRuntimeController } from './member-runtime/member-runtime.controller';
 import { MemberRuntimeCursor } from './member-runtime/member-runtime-cursor';
 import { MemberRuntimeService } from './member-runtime/member-runtime.service';
+import { FinancialReconciliationController } from './financial-reconciliation/financial-reconciliation.controller';
+import { FinancialReconciliationService } from './financial-reconciliation/financial-reconciliation.service';
 
 const runtimeConfig = parseRuntimeConfig();
 const logger = createLogger('api', runtimeConfig.LOG_LEVEL);
@@ -209,6 +211,7 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     AfterSalesAdminController,
     AfterSalesAdminOrderController,
     MemberRuntimeController,
+    FinancialReconciliationController,
   ],
   providers: [
     AdminService,
@@ -244,6 +247,7 @@ function createShippingProviderResolver(config: RuntimeConfig): ShippingProvider
     AfterSalesEvidenceService,
     MemberRuntimeCursor,
     MemberRuntimeService,
+    FinancialReconciliationService,
     { provide: RUNTIME_CONFIG, useValue: runtimeConfig },
     {
       provide: DATABASE_CLIENT,

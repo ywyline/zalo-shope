@@ -1,12 +1,12 @@
 # M5 支付、退款、物流与集成任务权限矩阵
 
-> 状态：M5.1 契约已冻结，权限尚未登记到数据库
+> 状态：M5.2 权限目录已实施；P0-M5-005 Slice A 已增量登记财务对账权限
 >
 > 日期：2026-07-24
 >
 > 边界：ZaloPay 通过 Zalo Checkout，物流为 GHN；两个商城独立渠道配置
 
-## 1. 待登记权限
+## 1. 权限目录
 
 | 权限 code                      | 用途                                             | 风险 |
 | ------------------------------ | ------------------------------------------------ | ---- |
@@ -22,8 +22,10 @@
 | `store.integrations.read`      | 查看脱敏渠道状态、能力、环境和预检结果           | 高   |
 | `store.integrations.manage`    | 创建、启停和轮换当前商城渠道 secret reference    | 极高 |
 | `store.integration-jobs.retry` | 受审重试当前商城 dead-letter 外部任务            | 极高 |
+| `store.finance.read`           | 查看当前商城脱敏财务对账批次与逐笔差异           | 高   |
+| `store.finance.reconcile`      | 导入规范化支付/退款结算事实并形成差异            | 极高 |
 
-M5.2 迁移只登记权限目录，不自动授予生产角色。local/test `store-admin` 可显式获得这些权限以
+M5.2 与 P0-M5-005 Slice A 迁移只登记权限目录，不自动授予生产角色。local/test `store-admin` 可显式获得这些权限以
 支持自动化测试；生产必须按岗位和最小权限受审分配。任何 `read` 都不隐含写入、退款、对账、
 面单或重试权限。
 
@@ -46,6 +48,8 @@ M5.2 迁移只登记权限目录，不自动授予生产角色。local/test `sto
 | 修改/启停/轮换渠道 | `store.integrations.manage`                       | MFA freshness、二次确认、目标环境 allowlist、配置预检、版本和审计             |
 | 读取失败任务       | 对应领域 `read`                                   | 只返回错误类别/计数/时间，不返回原始 payload                                  |
 | 重试 dead-letter   | `store.integration-jobs.retry` + 对应领域写权限   | MFA freshness、expected version、原因、审计；不能改 payload/商城              |
+| 读取财务对账批次   | `store.finance.read`                              | FORCE RLS、目标商城、稳定游标、引用掩码；平台跨商城读取需访问原因             |
+| 导入支付/退款批次  | `store.finance.reconcile`                         | 直接商城角色、近期 MFA、幂等键、固定确认码、原因、规范化输入和只追加审计      |
 
 订单客服的 `store.orders.read/manage` 不自动拥有支付退款、渠道、运单或面单能力。仓库岗位可获
 运单 create/read/label，但不获退款和渠道管理；财务岗位可获支付/退款/对账，但不获渠道密钥
@@ -112,6 +116,8 @@ ShopId、费用、COD、面单 URL 或供应商 transaction/order code。前端�
 - worker 用数据库租约和 `FOR UPDATE SKIP LOCKED`，不依赖进程内锁。租约到期可恢复；达到上限
   进入 dead-letter，不删除事实或无限热循环。
 - outbox/inbox payload 不包含密钥、完整 PII 或 supplier auth；Redis/队列 key 含 store ID。
+- 财务对账 runtime 只获批次/逐笔 `SELECT/INSERT`，没有 `UPDATE/DELETE`；延迟约束在提交时重算
+  汇总并验证匹配事实仍属于批次渠道。原始批次、记录和供应商引用不写审计或 API。
 - 原始加密 payload 读取需要专用平台级应急权限、访问原因和审计；M5 普通商城权限均不提供。
 
 ## 7. 稳定拒绝与必测安全场景
@@ -128,3 +134,5 @@ ShopId、费用、COD、面单 URL 或供应商 transaction/order code。前端�
   SSRF、恶意面单 URL、超大/慢响应和限流。
 - 必测日志、审计、API、错误和测试快照不包含 Private Key、Key1/Key2、GHN Token、完整手机号/
   地址、MAC 原始 key、Authorization、SQL、堆栈或其他商城 UUID。
+- 必测财务对账的直接商城授权、锁等待后权限撤销、同键重放/异参冲突、同批次引用并发、跨商城
+  支付/退款引用、金额篡改、末页游标、RLS、只追加和延迟约束原子回滚。

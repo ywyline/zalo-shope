@@ -286,6 +286,22 @@ docs/
 - 当前对账能力仅为逐笔权威查询、本地转换/异常和死信视图。Zalo 商户结算文件、手续费、日界线、
   GHN COD 回款及差异处置材料未提供，保持外部 `BLOCKED/NOT_RUN`，不得称为日结对账完成。
 
+### P0-M5-005 Slice A 已实施支付/退款财务对账边界
+
+- 管理员财务工作台只提交已复核的规范化 `PAYMENT/REFUND` 逐笔；服务端按目标商城、支付渠道和
+  已有 provider reference 匹配内部支付/退款事实，计算整数 VND 毛额、手续费、带方向净额、
+  本地预期和差异。它不解析 ZaloPay 文件、不调用供应商，也不推进任何业务状态。
+- 导入先取得商城/source/幂等 advisory lock，在同一 `Serializable` 事务内重新锁定并验证商城、
+  管理员、session、近期 MFA、token 有效期和直接商城 `store.finance.reconcile` 权限；锁等待期间
+  撤销权限会失败关闭。同键同请求返回冻结结果，同键异参或同渠道批次引用冲突。
+- 批次与逐笔表 FORCE RLS 且只追加，runtime 仅有 `SELECT/INSERT`。复合外键阻止跨商城匹配；
+  延迟约束在提交时重算 header/lines 汇总，并验证支付或退款属于批次绑定渠道，任一差异整批回滚。
+- 列表按 `created_at/id` 稳定倒序游标分页，详情和三语管理 UI 只显示引用掩码。导入审计只保存
+  批次 ID、日期、数量和整数汇总，不保存规范化原文、完整供应商引用或幂等键。
+- Slice A 只是 repository/local-test 支付/退款对账能力。COD 应收/GHN 回款仍属于本任务 Slice B，
+  maker-checker 差异关闭属于 Slice C；真实结算文件、sandbox、资金、部署和 production rollout
+  继续 `BLOCKED/NOT_RUN`，不能据此宣称 P0-M5-005、M5 或 Production Ready。
+
 ### M6.1 已冻结售后、会员与主动分享边界
 
 - 售后是独立聚合，不把售后状态写入 `orders.status`，也不让退款、供应商或物流状态直接决定售后

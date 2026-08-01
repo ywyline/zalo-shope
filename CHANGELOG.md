@@ -2,6 +2,35 @@
 
 This file records completed repository changes. Each entry uses `Date`, `Added`, `Changed`, `Fixed`, `Removed` and `Docs`. Task status and future work belong only in `TASKS.md`.
 
+## 2026-08-01 - P0-M5-005 Payment And Refund Reconciliation Slice A (`0.1.0`)
+
+### Added
+
+- Store-isolated, append-only payment/refund reconciliation batches and lines with integer-VND summaries, redacted references, deferred aggregate/channel guards and FORCE RLS.
+- Audited administrator import plus filtered cursor list/detail APIs protected by direct-store RBAC, recent MFA, confirmation and idempotency.
+- Vietnamese, Chinese and English financial reconciliation workbench with responsive list, detail, filters, normalized import and loading/empty/error/success states.
+
+### Changed
+
+- Registered `store.finance.read` and `store.finance.reconcile` without granting production roles; local/test seed grants remain explicit.
+- Extended the M2-to-current migration exercise to cover the 53-migration tail, empty-fact rollback, forward restoration, RLS, triggers and runtime grants.
+
+### Fixed
+
+- Made batch and line creation compatible with Prisma composite relations while preserving one Serializable atomic transaction.
+- Revalidated direct-store authorization before replay/write after the advisory-lock wait and prevented deferred or later line inserts from invalidating immutable batch summaries or channel ownership.
+- Removed phantom final-page cursors by reading one extra ordered row; added duplicate-free filtered pagination coverage.
+
+### Removed
+
+- None.
+
+### Docs
+
+- Added the P0-M5-005 implementation plan and synchronized M5 OpenAPI, data dictionary, permission matrix, architecture and README boundaries.
+- Verified full format/lint/typecheck/build/schema gates, 630/630 unit tests, 346/346 integration tests, 26/26 browser E2E tests and the 53-migration M2 upgrade/down/forward exercise. Production dependency audit remains 3 moderate and 0 high/critical advisories.
+- Slice A is repository/local-test validated only. COD/GHN remittance, maker-checker closeout, real provider/sandbox/funds, deployment and production rollout remain incomplete or `BLOCKED/NOT_RUN`; `P0-M5-005` stays `In Progress`.
+
 ## 2026-08-01 - Commit-Level Merge Gate Clarification (`0.1.0`)
 
 ### Added
