@@ -1,6 +1,6 @@
 # P0-M5-005 财务对账实施计划
 
-> 状态：`In Progress`；当前执行支付/退款结算批次纵向切片
+> 状态：`In Progress`；Slice A 已集成，Slice B 已通过仓库/local-test 门禁，Slice C 尚未开始
 >
 > 日期：2026-08-01
 >
@@ -62,6 +62,8 @@
 
 - 新权限：`store.finance.read`、`store.finance.reconcile`。迁移只登记权限，不自动赋予生产角色；local/test seed 的 `store-admin` 显式获得权限。
 - `POST /v1/admin/financial-reconciliation/payment-batches`：要求目标商城、近期 MFA、直接商城权限、`Idempotency-Key`、确认码和原因；不接受 `store_id`、金额之外的业务状态或内部实体 ID。
+- `POST /v1/admin/financial-reconciliation/cod-batches`：复用同一敏感操作边界，只接受规范化 GHN COD 回款、运费和 COD 费；同批次及此前批次已出现的渠道引用均进入重复异常。
+- `GET /v1/admin/financial-reconciliation/cod-receivables`：只读当前商城 GHN 已签收 COD 运单，按建单前可信报价投影费用，并在状态过滤后提供稳定游标。
 - `GET /v1/admin/financial-reconciliation/batches`：按商城、状态、来源和日期分页读取。
 - `GET /v1/admin/financial-reconciliation/batches/{batchId}`：返回批次及逐笔差异，供应商引用只返回掩码。
 - 跨商城平台访问只用于只读且必须带审计原因；导入要求目标商城直接角色，不允许仅凭跨商城平台权限写入。
@@ -91,3 +93,28 @@
 - 静态与构建：`format:check`、`lint`、`typecheck`、`test:unit`、`build`、`db:validate`。
 - 仓库门禁：受影响集成、迁移演练、`git diff --check`、生产依赖审计和敏感信息扫描。
 - 真实 provider/sandbox/production：必须明确标记 `BLOCKED / NOT_RUN`。
+
+## 8. Slice B 实施记录
+
+- 前向迁移 `20260801100000_p0_m5_005_cod_reconciliation` 增加支付/物流来源互斥绑定、COD 回款行、
+  运单复合商城外键、预期费用与费用差异；有物流对账事实时 down 以 `55000` 失败关闭。
+- 匹配限定同商城、同 GHN 渠道、`ORDER_OUTBOUND`、COD 运单；可信费用限定运单创建前同订单、
+  渠道和 service 的 provider 报价。同一 provider shipment reference 跨批次再次出现不会重复计入回款。
+- COD 应收状态过滤通过有界扫描先筛选后分页，游标必须仍属于同商城应收范围；非法、跨商城或非
+  应收游标返回 404。
+- 管理端增加来源筛选、COD 应收、三语 GHN 规范化导入和商城切换详情清理；真实 GHN 格式、
+  sandbox/production、资金、部署和 rollout 均未运行或仍阻塞。
+
+## 9. Slice B 验证记录
+
+- `verify` 通过：Prettier、ESLint、类型检查、631/631 单元测试、全部 workspace 构建和 Prisma
+  schema 校验成功；本机仅临时使用 `NODE_OPTIONS=--max-old-space-size=4096` 避免默认 Node heap
+  在全仓 ESLint 阶段耗尽，未修改仓库运行配置。
+- 完整 infrastructure integration 39 个文件、348/348 项通过；Chromium/WebKit 浏览器 E2E
+  26/26 项通过。
+- M2 边界到 current 的 54 条迁移 fresh deploy、Slice B/Slice A guarded down 和重新前滚通过；
+  scratch 数据库与临时迁移目录已清理。
+- 生产依赖审计为 3 moderate、0 high/critical；M5 OpenAPI 3.1 严格 YAML 解析、285 个本地引用、
+  0 个外部/缺失引用通过。仓库仍无专用 OpenAPI 3.1 语义 linter。
+- `git diff --check`、高信号敏感信息和新增 TODO/FIXME/HACK/debug 扫描通过；未调用真实
+  GHN/ZaloPay、未确认资金、未部署或启用 production capability。

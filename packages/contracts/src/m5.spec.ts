@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  codRemittanceBatchImportSchema,
   paymentAttemptCreateRequestSchema,
   paymentProviderOrderBindRequestSchema,
   paymentSettlementBatchImportSchema,
@@ -155,6 +156,44 @@ describe('P0-M5-005 strict financial reconciliation DTOs', () => {
       paymentSettlementBatchImportSchema.parse({
         ...validBatch,
         records: [{ ...validBatch.records[0], gross_amount_vnd: 100_000.5 }],
+      }),
+    ).toThrow();
+  });
+
+  it('accepts normalized GHN COD remittance fees and rejects client shipment state', () => {
+    const validCodBatch = {
+      batch_reference: 'ghn-remittance-2026-08-01-001',
+      business_date: '2026-08-01',
+      confirmation_code: 'IMPORT_GHN_COD_SETTLEMENT',
+      provider_code: 'GHN',
+      provider_environment: 'SANDBOX',
+      reason: 'Finance reviewed the normalized GHN remittance statement',
+      records: [
+        {
+          cod_amount_vnd: 120_000,
+          cod_fee_vnd: 3_000,
+          occurred_at: '2026-08-01T05:00:00.000Z',
+          provider_reference: 'GHN-SHIPMENT-001',
+          record_reference: 'remittance-line-1',
+          shipping_fee_vnd: 22_000,
+        },
+      ],
+    } as const;
+    expect(codRemittanceBatchImportSchema.parse(validCodBatch).records[0]).toMatchObject({
+      cod_amount_vnd: 120_000,
+      cod_fee_vnd: 3_000,
+      shipping_fee_vnd: 22_000,
+    });
+    expect(() =>
+      codRemittanceBatchImportSchema.parse({
+        ...validCodBatch,
+        records: [{ ...validCodBatch.records[0], shipment_status: 'DELIVERED' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      codRemittanceBatchImportSchema.parse({
+        ...validCodBatch,
+        records: [{ ...validCodBatch.records[0], cod_fee_vnd: 0.5 }],
       }),
     ).toThrow();
   });

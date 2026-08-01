@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M5 Payment, Refund, Shipping and Integration API
-  version: 0.5.8-financial-reconciliation
+  version: 0.5.9-cod-reconciliation
   description: >-
     M5.5 已实施在线订单、支付尝试、异步 launch、provider-order 绑定、本人查询/重试、
     Zalo Checkout 主动查单和验签 webhook；M5.6 已实施 GHN 报价、运单命令、面单代理、
@@ -396,6 +396,63 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/financial-reconciliation/cod-batches:
+    post:
+      tags: [Admin financial reconciliation]
+      summary: 导入规范化 GHN COD 回款批次
+      description: >-
+        仅接受财务已复核的规范化 GHN COD 回款、运费和 COD 费用输入。服务端按目标商城、GHN
+        物流渠道、订单出库运单和创建运单前的可信报价匹配，分类金额、费用、终态、非应收、缺失和
+        重复异常，并原子追加脱敏事实。接口不解析供应商文件、不发起 GHN 请求、不确认真实资金到账，
+        也不改变订单、运单、支付、库存或现金状态。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CodRemittanceBatchImportRequest' }
+      responses:
+        '201':
+          description: 已原子追加批次；同键同请求重放返回 replayed=true
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinancialReconciliationImportResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/financial-reconciliation/cod-receivables:
+    get:
+      tags: [Admin financial reconciliation]
+      summary: 分页读取目标商城 COD 应收投影
+      description: >-
+        只投影当前商城 GHN、ORDER_OUTBOUND、COD 且已签收的可信运单，并使用运单创建前同渠道、
+        同订单、同服务的最近 provider 报价计算预期费用。状态筛选在稳定游标分页前生效；返回引用
+        始终为公开运单号或掩码，不代表供应商或银行已确认资金到账。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/CodReceivableStatus' }
+      responses:
+        '200':
+          description: 当前商城 COD 应收页
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CodReceivablePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/admin/financial-reconciliation/batches:
     get:
       tags: [Admin financial reconciliation]
@@ -411,7 +468,7 @@ paths:
         - $ref: '#/components/parameters/Limit'
         - name: source
           in: query
-          schema: { type: string, const: PAYMENT_PROVIDER }
+          schema: { type: string, enum: [PAYMENT_PROVIDER, SHIPPING_PROVIDER] }
         - name: status
           in: query
           schema: { $ref: '#/components/schemas/FinancialReconciliationBatchStatus' }
@@ -910,12 +967,66 @@ components:
           minItems: 1
           maxItems: 500
           items: { $ref: '#/components/schemas/PaymentSettlementRecord' }
+    CodRemittanceRecord:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          record_reference,
+          provider_reference,
+          occurred_at,
+          cod_amount_vnd,
+          shipping_fee_vnd,
+          cod_fee_vnd,
+        ]
+      properties:
+        record_reference: { type: string, minLength: 1, maxLength: 160 }
+        provider_reference: { type: string, minLength: 1, maxLength: 160 }
+        occurred_at: { type: string, format: date-time }
+        cod_amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        shipping_fee_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        cod_fee_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+    CodRemittanceBatchImportRequest:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          batch_reference,
+          business_date,
+          provider_code,
+          provider_environment,
+          confirmation_code,
+          reason,
+          records,
+        ]
+      properties:
+        batch_reference: { type: string, minLength: 1, maxLength: 160 }
+        business_date: { type: string, format: date }
+        provider_code: { type: string, const: GHN }
+        provider_environment: { type: string, enum: [SANDBOX, PRODUCTION] }
+        confirmation_code: { type: string, const: IMPORT_GHN_COD_SETTLEMENT }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+        records:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/CodRemittanceRecord' }
     FinancialReconciliationBatchStatus:
       type: string
       enum: [MATCHED, REVIEW_REQUIRED]
     FinancialReconciliationLineStatus:
       type: string
-      enum: [MATCHED, AMOUNT_MISMATCH, REFERENCE_NOT_FOUND, FACT_NOT_FINAL, DUPLICATE_REFERENCE]
+      enum:
+        [
+          MATCHED,
+          AMOUNT_MISMATCH,
+          FEE_MISMATCH,
+          REFERENCE_NOT_FOUND,
+          FACT_NOT_FINAL,
+          COD_NOT_RECEIVABLE,
+          EXPECTED_FEE_NOT_FOUND,
+          DUPLICATE_REFERENCE,
+        ]
     FinancialReconciliationLine:
       type: object
       additionalProperties: false
@@ -933,11 +1044,13 @@ components:
           net_amount_vnd,
           local_expected_amount_vnd,
           difference_vnd,
+          local_expected_fee_amount_vnd,
+          fee_difference_vnd,
         ]
       properties:
         id: { type: string, format: uuid }
         line_number: { type: integer, minimum: 1, maximum: 500 }
-        type: { type: string, enum: [PAYMENT, REFUND] }
+        type: { type: string, enum: [PAYMENT, REFUND, COD_REMITTANCE] }
         status: { $ref: '#/components/schemas/FinancialReconciliationLineStatus' }
         record_reference_masked: { type: string, minLength: 1, maxLength: 160 }
         provider_reference_masked: { type: string, minLength: 1, maxLength: 160 }
@@ -947,9 +1060,17 @@ components:
         net_amount_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
         local_expected_amount_vnd:
           type: [integer, 'null']
-          minimum: 1
+          minimum: 0
           maximum: 9007199254740991
         difference_vnd:
+          type: [integer, 'null']
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+        local_expected_fee_amount_vnd:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 9007199254740991
+        fee_difference_vnd:
           type: [integer, 'null']
           minimum: -9007199254740991
           maximum: 9007199254740991
@@ -972,12 +1093,14 @@ components:
           net_amount_vnd,
           local_expected_amount_vnd,
           difference_vnd,
+          local_expected_fee_amount_vnd,
+          fee_difference_vnd,
           version,
           created_at,
         ]
       properties:
         id: { type: string, format: uuid }
-        source: { type: string, const: PAYMENT_PROVIDER }
+        source: { type: string, enum: [PAYMENT_PROVIDER, SHIPPING_PROVIDER] }
         status: { $ref: '#/components/schemas/FinancialReconciliationBatchStatus' }
         batch_reference_masked: { type: string, minLength: 1, maxLength: 160 }
         business_date: { type: string, format: date }
@@ -990,6 +1113,8 @@ components:
         net_amount_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
         local_expected_amount_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
         difference_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+        local_expected_fee_amount_vnd: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        fee_difference_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
         version: { type: integer, const: 1 }
         created_at: { type: string, format: date-time }
     FinancialReconciliationBatchDetail:
@@ -1018,6 +1143,51 @@ components:
         items:
           type: array
           items: { $ref: '#/components/schemas/FinancialReconciliationBatchSummary' }
+        next_cursor: { type: [string, 'null'], format: uuid }
+    CodReceivableStatus:
+      type: string
+      enum: [UNREMITTED, REMITTED, REVIEW_REQUIRED]
+    CodReceivable:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          order_number,
+          public_shipment_number,
+          provider_reference_masked,
+          delivered_at,
+          expected_cod_amount_vnd,
+          expected_fee_amount_vnd,
+          expected_net_amount_vnd,
+          last_batch_id,
+          status,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        order_number: { type: string }
+        public_shipment_number: { type: string }
+        provider_reference_masked: { type: [string, 'null'], maxLength: 160 }
+        delivered_at: { type: [string, 'null'], format: date-time }
+        expected_cod_amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        expected_fee_amount_vnd:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 9007199254740991
+        expected_net_amount_vnd:
+          type: [integer, 'null']
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+        last_batch_id: { type: [string, 'null'], format: uuid }
+        status: { $ref: '#/components/schemas/CodReceivableStatus' }
+    CodReceivablePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CodReceivable' }
         next_cursor: { type: [string, 'null'], format: uuid }
     PaymentAttemptStatus:
       type: string

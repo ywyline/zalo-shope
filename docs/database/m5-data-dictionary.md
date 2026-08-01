@@ -333,51 +333,71 @@ REJECTED/DEAD_LETTER` 的开始、完成和错误字段组合由数据库约束�
   provider status、secret reference 或上游响应。查询先按认证 `member_id` 锁定订单关系，不能
   通过同商城任意退款 ID 横向读取。
 
-## 9. P0-M5-005 Slice A 财务对账批次
+## 9. P0-M5-005 财务对账批次
 
 ### 9.1 `financial_reconciliation_batches`
 
-支付/退款结算批次是商城隔离、只追加的财务事实，不是供应商文件或资金到账的替代品。字段与约束：
+支付/退款结算和 GHN COD 回款批次是商城隔离、只追加的财务事实，不是供应商文件或资金到账的替代品。字段与约束：
 
 | 字段                                                  | 类型/语义             | 约束                                                 |
 | ----------------------------------------------------- | --------------------- | ---------------------------------------------------- |
 | `id/store_id`                                         | uuid                  | `UNIQUE(store_id,id)`；FORCE RLS                     |
-| `payment_channel_id`                                  | uuid                  | 与 `store_id` 复合绑定当前商城支付渠道               |
-| `source`                                              | enum                  | Slice A 仅 `PAYMENT_PROVIDER`                        |
+| `payment_channel_id/shipping_channel_id`              | uuid nullable         | 按 source 恰好绑定一个同商城支付或物流渠道           |
+| `source`                                              | enum                  | `PAYMENT_PROVIDER` 或 `SHIPPING_PROVIDER`            |
 | `business_date/currency`                              | date/char(3)          | 日期由财务输入；币种固定 `VND`                       |
 | `batch_reference_digest/masked`                       | char(64)/varchar(160) | 原文不落库；同商城、渠道、摘要唯一                   |
 | `input_digest/idempotency_key_hash`                   | char(64)              | 同商城/source 幂等；同键异参冲突                     |
 | `status`                                              | enum                  | `MATCHED` 或 `REVIEW_REQUIRED`，必须与异常数量一致   |
 | `record_count/matched_count/exception_count`          | integer               | 1..500；总数必须等于匹配与异常之和                   |
 | `gross/fee/net/local_expected/difference_amount_vnd`  | bigint                | 服务端按逐笔计算；API 只返回 JavaScript safe integer |
+| `local_expected_fee/fee_difference_vnd`               | bigint                | Slice B 分离可信预期费用与费用差异；Slice A 固定为 0 |
 | `reason/created_by/correlation_id/version/created_at` | 审计元数据            | 原因 10..500；版本固定 1；批次不可更新或删除         |
 
 延迟约束触发器在提交时重算全部逐笔汇总并与 batch header 精确比较。它同时确认支付/退款匹配目标
-属于批次绑定的支付渠道；创建后再追加逐笔而使 header 失真也会整事务拒绝。
+属于批次绑定的支付渠道，或 COD 运单属于批次绑定的物流渠道与普通订单出库目的；创建后再追加逐笔而使
+header 失真也会整事务拒绝。
 
 ### 9.2 `financial_reconciliation_lines`
 
-| 字段                                   | 类型/语义             | 约束                                                             |
-| -------------------------------------- | --------------------- | ---------------------------------------------------------------- |
-| `id/store_id/batch_id/line_number`     | uuid/integer          | 批次复合 FK；同批次行号唯一，1..500                              |
-| `type/status`                          | enum                  | `PAYMENT`/`REFUND`；匹配、金额差异、引用不存在、非终态或重复引用 |
-| `record_reference_digest/masked`       | char(64)/varchar(160) | 同批次记录引用唯一；原文不落库                                   |
-| `provider_reference_digest/masked`     | char(64)/varchar(160) | 摘要绑定商城、渠道与类型；API/审计只返回掩码                     |
-| `occurred_at`                          | timestamptz           | 规范化输入的发生时间，不作为供应商权威时间证明                   |
-| `gross/fee/net_amount_vnd`             | bigint                | 支付净额 `gross-fee`；退款净额 `-(gross+fee)`                    |
-| `local_expected/difference_amount_vnd` | bigint nullable       | 找到事实时差异固定 `gross-local_expected`；未找到/重复时均为空   |
-| `payment_attempt_id/refund_id`         | uuid nullable         | 按类型恰好绑定一个同商城事实；异常引用可均为空                   |
+| 字段                                    | 类型/语义             | 约束                                                                     |
+| --------------------------------------- | --------------------- | ------------------------------------------------------------------------ |
+| `id/store_id/batch_id/line_number`      | uuid/integer          | 批次复合 FK；同批次行号唯一，1..500                                      |
+| `type/status`                           | enum                  | 支付、退款或 COD 回款；匹配、金额/费用差异、引用/终态/应收/费用/重复异常 |
+| `record_reference_digest/masked`        | char(64)/varchar(160) | 同批次记录引用唯一；原文不落库                                           |
+| `provider_reference_digest/masked`      | char(64)/varchar(160) | 摘要绑定商城、渠道与类型；API/审计只返回掩码                             |
+| `occurred_at`                           | timestamptz           | 规范化输入的发生时间，不作为供应商权威时间证明                           |
+| `gross/fee/net_amount_vnd`              | bigint                | 支付净额 `gross-fee`；退款净额 `-(gross+fee)`                            |
+| `local_expected/difference_amount_vnd`  | bigint nullable       | 找到事实时差异固定 `gross-local_expected`；未找到/重复时均为空           |
+| `local_expected_fee/fee_difference_vnd` | bigint nullable       | 仅可信费用存在时计算；缺失、非终态、非应收或重复时为空                   |
+| `payment_attempt_id/refund_id`          | uuid nullable         | 按类型恰好绑定一个同商城事实；异常引用可均为空                           |
+| `shipment_id`                           | uuid nullable         | COD 匹配行绑定同商城、同渠道 `ORDER_OUTBOUND` 运单                       |
 
 只有同商城、同渠道且已有供应商引用的支付/退款事实参与匹配。`SUCCEEDED` 且金额相等才是
 `MATCHED`；其他状态只形成复核事实，不修改支付、退款、订单、库存、运单或供应商状态。
 
-### 9.3 权限、迁移与回滚
+### 9.3 Slice B COD 应收与 GHN 规范化回款
+
+- COD 应收只投影当前商城 GHN 渠道、`ORDER_OUTBOUND`、COD、`DELIVERED` 且 COD 金额大于 0 的可信
+  运单；未出现对账行时为 `UNREMITTED`，最近精确匹配行为 `REMITTED`，其他最近行为
+  `REVIEW_REQUIRED`。状态筛选在稳定 `(delivered_at,id)` 游标扫描内完成，不产生空中间页或末页幻影。
+- 可信预期费用只取运单创建前、同商城/渠道/订单/service 的最近 `PROVIDER` 报价总额。缺失时进入
+  `EXPECTED_FEE_NOT_FOUND`，不使用当前费率、客户端费用或后建报价补写历史。
+- 规范化回款毛额等于 COD 回款，费用等于运费加 COD 费，净额为 `gross-fee`。已签收运单区分金额与
+  费用差异；拒收、退回、取消为 `COD_NOT_RECEIVABLE`；其他状态为 `FACT_NOT_FINAL`。
+- 同批次重复运单引用和此前任一 COD 对账批次已经出现的同商城/渠道引用均为
+  `DUPLICATE_REFERENCE`，不会再次绑定运单或把应收重复标记为回款。
+- 回款导入和应收读取不调用 GHN、不解析或保存供应商文件，不确认现金到账，也不修改订单、运单、
+  支付、库存或现金状态。
+
+### 9.4 权限、迁移与回滚
 
 - `store.finance.read` 只读批次/逐笔；`store.finance.reconcile` 要求直接商城角色、近期 MFA、
   `Idempotency-Key`、固定确认码与原因。迁移只登记权限，production 角色不自动获得。
 - runtime role 仅有两表 `SELECT/INSERT`，显式撤销 `UPDATE/DELETE`；两表 FORCE RLS。
 - `20260801090000_p0_m5_005_financial_reconciliation` 只增加枚举、两表、索引、约束、触发器和权限目录，
   不回填批次，不创建渠道，不生成供应商成功事实。
+- `20260801100000_p0_m5_005_cod_reconciliation` 只扩展来源/类型/状态、互斥渠道绑定、运单复合外键、
+  费用差异与完整性 guard；不创建渠道、运单、回款或真实供应商事实。
 - `down.sql` 仅供没有任何 batch/line 的 local/test scratch；存在事实时以 SQLSTATE `55000` 拒绝。
   已有事实或 production 环境只能向前修复。
 
@@ -415,6 +435,10 @@ REJECTED/DEAD_LETTER` 的开始、完成和错误字段组合由数据库约束�
 - P0-M5-005 Slice A 新增 `20260801090000_p0_m5_005_financial_reconciliation`，建立上述只追加
   支付/退款对账批次、延迟汇总/渠道完整性 guard、FORCE RLS 与两项财务权限；不解析供应商文件，
   不生成真实结算或资金事实。空 scratch 可执行 down；存在任一批次/逐笔时以 `55000` 拒绝。
+- P0-M5-005 Slice B 新增 `20260801100000_p0_m5_005_cod_reconciliation`，在同一只追加账本增加互斥
+  物流渠道绑定、COD 回款行、运单复合外键、预期费用/费用差异和扩展延迟完整性 guard。空 scratch
+  可先逆向 Slice B 再逆向 Slice A；存在任一 `SHIPPING_PROVIDER` 批次时 Slice B down 以 `55000`
+  拒绝。生产和已有事实环境只允许向前修复。
 - local/test seed 只登记权限，不创建持久化支付/物流渠道或任何业务事实。集成测试仅在回滚事务
   中创建禁用、非秘密测试渠道，避免把虚构商户配置误认为可用 sandbox。
 - fresh deploy、M2-to-current、重复 deploy、生产运行角色权限、RLS、指纹和索引均需自动化

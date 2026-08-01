@@ -917,7 +917,9 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
   page.on('pageerror', (error) => browserErrors.push(error.message));
 
   const batchId = '50000000-0000-4000-8000-000000000001';
+  const codBatchId = '50000000-0000-4000-8000-000000000003';
   const fullProviderReference = 'zalo-provider-reference-must-not-render';
+  const fullCodProviderReference = 'ghn-cod-reference-must-not-render';
   const batch = {
     batch_reference_masked: 'se********01',
     business_date: '2026-08-01',
@@ -926,9 +928,11 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
     difference_vnd: 0,
     exception_count: 0,
     fee_amount_vnd: 2_000,
+    fee_difference_vnd: 0,
     gross_amount_vnd: 120_000,
     id: batchId,
     local_expected_amount_vnd: 120_000,
+    local_expected_fee_amount_vnd: 0,
     matched_count: 1,
     net_amount_vnd: 118_000,
     record_count: 1,
@@ -942,10 +946,12 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
       {
         difference_vnd: 0,
         fee_amount_vnd: 2_000,
+        fee_difference_vnd: null,
         gross_amount_vnd: 120_000,
         id: '50000000-0000-4000-8000-000000000002',
         line_number: 1,
         local_expected_amount_vnd: 120_000,
+        local_expected_fee_amount_vnd: null,
         net_amount_vnd: 118_000,
         occurred_at: '2026-08-01T02:30:00.000Z',
         provider_reference_masked: 'za********er',
@@ -956,16 +962,71 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
     ],
     replayed: false,
   };
+  const codBatch = {
+    ...batch,
+    batch_reference_masked: 'gh********01',
+    difference_vnd: 0,
+    fee_amount_vnd: 25_000,
+    fee_difference_vnd: 0,
+    gross_amount_vnd: 120_000,
+    id: codBatchId,
+    local_expected_fee_amount_vnd: 25_000,
+    net_amount_vnd: 95_000,
+    source: 'SHIPPING_PROVIDER',
+  };
+  const codDetail = {
+    ...codBatch,
+    lines: [
+      {
+        difference_vnd: 0,
+        fee_amount_vnd: 25_000,
+        fee_difference_vnd: 0,
+        gross_amount_vnd: 120_000,
+        id: '50000000-0000-4000-8000-000000000004',
+        line_number: 1,
+        local_expected_amount_vnd: 120_000,
+        local_expected_fee_amount_vnd: 25_000,
+        net_amount_vnd: 95_000,
+        occurred_at: '2026-08-01T05:00:00.000Z',
+        provider_reference_masked: 'gh********er',
+        record_reference_masked: 'co******01',
+        status: 'MATCHED',
+        type: 'COD_REMITTANCE',
+      },
+    ],
+    replayed: false,
+  };
+  const codReceivable = {
+    delivered_at: '2026-08-01T04:30:00.000Z',
+    expected_cod_amount_vnd: 120_000,
+    expected_fee_amount_vnd: 25_000,
+    expected_net_amount_vnd: 95_000,
+    id: '50000000-0000-4000-8000-000000000005',
+    last_batch_id: codBatchId,
+    order_number: 'ORD-BEAUTY-COD-001',
+    provider_reference_masked: 'gh********er',
+    public_shipment_number: 'SHP-BEAUTY-COD-001',
+    status: 'REMITTED',
+  };
   let importRequest: Record<string, unknown> | undefined;
   let importIdempotencyKey = '';
+  let codImportRequest: Record<string, unknown> | undefined;
+  let codImportIdempotencyKey = '';
 
   await page.route('**/v1/admin/financial-reconciliation/batches?*', async (route) => {
     const url = new URL(route.request().url());
+    const source = url.searchParams.get('source');
+    const items =
+      source === 'PAYMENT_PROVIDER'
+        ? [batch]
+        : source === 'SHIPPING_PROVIDER'
+          ? [codBatch]
+          : [codBatch, batch];
     await route.fulfill({
       contentType: 'application/json',
       json:
         url.searchParams.get('store_id') === BEAUTY_STORE_ID
-          ? { items: [batch], next_cursor: null }
+          ? { items, next_cursor: null }
           : { items: [], next_cursor: null },
       status: 200,
     });
@@ -978,14 +1039,36 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
     importIdempotencyKey = route.request().headers()['idempotency-key'] ?? '';
     await route.fulfill({ contentType: 'application/json', json: detail, status: 201 });
   });
+  await page.route('**/v1/admin/financial-reconciliation/cod-batches?*', async (route) => {
+    codImportRequest = route.request().postDataJSON() as Record<string, unknown>;
+    codImportIdempotencyKey = route.request().headers()['idempotency-key'] ?? '';
+    await route.fulfill({ contentType: 'application/json', json: codDetail, status: 201 });
+  });
+  await page.route('**/v1/admin/financial-reconciliation/cod-receivables?*', async (route) => {
+    const url = new URL(route.request().url());
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        items: url.searchParams.get('store_id') === BEAUTY_STORE_ID ? [codReceivable] : [],
+        next_cursor: null,
+      },
+      status: 200,
+    });
+  });
 
   await signIn(page);
   await page.getByRole('button', { name: 'Financial reconciliation' }).click();
   await expect(page.getByRole('heading', { name: 'Financial reconciliation' })).toBeVisible();
-  await expect(page.locator('.reconciliation-table tbody tr')).toHaveCount(1);
+  const batchRows = page.locator('.reconciliation-table-wrap').first().locator('tbody tr');
+  await expect(batchRows).toHaveCount(2);
+  await expect(page.getByRole('heading', { name: 'COD receivables' })).toBeVisible();
+  await expect(page.locator('.reconciliation-workbench')).toContainText('ORD-BEAUTY-COD-001');
   await expect(page.locator('.reconciliation-workbench')).not.toContainText(fullProviderReference);
+  await expect(page.locator('.reconciliation-workbench')).not.toContainText(
+    fullCodProviderReference,
+  );
 
-  await page.getByRole('button', { name: 'View details' }).click();
+  await page.getByRole('button', { name: 'View details' }).last().click();
   await expect(page.locator('.reconciliation-detail')).toContainText('za********er');
   await expect(page.locator('.reconciliation-detail')).not.toContainText(fullProviderReference);
 
@@ -1002,8 +1085,15 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
   await expect(page.locator('.reconciliation-workbench')).toContainText(
     'No financial reconciliation batches exist in this scope.',
   );
+  await expect(page.locator('.reconciliation-detail')).toHaveCount(0);
   await storeSelect.selectOption(BEAUTY_STORE_ID);
-  await expect(page.locator('.reconciliation-table tbody tr')).toHaveCount(1);
+  await expect(batchRows).toHaveCount(2);
+
+  await page.getByLabel('All sources').selectOption('SHIPPING_PROVIDER');
+  await expect(batchRows).toHaveCount(1);
+  await expect(batchRows).toContainText('gh********01');
+  await page.getByLabel('All sources').selectOption('');
+  await expect(batchRows).toHaveCount(2);
 
   await page.getByRole('button', { name: 'Import batch' }).click();
   const form = page.locator('.reconciliation-import form');
@@ -1042,6 +1132,46 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
   await expect(page.locator('.reconciliation-workbench')).toContainText(
     'The reconciliation batch was recorded.',
   );
+
+  await page.getByRole('button', { name: 'Import batch' }).click();
+  const codForm = page.locator('.reconciliation-import form');
+  await codForm.getByLabel('Source').selectOption('SHIPPING_PROVIDER');
+  await codForm.getByLabel('Batch reference').fill('ghn-browser-001');
+  await codForm
+    .getByLabel('Import reason')
+    .fill('Finance reviewed the normalized GHN COD browser statement');
+  await codForm.getByLabel('Record reference').fill('cod-line-browser-001');
+  await codForm.getByLabel('Provider reference').fill('ghn-provider-browser-001');
+  await codForm.getByLabel('Remitted COD').fill('120000');
+  await codForm.getByLabel('Shipping fee').fill('22000');
+  await codForm.getByLabel('COD fee').fill('3000');
+  await codForm.getByLabel('I confirm finance reviewed this normalized data.').check();
+  const codImportResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes('/v1/admin/financial-reconciliation/cod-batches'),
+  );
+  await codForm.getByRole('button', { name: 'Record reconciliation batch' }).click();
+  expect((await codImportResponse).status()).toBe(201);
+  expect(codImportRequest).toMatchObject({
+    batch_reference: 'ghn-browser-001',
+    confirmation_code: 'IMPORT_GHN_COD_SETTLEMENT',
+    provider_code: 'GHN',
+    provider_environment: 'SANDBOX',
+    records: [
+      expect.objectContaining({
+        cod_amount_vnd: 120_000,
+        cod_fee_vnd: 3_000,
+        provider_reference: 'ghn-provider-browser-001',
+        record_reference: 'cod-line-browser-001',
+        shipping_fee_vnd: 22_000,
+      }),
+    ],
+  });
+  expect(codImportRequest).not.toHaveProperty('store_id');
+  expect(codImportRequest).not.toHaveProperty('shipment_status');
+  expect(codImportIdempotencyKey).toMatch(/^financial-reconciliation:[0-9a-f-]{36}$/u);
+  await expect(page.locator('.reconciliation-detail')).toContainText('GHN COD remittance');
 
   await page.setViewportSize({ height: 900, width: 640 });
   const layout = await page.evaluate(() => ({

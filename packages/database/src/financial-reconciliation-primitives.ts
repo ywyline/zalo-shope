@@ -16,6 +16,7 @@ export type FinancialReconciliationCommandErrorCode =
   | 'FINANCIAL_RECONCILIATION_CHANNEL_NOT_FOUND'
   | 'FINANCIAL_RECONCILIATION_IDEMPOTENCY_CONFLICT'
   | 'FINANCIAL_RECONCILIATION_BATCH_REFERENCE_CONFLICT'
+  | 'FINANCIAL_RECONCILIATION_CURSOR_NOT_FOUND'
   | 'FINANCIAL_RECONCILIATION_FACT_INVALID';
 
 export class FinancialReconciliationCommandError extends Error {
@@ -48,10 +49,12 @@ export type ImportPaymentSettlementBatchInput = Readonly<{
 export type FinancialReconciliationLineResult = Readonly<{
   differenceVnd: number | null;
   feeAmountVnd: number;
+  feeDifferenceVnd: null;
   grossAmountVnd: number;
   id: string;
   lineNumber: number;
   localExpectedAmountVnd: number | null;
+  localExpectedFeeAmountVnd: null;
   netAmountVnd: number;
   occurredAt: Date;
   providerReferenceMasked: string;
@@ -72,10 +75,12 @@ export type FinancialReconciliationBatchResult = Readonly<{
   differenceVnd: number;
   exceptionCount: number;
   feeAmountVnd: number;
+  feeDifferenceVnd: number;
   grossAmountVnd: number;
   id: string;
   lines: readonly FinancialReconciliationLineResult[];
   localExpectedAmountVnd: number;
+  localExpectedFeeAmountVnd: number;
   matchedCount: number;
   netAmountVnd: number;
   recordCount: number;
@@ -415,6 +420,12 @@ type PersistedBatch = Prisma.FinancialReconciliationBatchGetPayload<{
 }>;
 
 function result(batch: PersistedBatch, replayed: boolean): FinancialReconciliationBatchResult {
+  if (
+    batch.source !== 'PAYMENT_PROVIDER' ||
+    batch.lines.some((line) => !['PAYMENT', 'REFUND'].includes(line.type))
+  ) {
+    throw new FinancialReconciliationCommandError('FINANCIAL_RECONCILIATION_FACT_INVALID');
+  }
   return {
     batchReferenceMasked: batch.batchReferenceMasked,
     businessDate: batch.businessDate.toISOString().slice(0, 10),
@@ -429,24 +440,28 @@ function result(batch: PersistedBatch, replayed: boolean): FinancialReconciliati
       .map((line) => ({
         differenceVnd: line.differenceVnd === null ? null : safeInteger(line.differenceVnd),
         feeAmountVnd: safeInteger(line.feeAmountVnd),
+        feeDifferenceVnd: null,
         grossAmountVnd: safeInteger(line.grossAmountVnd),
         id: line.id,
         lineNumber: line.lineNumber,
         localExpectedAmountVnd:
           line.localExpectedAmountVnd === null ? null : safeInteger(line.localExpectedAmountVnd),
+        localExpectedFeeAmountVnd: null,
         netAmountVnd: safeInteger(line.netAmountVnd),
         occurredAt: line.occurredAt,
         providerReferenceMasked: line.providerReferenceMasked,
         recordReferenceMasked: line.recordReferenceMasked,
-        status: line.status,
-        type: line.type,
+        status: line.status as FinancialReconciliationLineResult['status'],
+        type: line.type as FinancialReconciliationLineResult['type'],
       })),
     localExpectedAmountVnd: safeInteger(batch.localExpectedAmountVnd),
+    localExpectedFeeAmountVnd: safeInteger(batch.localExpectedFeeAmountVnd),
+    feeDifferenceVnd: safeInteger(batch.feeDifferenceVnd),
     matchedCount: batch.matchedCount,
     netAmountVnd: safeInteger(batch.netAmountVnd),
     recordCount: batch.recordCount,
     replayed,
-    source: batch.source,
+    source: 'PAYMENT_PROVIDER',
     status: batch.status,
     version: batch.version,
   };

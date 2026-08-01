@@ -13,6 +13,8 @@ import {
 import {
   financialReconciliationBatchListQuerySchema,
   financialReconciliationBatchParamsSchema,
+  codReceivableListQuerySchema,
+  codRemittanceBatchImportSchema,
   financialReconciliationStoreQuerySchema,
   paymentSettlementBatchImportSchema,
 } from '@zalo-shop/contracts';
@@ -99,6 +101,41 @@ export class FinancialReconciliationController {
         ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
         ...(query.limit === undefined ? {} : { limit: query.limit }),
         ...(query.source === undefined ? {} : { source: query.source }),
+        ...(query.status === undefined ? {} : { status: query.status }),
+      }),
+    );
+  }
+
+  @Post('cod-batches')
+  public importCodBatch(
+    @Query() query: unknown,
+    @Body() body: unknown,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @Headers('idempotency-key') key: string | undefined,
+  ) {
+    return this.reconciliation.importCodBatch(
+      adminHeaders(authorization, storeCode, accessReason),
+      parse(financialReconciliationStoreQuerySchema, query).store_id,
+      idempotencyKey(key),
+      parse(codRemittanceBatchImportSchema, body),
+    );
+  }
+
+  @Get('cod-receivables')
+  public listCodReceivables(
+    @Query() query: Record<string, unknown>,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+  ) {
+    return this.reconciliation.listCodReceivables(
+      adminHeaders(authorization, storeCode, accessReason),
+      parse(financialReconciliationStoreQuerySchema, { store_id: query.store_id }).store_id,
+      parse(codReceivableListQuerySchema, {
+        ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+        ...(query.limit === undefined ? {} : { limit: query.limit }),
         ...(query.status === undefined ? {} : { status: query.status }),
       }),
     );

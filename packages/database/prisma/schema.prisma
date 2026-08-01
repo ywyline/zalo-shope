@@ -2736,7 +2736,7 @@ model StorePaymentChannel {
   store           Store            @relation(fields: [storeId], references: [id], onDelete: Restrict)
   zaloApp         StoreZaloApp     @relation(fields: [storeId, deploymentEnvironment, checkoutAppId], references: [storeId, environment, miniAppId], onDelete: Restrict)
   paymentAttempts PaymentAttempt[]
-  reconciliationBatches FinancialReconciliationBatch[]
+  reconciliationBatches FinancialReconciliationBatch[] @relation("FinancialReconciliationPaymentChannel")
 
   @@unique([storeId, id])
   @@unique([storeId, deploymentEnvironment, providerCode])
@@ -2766,6 +2766,7 @@ model StoreShippingChannel {
   shippingQuotes     ShippingQuote[]
   shipments          Shipment[]
   shippingOperations ShippingOperation[]
+  reconciliationBatches FinancialReconciliationBatch[] @relation("FinancialReconciliationShippingChannel")
 
   @@unique([storeId, id])
   @@unique([storeId, providerEnvironment, providerCode])
@@ -3004,6 +3005,7 @@ model Shipment {
   operations           ShippingOperation[]
   afterSale            AfterSale?            @relation(fields: [storeId, afterSaleId, orderId], references: [storeId, id, orderId], onDelete: Restrict, map: "shipments_after_sale_fkey")
   exchangeFulfillments ExchangeFulfillment[]
+  reconciliationLines FinancialReconciliationLine[]
 
   @@unique([storeId, id])
   @@unique([storeId, id, orderId])
@@ -3143,7 +3145,8 @@ model InboxMessage {
 model FinancialReconciliationBatch {
   id                     String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   storeId                String                             @map("store_id") @db.Uuid
-  paymentChannelId       String                             @map("payment_channel_id") @db.Uuid
+  paymentChannelId       String?                            @map("payment_channel_id") @db.Uuid
+  shippingChannelId      String?                            @map("shipping_channel_id") @db.Uuid
   source                 FinancialReconciliationSource      @default(PAYMENT_PROVIDER)
   businessDate           DateTime                           @map("business_date") @db.Date
   currency               String                             @default("VND") @db.Char(3)
@@ -3160,6 +3163,8 @@ model FinancialReconciliationBatch {
   netAmountVnd           BigInt                             @map("net_amount_vnd")
   localExpectedAmountVnd BigInt                             @map("local_expected_amount_vnd")
   differenceVnd          BigInt                             @map("difference_vnd")
+  localExpectedFeeAmountVnd BigInt                          @default(0) @map("local_expected_fee_amount_vnd")
+  feeDifferenceVnd       BigInt                             @default(0) @map("fee_difference_vnd")
   reason                 String                             @db.VarChar(500)
   createdBy              String                             @map("created_by") @db.Uuid
   correlationId          String                             @map("correlation_id") @db.VarChar(128)
@@ -3167,12 +3172,14 @@ model FinancialReconciliationBatch {
   createdAt              DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
 
   store          Store                         @relation(fields: [storeId], references: [id], onDelete: Restrict)
-  paymentChannel StorePaymentChannel           @relation(fields: [storeId, paymentChannelId], references: [storeId, id], onDelete: Restrict)
+  paymentChannel StorePaymentChannel?          @relation("FinancialReconciliationPaymentChannel", fields: [storeId, paymentChannelId], references: [storeId, id], onDelete: Restrict)
+  shippingChannel StoreShippingChannel?        @relation("FinancialReconciliationShippingChannel", fields: [storeId, shippingChannelId], references: [storeId, id], onDelete: Restrict)
   creator        AdminUser                     @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   lines          FinancialReconciliationLine[]
 
   @@unique([storeId, id])
   @@unique([storeId, paymentChannelId, batchReferenceDigest])
+  @@unique([storeId, shippingChannelId, batchReferenceDigest])
   @@unique([storeId, source, idempotencyKeyHash])
   @@index([storeId, businessDate(sort: Desc), createdAt(sort: Desc), id(sort: Desc)])
   @@index([storeId, status, businessDate(sort: Desc), id(sort: Desc)])
@@ -3196,14 +3203,18 @@ model FinancialReconciliationLine {
   netAmountVnd            BigInt                            @map("net_amount_vnd")
   localExpectedAmountVnd  BigInt?                           @map("local_expected_amount_vnd")
   differenceVnd           BigInt?                           @map("difference_vnd")
+  localExpectedFeeAmountVnd BigInt?                         @map("local_expected_fee_amount_vnd")
+  feeDifferenceVnd        BigInt?                           @map("fee_difference_vnd")
   paymentAttemptId        String?                           @map("payment_attempt_id") @db.Uuid
   refundId                String?                           @map("refund_id") @db.Uuid
+  shipmentId              String?                           @map("shipment_id") @db.Uuid
   createdAt               DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
 
   store          Store                        @relation(fields: [storeId], references: [id], onDelete: Restrict)
   batch          FinancialReconciliationBatch @relation(fields: [storeId, batchId], references: [storeId, id], onDelete: Restrict)
   paymentAttempt PaymentAttempt?              @relation(fields: [storeId, paymentAttemptId], references: [storeId, id], onDelete: Restrict)
   refund         Refund?                      @relation(fields: [storeId, refundId], references: [storeId, id], onDelete: Restrict)
+  shipment       Shipment?                    @relation(fields: [storeId, shipmentId], references: [storeId, id], onDelete: Restrict)
 
   @@unique([storeId, id])
   @@unique([storeId, batchId, lineNumber])
@@ -3211,6 +3222,7 @@ model FinancialReconciliationLine {
   @@index([storeId, status, createdAt(sort: Desc), id(sort: Desc)])
   @@index([storeId, paymentAttemptId])
   @@index([storeId, refundId])
+  @@index([storeId, shipmentId])
   @@map("financial_reconciliation_lines")
 }
 
@@ -3623,6 +3635,7 @@ enum RefundStatus {
 
 enum FinancialReconciliationSource {
   PAYMENT_PROVIDER
+  SHIPPING_PROVIDER
 
   @@map("financial_reconciliation_source")
 }
@@ -3637,6 +3650,7 @@ enum FinancialReconciliationBatchStatus {
 enum FinancialReconciliationLineType {
   PAYMENT
   REFUND
+  COD_REMITTANCE
 
   @@map("financial_reconciliation_line_type")
 }
@@ -3644,8 +3658,11 @@ enum FinancialReconciliationLineType {
 enum FinancialReconciliationLineStatus {
   MATCHED
   AMOUNT_MISMATCH
+  FEE_MISMATCH
   REFERENCE_NOT_FOUND
   FACT_NOT_FINAL
+  COD_NOT_RECEIVABLE
+  EXPECTED_FEE_NOT_FOUND
   DUPLICATE_REFERENCE
 
   @@map("financial_reconciliation_line_status")

@@ -46,6 +46,7 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
     memberId: randomUUID(),
     readerAdminId: randomUUID(),
     readerRoleId: randomUUID(),
+    shippingChannelId: randomUUID(),
   };
   let scratchCreated = false;
   let app: INestApplication;
@@ -53,6 +54,7 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
   let readerToken = '';
   let staleAdminToken = '';
   let storeAdminRoleId = '';
+  let warehouseId = '';
 
   function scratchUrl(source: string, databaseName: string): string {
     const url = new URL(source);
@@ -260,6 +262,70 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
     };
   }
 
+  async function createCodShipment(
+    tag: string,
+    input: {
+      expectedFeeVnd?: number;
+      status?: 'DELIVERED' | 'PENDING_PICKUP' | 'RETURNED';
+      withQuote?: boolean;
+    } = {},
+  ) {
+    const status = input.status ?? 'DELIVERED';
+    const order = await owner.order.create({
+      data: {
+        baseSubtotalVnd: 120_000,
+        memberId: fixture.memberId,
+        orderNumber: `P0M5005-COD-${tag}-${suffix}`,
+        payableVnd: 120_000,
+        paymentMethod: 'COD',
+        paymentStatus: 'PENDING',
+        quoteHash: hash(`p0-m5-005-cod-${tag}-${suffix}`),
+        shippingFeeVnd: 0,
+        status: status === 'DELIVERED' ? 'DELIVERED' : 'PENDING_FULFILLMENT',
+        storeId: BEAUTY_STORE_ID,
+      },
+    });
+    const createdAt = new Date(Date.now() - 60_000);
+    if (input.withQuote !== false) {
+      const expectedFeeVnd = input.expectedFeeVnd ?? 25_000;
+      await owner.shippingQuote.create({
+        data: {
+          baseFeeVnd: expectedFeeVnd - 3_000,
+          channelId: fixture.shippingChannelId,
+          codFeeVnd: 3_000,
+          expiresAt: new Date(Date.now() + 3_600_000),
+          orderId: order.id,
+          requestHash: hash(`p0-m5-005-cod-quote-${tag}-${suffix}`),
+          serviceCode: 'GHN:53320:2',
+          source: 'PROVIDER',
+          storeId: BEAUTY_STORE_ID,
+          totalFeeVnd: expectedFeeVnd,
+          createdAt: new Date(createdAt.getTime() - 60_000),
+        },
+      });
+    }
+    const shipment = await owner.shipment.create({
+      data: {
+        addressSnapshotCiphertext: 'encrypted-cod-reconciliation-address',
+        channelId: fixture.shippingChannelId,
+        clientOrderCode: `P0M5005-COD-${tag}-${suffix}`,
+        codAmountVnd: 120_000,
+        createdAt,
+        ...(status === 'DELIVERED' ? { deliveredAt: new Date() } : {}),
+        orderId: order.id,
+        parcelSnapshot: { height_cm: 1, length_cm: 1, weight_grams: 1, width_cm: 1 },
+        providerShipmentId: `GHN-COD-${tag}-${suffix}`,
+        publicShipmentNumber: `SHP-P0M5005-COD-${tag}-${suffix}`,
+        ...(status === 'RETURNED' ? { returnedAt: new Date() } : {}),
+        serviceCode: 'GHN:53320:2',
+        status,
+        storeId: BEAUTY_STORE_ID,
+        warehouseId,
+      },
+    });
+    return { order, shipment };
+  }
+
   beforeAll(async () => {
     assertScratchName();
     await admin.$executeRawUnsafe(`CREATE DATABASE "${scratchDatabaseName}"`);
@@ -341,6 +407,23 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
         secretFingerprint: hash(`p0-m5-005-secret-${suffix}`),
         status: 'ACTIVE',
         storeId: BEAUTY_STORE_ID,
+      },
+    });
+    warehouseId = (await owner.warehouse.findFirstOrThrow({ where: { storeId: BEAUTY_STORE_ID } }))
+      .id;
+    await owner.storeShippingChannel.create({
+      data: {
+        defaultServiceCode: 'GHN:53320:2',
+        id: fixture.shippingChannelId,
+        keyVersion: 'test-v1',
+        originAllowlistKey: 'GHN_SANDBOX',
+        providerCode: 'GHN',
+        providerEnvironment: 'SANDBOX',
+        secretFingerprint: hash(`p0-m5-005-ghn-secret-${suffix}`),
+        shopId: `p0-m5-005-shop-${suffix}`,
+        status: 'ACTIVE',
+        storeId: BEAUTY_STORE_ID,
+        tokenSecretRef: `test://p0-m5-005/${suffix}/ghn-token`,
       },
     });
     adminToken = await issueAdminToken(fixture.adminId, new Date());
@@ -566,6 +649,188 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
     ).toMatchObject({ status: 'PROVIDER_PENDING' });
   });
 
+  it('projects COD receivables and classifies normalized GHN remittance facts without mutating shipments', async () => {
+    const matched = await createCodShipment('matched');
+    const amountMismatch = await createCodShipment('amount-mismatch');
+    const feeMismatch = await createCodShipment('fee-mismatch');
+    const missingFee = await createCodShipment('missing-fee', { withQuote: false });
+    const pending = await createCodShipment('pending', { status: 'PENDING_PICKUP' });
+    const returned = await createCodShipment('returned', { status: 'RETURNED' });
+    const duplicate = await createCodShipment('duplicate');
+
+    const before = await api()
+      .get(
+        `/v1/admin/financial-reconciliation/cod-receivables?store_id=${BEAUTY_STORE_ID}&limit=100`,
+      )
+      .set(headers())
+      .expect(200);
+    expect(
+      before.body.items.find((item: { id: string }) => item.id === matched.shipment.id),
+    ).toMatchObject({
+      expected_cod_amount_vnd: 120_000,
+      expected_fee_amount_vnd: 25_000,
+      expected_net_amount_vnd: 95_000,
+      status: 'UNREMITTED',
+    });
+
+    const record = (
+      shipment: { providerShipmentId: string | null },
+      tag: string,
+      codAmountVnd = 120_000,
+      shippingFeeVnd = 22_000,
+      codFeeVnd = 3_000,
+    ) => ({
+      cod_amount_vnd: codAmountVnd,
+      cod_fee_vnd: codFeeVnd,
+      occurred_at: '2026-08-01T08:00:00.000Z',
+      provider_reference: shipment.providerShipmentId,
+      record_reference: `cod-remittance-${tag}-${suffix}`,
+      shipping_fee_vnd: shippingFeeVnd,
+    });
+    const path = `/v1/admin/financial-reconciliation/cod-batches?store_id=${BEAUTY_STORE_ID}`;
+    const body = {
+      batch_reference: `ghn-remittance-${suffix}`,
+      business_date: '2026-08-01',
+      confirmation_code: 'IMPORT_GHN_COD_SETTLEMENT',
+      provider_code: 'GHN',
+      provider_environment: 'SANDBOX',
+      reason: 'Finance reviewed the normalized GHN COD remittance statement',
+      records: [
+        record(matched.shipment, 'matched'),
+        record(amountMismatch.shipment, 'amount', 110_000),
+        record(feeMismatch.shipment, 'fee', 120_000, 23_000),
+        record(missingFee.shipment, 'missing-fee'),
+        record(pending.shipment, 'pending'),
+        record(returned.shipment, 'returned'),
+        {
+          ...record(matched.shipment, 'missing'),
+          provider_reference: `GHN-COD-MISSING-${suffix}`,
+        },
+        record(duplicate.shipment, 'duplicate-a'),
+        record(duplicate.shipment, 'duplicate-b'),
+      ],
+    };
+    const response = await api()
+      .post(path)
+      .set({ ...headers(), 'Idempotency-Key': `cod-remittance-import-${suffix}` })
+      .send(body)
+      .expect(201);
+    expect(response.body).toMatchObject({
+      exception_count: 8,
+      matched_count: 1,
+      source: 'SHIPPING_PROVIDER',
+      status: 'REVIEW_REQUIRED',
+    });
+    expect(response.body.lines.map((line: { status: string }) => line.status)).toEqual([
+      'MATCHED',
+      'AMOUNT_MISMATCH',
+      'FEE_MISMATCH',
+      'EXPECTED_FEE_NOT_FOUND',
+      'FACT_NOT_FINAL',
+      'COD_NOT_RECEIVABLE',
+      'REFERENCE_NOT_FOUND',
+      'DUPLICATE_REFERENCE',
+      'DUPLICATE_REFERENCE',
+    ]);
+    expect(response.body.lines[2]).toMatchObject({
+      difference_vnd: 0,
+      fee_difference_vnd: 1_000,
+      local_expected_fee_amount_vnd: 25_000,
+    });
+
+    const replay = await api()
+      .post(path)
+      .set({ ...headers(), 'Idempotency-Key': `cod-remittance-import-${suffix}` })
+      .send(body)
+      .expect(201);
+    expect(replay.body).toMatchObject({ id: response.body.id, replayed: true });
+    await api()
+      .post(path)
+      .set({ ...headers(), 'Idempotency-Key': `cod-remittance-import-${suffix}` })
+      .send({ ...body, reason: `${body.reason} changed` })
+      .expect(409);
+
+    const crossBatchDuplicate = await api()
+      .post(path)
+      .set({ ...headers(), 'Idempotency-Key': `cod-remittance-repeat-${suffix}` })
+      .send({
+        ...body,
+        batch_reference: `ghn-remittance-repeat-${suffix}`,
+        records: [record(matched.shipment, 'cross-batch-duplicate')],
+      })
+      .expect(201);
+    expect(crossBatchDuplicate.body).toMatchObject({
+      exception_count: 1,
+      matched_count: 0,
+      status: 'REVIEW_REQUIRED',
+    });
+    expect(crossBatchDuplicate.body.lines[0]).toMatchObject({
+      local_expected_amount_vnd: null,
+      status: 'DUPLICATE_REFERENCE',
+    });
+
+    await api()
+      .post(path)
+      .set({ ...headers(readerToken), 'Idempotency-Key': `cod-reader-${suffix}` })
+      .send(body)
+      .expect(403);
+    await api()
+      .post(path)
+      .set({ ...headers(staleAdminToken), 'Idempotency-Key': `cod-stale-${suffix}` })
+      .send(body)
+      .expect(403);
+    await api()
+      .get(`/v1/admin/financial-reconciliation/cod-receivables?store_id=${FASHION_STORE_ID}`)
+      .set(headers(adminToken, 'beauty-local'))
+      .expect(403);
+
+    const after = await api()
+      .get(
+        `/v1/admin/financial-reconciliation/cod-receivables?store_id=${BEAUTY_STORE_ID}&limit=100`,
+      )
+      .set(headers())
+      .expect(200);
+    expect(
+      after.body.items.find((item: { id: string }) => item.id === matched.shipment.id),
+    ).toMatchObject({ status: 'REMITTED' });
+    expect(
+      after.body.items.find((item: { id: string }) => item.id === feeMismatch.shipment.id),
+    ).toMatchObject({ status: 'REVIEW_REQUIRED' });
+
+    const reviewIds: string[] = [];
+    let reviewCursor: string | null = null;
+    do {
+      const query = new URLSearchParams({
+        limit: '1',
+        status: 'REVIEW_REQUIRED',
+        store_id: BEAUTY_STORE_ID,
+      });
+      if (reviewCursor) query.set('cursor', reviewCursor);
+      const page = await api()
+        .get(`/v1/admin/financial-reconciliation/cod-receivables?${query.toString()}`)
+        .set(headers())
+        .expect(200);
+      expect(page.body.items).toHaveLength(1);
+      const reviewId: unknown = page.body.items[0]?.id;
+      expect(reviewId).toEqual(expect.any(String));
+      if (typeof reviewId !== 'string') throw new Error('Expected a COD receivable id');
+      reviewIds.push(reviewId);
+      reviewCursor = page.body.next_cursor;
+    } while (reviewCursor);
+    expect(reviewIds.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(reviewIds).size).toBe(reviewIds.length);
+    await api()
+      .get(
+        `/v1/admin/financial-reconciliation/cod-receivables?store_id=${BEAUTY_STORE_ID}&cursor=${pending.shipment.id}`,
+      )
+      .set(headers())
+      .expect(404);
+
+    await expect(
+      owner.shipment.findUniqueOrThrow({ where: { id: matched.shipment.id } }),
+    ).resolves.toMatchObject({ codAmountVnd: 120_000n, status: 'DELIVERED' });
+  });
+
   it('revalidates direct permission after an advisory-lock wait before replay or write', async () => {
     const providerReference = `revoked-payment-${suffix}`;
     await createPayment('revoked', { providerReference });
@@ -607,6 +872,93 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
       await lockAcquired;
       pendingRequest = api()
         .post(`/v1/admin/financial-reconciliation/payment-batches?store_id=${BEAUTY_STORE_ID}`)
+        .set({ ...headers(), 'Idempotency-Key': key })
+        .send(body)
+        .then((response) => response);
+      await waitForBlockedAdvisoryLock();
+      await owner.adminStoreRole.delete({
+        where: {
+          storeId_adminUserId_roleId: {
+            adminUserId: fixture.adminId,
+            roleId: storeAdminRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+        },
+      });
+      assignmentRevoked = true;
+      releaseLock();
+      await blocker;
+      const response = await pendingRequest;
+      expect(response.status).toBe(403);
+      expect(
+        await owner.financialReconciliationBatch.count({
+          where: { idempotencyKeyHash, storeId: BEAUTY_STORE_ID },
+        }),
+      ).toBe(0);
+    } finally {
+      releaseLock();
+      await blocker.catch(() => undefined);
+      await pendingRequest?.catch(() => undefined);
+      if (assignmentRevoked) {
+        await owner.adminStoreRole.create({
+          data: {
+            adminUserId: fixture.adminId,
+            grantedBy: fixture.adminId,
+            roleId: storeAdminRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+        });
+      }
+    }
+  });
+
+  it('revalidates COD reconciliation permission after an advisory-lock wait', async () => {
+    const { shipment } = await createCodShipment('revoked-cod');
+    const key = `revoked-cod-import-${suffix}`;
+    const idempotencyKeyHash = hash(`${BEAUTY_STORE_ID}\u0000SHIPPING_PROVIDER\u0000${key}`);
+    const advisoryKey = `financial-reconciliation:${BEAUTY_STORE_ID}:${idempotencyKeyHash}`;
+    const body = {
+      batch_reference: `revoked-cod-batch-${suffix}`,
+      business_date: '2026-08-01',
+      confirmation_code: 'IMPORT_GHN_COD_SETTLEMENT',
+      provider_code: 'GHN',
+      provider_environment: 'SANDBOX',
+      reason: 'Finance reviewed this blocked normalized GHN COD statement',
+      records: [
+        {
+          cod_amount_vnd: 120_000,
+          cod_fee_vnd: 3_000,
+          occurred_at: '2026-08-01T08:15:00.000Z',
+          provider_reference: shipment.providerShipmentId,
+          record_reference: `revoked-cod-line-${suffix}`,
+          shipping_fee_vnd: 22_000,
+        },
+      ],
+    };
+    let releaseLock = () => undefined;
+    let markLockAcquired = () => undefined;
+    const lockRelease = new Promise<void>((resolveLock) => {
+      releaseLock = resolveLock;
+    });
+    const lockAcquired = new Promise<void>((resolveLock) => {
+      markLockAcquired = resolveLock;
+    });
+    const blocker = owner.$transaction(
+      async (transaction) => {
+        await transaction.$executeRaw`
+          SELECT pg_advisory_xact_lock(hashtextextended(${advisoryKey}, 0))
+        `;
+        markLockAcquired();
+        await lockRelease;
+      },
+      { timeout: 15_000 },
+    );
+    let assignmentRevoked = false;
+    let pendingRequest: Promise<request.Response> | undefined;
+    try {
+      await lockAcquired;
+      pendingRequest = api()
+        .post(`/v1/admin/financial-reconciliation/cod-batches?store_id=${BEAUTY_STORE_ID}`)
         .set({ ...headers(), 'Idempotency-Key': key })
         .send(body)
         .then((response) => response);
@@ -819,6 +1171,19 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
   });
 
   it('rejects the local/test down script before deleting existing financial facts', async () => {
+    const codDownPath = resolve(
+      REPOSITORY_ROOT,
+      'packages/database/prisma/migrations/20260801100000_p0_m5_005_cod_reconciliation/down.sql',
+    );
+    const codDownSql = readFileSync(codDownPath, 'utf8');
+    const codGuardEnd = codDownSql.indexOf('$$;');
+    expect(codGuardEnd).toBeGreaterThan(0);
+    await expect(
+      owner.$executeRawUnsafe(codDownSql.slice(0, codGuardEnd + 3)),
+    ).rejects.toMatchObject({
+      meta: expect.objectContaining({ code: '55000' }),
+    });
+
     const downPath = resolve(
       REPOSITORY_ROOT,
       'packages/database/prisma/migrations/20260801090000_p0_m5_005_financial_reconciliation/down.sql',

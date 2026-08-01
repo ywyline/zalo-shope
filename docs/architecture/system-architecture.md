@@ -302,6 +302,23 @@ docs/
   maker-checker 差异关闭属于 Slice C；真实结算文件、sandbox、资金、部署和 production rollout
   继续 `BLOCKED/NOT_RUN`，不能据此宣称 P0-M5-005、M5 或 Production Ready。
 
+### P0-M5-005 Slice B 已实施 COD 应收与 GHN 规范化回款边界
+
+- COD 应收只从当前商城 GHN 渠道、普通订单出库目的、COD 且已签收运单投影；预期 COD 取不可变
+  运单金额，预期费用只取建单前同订单/渠道/service 的最近可信 provider 报价。没有历史可信报价时
+  显式进入缺失费用异常，不用当前费率或客户端值回填。
+- 财务工作台只接受显式规范化的 GHN COD 回款、运费和 COD 费；不解析或猜测 GHN 结算文件，不
+  调用 sandbox/production，也不确认真实现金。服务端区分金额、费用、非终态、非应收、引用缺失和
+  重复异常，不改变订单、运单、支付、库存或现金状态。
+- 同批次或此前批次已出现的同商城/物流渠道 provider shipment reference 均为重复回款异常，不再次
+  绑定运单。应收状态筛选在稳定 `(delivered_at,id)` 扫描内完成，避免过滤后空页、重复或幻影游标。
+- 批次按 source 恰好绑定支付或物流渠道。COD 行以 `(store_id,shipment_id)` 复合外键绑定同商城
+  `ORDER_OUTBOUND` 运单；延迟 guard 同时重算 COD/费用汇总并复验渠道。runtime 授权仍只有两表
+  `SELECT/INSERT`，迁移不扩生产角色权限。
+- 管理端提供来源筛选、三语 GHN 导入、COD 应收与窄屏状态；商城切换立即清除旧商城详情。Slice B
+  仍只是 repository/local-test 规范化边界，真实 GHN 文件/账号/资金证据继续由 `P0-M5-004` 和外部
+  门禁跟踪，maker-checker 差异关闭仍属于 Slice C，因此任务继续 `In Progress`。
+
 ### M6.1 已冻结售后、会员与主动分享边界
 
 - 售后是独立聚合，不把售后状态写入 `orders.status`，也不让退款、供应商或物流状态直接决定售后

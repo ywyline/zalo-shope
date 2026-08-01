@@ -60,13 +60,59 @@ export const paymentSettlementBatchImportSchema = z
     });
   });
 
+const codRemittanceRecordSchema = z
+  .object({
+    cod_amount_vnd: positiveVndSchema,
+    cod_fee_vnd: nonnegativeVndSchema,
+    occurred_at: z.coerce.date(),
+    provider_reference: referenceSchema,
+    record_reference: referenceSchema,
+    shipping_fee_vnd: nonnegativeVndSchema,
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const fee = input.shipping_fee_vnd + input.cod_fee_vnd;
+    if (!Number.isSafeInteger(fee)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'COD remittance fees exceed the safe integer range',
+        path: ['shipping_fee_vnd'],
+      });
+    }
+  });
+
+export const codRemittanceBatchImportSchema = z
+  .object({
+    batch_reference: referenceSchema,
+    business_date: businessDateSchema,
+    confirmation_code: z.literal('IMPORT_GHN_COD_SETTLEMENT'),
+    provider_code: z.literal('GHN'),
+    provider_environment: z.enum(['SANDBOX', 'PRODUCTION']),
+    reason: z.string().trim().min(10).max(500),
+    records: z.array(codRemittanceRecordSchema).min(1).max(500),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const references = new Set<string>();
+    input.records.forEach((record, index) => {
+      if (references.has(record.record_reference)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Record references must be unique within a batch',
+          path: ['records', index, 'record_reference'],
+        });
+      }
+      references.add(record.record_reference);
+    });
+  });
+
 export const financialReconciliationBatchListQuerySchema = z
   .object({
     business_date_from: businessDateSchema.optional(),
     business_date_to: businessDateSchema.optional(),
     cursor: uuidSchema.optional(),
     limit: z.coerce.number().int().min(1).max(100).default(20),
-    source: z.literal('PAYMENT_PROVIDER').optional(),
+    source: z.enum(['PAYMENT_PROVIDER', 'SHIPPING_PROVIDER']).optional(),
     status: z.enum(['MATCHED', 'REVIEW_REQUIRED']).optional(),
   })
   .strict()
@@ -84,7 +130,17 @@ export const financialReconciliationBatchListQuerySchema = z
     }
   });
 
+export const codReceivableListQuerySchema = z
+  .object({
+    cursor: uuidSchema.optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    status: z.enum(['UNREMITTED', 'REMITTED', 'REVIEW_REQUIRED']).optional(),
+  })
+  .strict();
+
 export type PaymentSettlementBatchImport = z.infer<typeof paymentSettlementBatchImportSchema>;
+export type CodRemittanceBatchImport = z.infer<typeof codRemittanceBatchImportSchema>;
 export type FinancialReconciliationBatchListQuery = z.infer<
   typeof financialReconciliationBatchListQuerySchema
 >;
+export type CodReceivableListQuery = z.infer<typeof codReceivableListQuerySchema>;

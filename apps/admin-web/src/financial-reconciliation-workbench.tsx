@@ -4,9 +4,17 @@ type Locale = 'en' | 'vi' | 'zh';
 type Store = { code: string; default_locale: Locale; id: string };
 type Request = <T>(path: string, options?: RequestInit) => Promise<T>;
 type BatchStatus = 'MATCHED' | 'REVIEW_REQUIRED';
+type BatchSource = 'PAYMENT_PROVIDER' | 'SHIPPING_PROVIDER';
 type LineStatus =
-  'MATCHED' | 'AMOUNT_MISMATCH' | 'REFERENCE_NOT_FOUND' | 'FACT_NOT_FINAL' | 'DUPLICATE_REFERENCE';
-type LineType = 'PAYMENT' | 'REFUND';
+  | 'MATCHED'
+  | 'AMOUNT_MISMATCH'
+  | 'FEE_MISMATCH'
+  | 'REFERENCE_NOT_FOUND'
+  | 'FACT_NOT_FINAL'
+  | 'COD_NOT_RECEIVABLE'
+  | 'EXPECTED_FEE_NOT_FOUND'
+  | 'DUPLICATE_REFERENCE';
+type LineType = 'PAYMENT' | 'REFUND' | 'COD_REMITTANCE';
 type BatchSummary = {
   batch_reference_masked: string;
   business_date: string;
@@ -15,23 +23,27 @@ type BatchSummary = {
   difference_vnd: number;
   exception_count: number;
   fee_amount_vnd: number;
+  fee_difference_vnd: number;
   gross_amount_vnd: number;
   id: string;
   local_expected_amount_vnd: number;
+  local_expected_fee_amount_vnd: number;
   matched_count: number;
   net_amount_vnd: number;
   record_count: number;
-  source: 'PAYMENT_PROVIDER';
+  source: BatchSource;
   status: BatchStatus;
   version: number;
 };
 type BatchLine = {
   difference_vnd: number | null;
   fee_amount_vnd: number;
+  fee_difference_vnd: number | null;
   gross_amount_vnd: number;
   id: string;
   line_number: number;
   local_expected_amount_vnd: number | null;
+  local_expected_fee_amount_vnd: number | null;
   net_amount_vnd: number;
   occurred_at: string;
   provider_reference_masked: string;
@@ -42,27 +54,49 @@ type BatchLine = {
 type BatchDetail = BatchSummary & { lines: BatchLine[]; replayed?: boolean };
 type BatchPage = { items: BatchSummary[]; next_cursor: string | null };
 type DraftLine = {
+  codFee: string;
   fee: string;
   gross: string;
   occurredAt: string;
   providerReference: string;
   recordReference: string;
+  shippingFee: string;
   type: LineType;
+};
+type CodReceivableStatus = 'UNREMITTED' | 'REMITTED' | 'REVIEW_REQUIRED';
+type CodReceivable = {
+  delivered_at: string | null;
+  expected_cod_amount_vnd: number;
+  expected_fee_amount_vnd: number | null;
+  expected_net_amount_vnd: number | null;
+  id: string;
+  order_number: string;
+  provider_reference_masked: string | null;
+  public_shipment_number: string;
+  status: CodReceivableStatus;
 };
 
 const copy = {
   vi: {
     addLine: 'Thêm dòng',
+    allSources: 'Tất cả nguồn',
     allStatuses: 'Tất cả trạng thái',
     batchReference: 'Mã tham chiếu lô',
     businessDate: 'Ngày nghiệp vụ',
     cancel: 'Hủy',
     confirmation: 'Tôi xác nhận dữ liệu chuẩn hóa đã được tài chính kiểm tra.',
+    codEmpty: 'Chưa có khoản phải thu COD trong phạm vi này.',
+    codFee: 'Phí COD',
+    codReceivables: 'Khoản phải thu COD',
+    codRemittance: 'GHN chuyển COD',
     difference: 'Chênh lệch',
     empty: 'Chưa có lô đối soát trong phạm vi này.',
     environment: 'Môi trường kênh',
     error: 'Không thể hoàn tất yêu cầu đối soát.',
     fee: 'Phí',
+    feeDifference: 'Chênh lệch phí',
+    expectedCod: 'COD dự kiến',
+    expectedFee: 'Phí dự kiến',
     from: 'Từ ngày',
     gross: 'Tổng tiền',
     import: 'Nhập lô',
@@ -75,30 +109,45 @@ const copy = {
     net: 'Ròng',
     occurredAt: 'Thời điểm phát sinh',
     payment: 'Thanh toán',
+    paymentSource: 'Thanh toán / hoàn tiền',
     providerReference: 'Tham chiếu nhà cung cấp',
     reason: 'Lý do nhập',
     recordReference: 'Tham chiếu dòng',
     refresh: 'Làm mới',
+    remittanceCod: 'COD đã chuyển',
     refund: 'Hoàn tiền',
+    remitted: 'Đã chuyển',
     removeLine: 'Xóa dòng',
     review: 'Cần kiểm tra',
+    shippingFee: 'Phí vận chuyển',
+    shippingSource: 'GHN / COD',
+    source: 'Nguồn',
     title: 'Đối soát tài chính',
     to: 'Đến ngày',
     total: 'Tổng dòng',
+    unremitted: 'Chưa chuyển',
     view: 'Xem chi tiết',
   },
   zh: {
     addLine: '添加记录',
+    allSources: '全部来源',
     allStatuses: '全部状态',
     batchReference: '批次引用',
     businessDate: '业务日期',
     cancel: '取消',
     confirmation: '我确认财务已复核该规范化数据。',
+    codEmpty: '当前范围暂无 COD 应收。',
+    codFee: 'COD 手续费',
+    codReceivables: 'COD 应收清单',
+    codRemittance: 'GHN COD 回款',
     difference: '差异',
     empty: '当前范围暂无财务对账批次。',
     environment: '渠道环境',
     error: '财务对账请求未能完成。',
     fee: '手续费',
+    feeDifference: '费用差异',
+    expectedCod: '应收 COD',
+    expectedFee: '预期费用',
     from: '开始日期',
     gross: '总额',
     import: '导入批次',
@@ -111,30 +160,45 @@ const copy = {
     net: '净额',
     occurredAt: '发生时间',
     payment: '支付',
+    paymentSource: '支付 / 退款',
     providerReference: '供应商引用',
     reason: '导入原因',
     recordReference: '记录引用',
     refresh: '刷新',
+    remittanceCod: '回款 COD',
     refund: '退款',
+    remitted: '已回款',
     removeLine: '删除记录',
     review: '需要复核',
+    shippingFee: '运费',
+    shippingSource: 'GHN / COD',
+    source: '来源',
     title: '财务对账',
     to: '结束日期',
     total: '记录总数',
+    unremitted: '未回款',
     view: '查看详情',
   },
   en: {
     addLine: 'Add record',
+    allSources: 'All sources',
     allStatuses: 'All statuses',
     batchReference: 'Batch reference',
     businessDate: 'Business date',
     cancel: 'Cancel',
     confirmation: 'I confirm finance reviewed this normalized data.',
+    codEmpty: 'No COD receivables exist in this scope.',
+    codFee: 'COD fee',
+    codReceivables: 'COD receivables',
+    codRemittance: 'GHN COD remittance',
     difference: 'Difference',
     empty: 'No financial reconciliation batches exist in this scope.',
     environment: 'Channel environment',
     error: 'The financial reconciliation request could not be completed.',
     fee: 'Fee',
+    feeDifference: 'Fee difference',
+    expectedCod: 'Expected COD',
+    expectedFee: 'Expected fee',
     from: 'From date',
     gross: 'Gross',
     import: 'Import batch',
@@ -147,16 +211,23 @@ const copy = {
     net: 'Net',
     occurredAt: 'Occurred at',
     payment: 'Payment',
+    paymentSource: 'Payment / refund',
     providerReference: 'Provider reference',
     reason: 'Import reason',
     recordReference: 'Record reference',
     refresh: 'Refresh',
+    remittanceCod: 'Remitted COD',
     refund: 'Refund',
+    remitted: 'Remitted',
     removeLine: 'Remove record',
     review: 'Review required',
+    shippingFee: 'Shipping fee',
+    shippingSource: 'GHN / COD',
+    source: 'Source',
     title: 'Financial reconciliation',
     to: 'To date',
     total: 'Total records',
+    unremitted: 'Unremitted',
     view: 'View details',
   },
 } as const;
@@ -164,24 +235,33 @@ const copy = {
 const statusCopy: Record<Locale, Record<BatchStatus | LineStatus, string>> = {
   vi: {
     AMOUNT_MISMATCH: 'Lệch số tiền',
+    COD_NOT_RECEIVABLE: 'Không phải khoản phải thu COD',
     DUPLICATE_REFERENCE: 'Trùng tham chiếu',
     FACT_NOT_FINAL: 'Dữ kiện chưa cuối',
+    EXPECTED_FEE_NOT_FOUND: 'Thiếu phí dự kiến',
+    FEE_MISMATCH: 'Lệch phí',
     MATCHED: 'Khớp',
     REFERENCE_NOT_FOUND: 'Không tìm thấy tham chiếu',
     REVIEW_REQUIRED: 'Cần kiểm tra',
   },
   zh: {
     AMOUNT_MISMATCH: '金额不符',
+    COD_NOT_RECEIVABLE: '非 COD 应收',
     DUPLICATE_REFERENCE: '引用重复',
     FACT_NOT_FINAL: '事实未终态',
+    EXPECTED_FEE_NOT_FOUND: '预期费用缺失',
+    FEE_MISMATCH: '费用不符',
     MATCHED: '已匹配',
     REFERENCE_NOT_FOUND: '引用不存在',
     REVIEW_REQUIRED: '需要复核',
   },
   en: {
     AMOUNT_MISMATCH: 'Amount mismatch',
+    COD_NOT_RECEIVABLE: 'COD not receivable',
     DUPLICATE_REFERENCE: 'Duplicate reference',
     FACT_NOT_FINAL: 'Fact not final',
+    EXPECTED_FEE_NOT_FOUND: 'Expected fee missing',
+    FEE_MISMATCH: 'Fee mismatch',
     MATCHED: 'Matched',
     REFERENCE_NOT_FOUND: 'Reference not found',
     REVIEW_REQUIRED: 'Review required',
@@ -203,14 +283,16 @@ function localDateTime(): string {
   )}`;
 }
 
-function newLine(index: number): DraftLine {
+function newLine(index: number, source: BatchSource = 'PAYMENT_PROVIDER'): DraftLine {
   return {
+    codFee: '0',
     fee: '0',
     gross: '',
     occurredAt: localDateTime(),
     providerReference: '',
     recordReference: `line-${index}`,
-    type: 'PAYMENT',
+    shippingFee: '0',
+    type: source === 'SHIPPING_PROVIDER' ? 'COD_REMITTANCE' : 'PAYMENT',
   };
 }
 
@@ -237,10 +319,14 @@ export function FinancialReconciliationWorkbench({
   const [items, setItems] = useState<BatchSummary[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [status, setStatus] = useState<'' | BatchStatus>('');
+  const [source, setSource] = useState<'' | BatchSource>('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [detail, setDetail] = useState<BatchDetail>();
   const [importOpen, setImportOpen] = useState(false);
+  const [importSource, setImportSource] = useState<BatchSource>('PAYMENT_PROVIDER');
+  const [receivables, setReceivables] = useState<CodReceivable[]>([]);
+  const [receivablesBusy, setReceivablesBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -257,6 +343,7 @@ export function FinancialReconciliationWorkbench({
     try {
       const query = new URLSearchParams({ limit: '20', store_id: store.id });
       if (status) query.set('status', status);
+      if (source) query.set('source', source);
       if (dateFrom) query.set('business_date_from', dateFrom);
       if (dateTo) query.set('business_date_to', dateTo);
       if (nextCursor) query.set('cursor', nextCursor);
@@ -273,9 +360,33 @@ export function FinancialReconciliationWorkbench({
     }
   };
 
+  const loadReceivables = async (): Promise<void> => {
+    setReceivablesBusy(true);
+    try {
+      const page = await request<{ items: CodReceivable[] }>(
+        `/v1/admin/financial-reconciliation/cod-receivables?store_id=${encodeURIComponent(store.id)}&limit=20`,
+        { headers: headers() },
+      );
+      setReceivables(page.items);
+    } catch {
+      setError(true);
+    } finally {
+      setReceivablesBusy(false);
+    }
+  };
+
   useEffect(() => {
     void load();
-  }, [store.id, status, dateFrom, dateTo]);
+  }, [store.id, status, source, dateFrom, dateTo]);
+
+  useEffect(() => {
+    void loadReceivables();
+  }, [store.id]);
+
+  useEffect(() => {
+    setDetail(undefined);
+    setImportOpen(false);
+  }, [store.id]);
 
   const showDetail = async (batchId: string): Promise<void> => {
     setBusy(true);
@@ -307,24 +418,36 @@ export function FinancialReconciliationWorkbench({
     setError(false);
     setSuccess(false);
     try {
+      const cod = importSource === 'SHIPPING_PROVIDER';
       const result = await request<BatchDetail>(
-        `/v1/admin/financial-reconciliation/payment-batches?store_id=${encodeURIComponent(store.id)}`,
+        `/v1/admin/financial-reconciliation/${cod ? 'cod-batches' : 'payment-batches'}?store_id=${encodeURIComponent(store.id)}`,
         {
           body: JSON.stringify({
             batch_reference: batchReference,
             business_date: businessDate,
-            confirmation_code: 'IMPORT_PAYMENT_SETTLEMENT',
-            provider_code: 'ZALO_CHECKOUT_ZALOPAY',
+            confirmation_code: cod ? 'IMPORT_GHN_COD_SETTLEMENT' : 'IMPORT_PAYMENT_SETTLEMENT',
+            provider_code: cod ? 'GHN' : 'ZALO_CHECKOUT_ZALOPAY',
             provider_environment: environment,
             reason,
-            records: lines.map((line) => ({
-              fee_amount_vnd: Number(line.fee),
-              gross_amount_vnd: Number(line.gross),
-              occurred_at: new Date(line.occurredAt).toISOString(),
-              provider_reference: line.providerReference,
-              record_reference: line.recordReference,
-              type: line.type,
-            })),
+            records: lines.map((line) =>
+              cod
+                ? {
+                    cod_amount_vnd: Number(line.gross),
+                    cod_fee_vnd: Number(line.codFee),
+                    occurred_at: new Date(line.occurredAt).toISOString(),
+                    provider_reference: line.providerReference,
+                    record_reference: line.recordReference,
+                    shipping_fee_vnd: Number(line.shippingFee),
+                  }
+                : {
+                    fee_amount_vnd: Number(line.fee),
+                    gross_amount_vnd: Number(line.gross),
+                    occurred_at: new Date(line.occurredAt).toISOString(),
+                    provider_reference: line.providerReference,
+                    record_reference: line.recordReference,
+                    type: line.type,
+                  },
+            ),
           }),
           headers: {
             ...headers(),
@@ -340,8 +463,9 @@ export function FinancialReconciliationWorkbench({
       setBatchReference('');
       setReason('');
       setConfirmed(false);
+      setImportSource('PAYMENT_PROVIDER');
       setLines([newLine(1)]);
-      await load();
+      await Promise.all([load(), loadReceivables()]);
     } catch {
       setError(true);
     } finally {
@@ -367,6 +491,17 @@ export function FinancialReconciliationWorkbench({
       </div>
 
       <div className="reconciliation-filters">
+        <label>
+          {t.allSources}
+          <select
+            onChange={(event) => setSource(event.target.value as '' | BatchSource)}
+            value={source}
+          >
+            <option value="">{t.allSources}</option>
+            <option value="PAYMENT_PROVIDER">{t.paymentSource}</option>
+            <option value="SHIPPING_PROVIDER">{t.shippingSource}</option>
+          </select>
+        </label>
         <label>
           {t.allStatuses}
           <select
@@ -453,6 +588,75 @@ export function FinancialReconciliationWorkbench({
         </button>
       )}
 
+      <div className="section-heading reconciliation-heading">
+        <div>
+          <p className="eyebrow">GHN</p>
+          <h3>{t.codReceivables}</h3>
+        </div>
+        <button
+          className="secondary"
+          disabled={receivablesBusy}
+          onClick={() => void loadReceivables()}
+          type="button"
+        >
+          {receivablesBusy ? t.loading : t.refresh}
+        </button>
+      </div>
+      {receivablesBusy && receivables.length === 0 ? (
+        <p className="empty-state">{t.loading}</p>
+      ) : receivables.length === 0 ? (
+        <p className="empty-state">{t.codEmpty}</p>
+      ) : (
+        <div className="reconciliation-table-wrap">
+          <table className="reconciliation-table">
+            <thead>
+              <tr>
+                <th>{t.providerReference}</th>
+                <th>{t.expectedCod}</th>
+                <th>{t.expectedFee}</th>
+                <th>{t.net}</th>
+                <th>{t.allStatuses}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {receivables.map((receivable) => (
+                <tr key={receivable.id}>
+                  <td>
+                    {receivable.public_shipment_number}
+                    <br />
+                    <small>
+                      {receivable.order_number} · {receivable.provider_reference_masked ?? '-'}
+                    </small>
+                  </td>
+                  <td>{formatVnd(receivable.expected_cod_amount_vnd, locale)}</td>
+                  <td>
+                    {receivable.expected_fee_amount_vnd === null
+                      ? statusCopy[locale].EXPECTED_FEE_NOT_FOUND
+                      : formatVnd(receivable.expected_fee_amount_vnd, locale)}
+                  </td>
+                  <td>
+                    {receivable.expected_net_amount_vnd === null
+                      ? '-'
+                      : formatVnd(receivable.expected_net_amount_vnd, locale)}
+                  </td>
+                  <td>
+                    <span
+                      className={`reconciliation-status status-${receivable.status.toLowerCase()}`}
+                    >
+                      {receivable.status === 'UNREMITTED'
+                        ? t.unremitted
+                        : receivable.status === 'REMITTED'
+                          ? t.remitted
+                          : t.review}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {detail && (
         <div className="reconciliation-detail">
           <div className="section-heading">
@@ -487,12 +691,22 @@ export function FinancialReconciliationWorkbench({
               <dt>{t.difference}</dt>
               <dd>{formatVnd(detail.difference_vnd, locale)}</dd>
             </div>
+            <div>
+              <dt>{t.feeDifference}</dt>
+              <dd>{formatVnd(detail.fee_difference_vnd, locale)}</dd>
+            </div>
           </dl>
           <div className="reconciliation-lines">
             {detail.lines.map((line) => (
               <article key={line.id}>
                 <div>
-                  <strong>{line.type === 'PAYMENT' ? t.payment : t.refund}</strong>
+                  <strong>
+                    {line.type === 'PAYMENT'
+                      ? t.payment
+                      : line.type === 'REFUND'
+                        ? t.refund
+                        : t.codRemittance}
+                  </strong>
                   <small>
                     {line.record_reference_masked} · {line.provider_reference_masked}
                   </small>
@@ -511,7 +725,7 @@ export function FinancialReconciliationWorkbench({
         <div className="reconciliation-import">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">PAYMENT_PROVIDER</p>
+              <p className="eyebrow">{importSource}</p>
               <h3>{t.import}</h3>
             </div>
             <button
@@ -526,6 +740,25 @@ export function FinancialReconciliationWorkbench({
           </div>
           <form onSubmit={(event) => void importBatch(event)}>
             <div className="reconciliation-import-meta">
+              <label>
+                {t.source}
+                <select
+                  onChange={(event) => {
+                    const nextSource = event.target.value as BatchSource;
+                    setImportSource(nextSource);
+                    setLines((current) =>
+                      current.map((line) => ({
+                        ...line,
+                        type: nextSource === 'SHIPPING_PROVIDER' ? 'COD_REMITTANCE' : 'PAYMENT',
+                      })),
+                    );
+                  }}
+                  value={importSource}
+                >
+                  <option value="PAYMENT_PROVIDER">{t.paymentSource}</option>
+                  <option value="SHIPPING_PROVIDER">{t.shippingSource}</option>
+                </select>
+              </label>
               <label>
                 {t.batchReference}
                 <input
@@ -573,6 +806,7 @@ export function FinancialReconciliationWorkbench({
                   <label>
                     {t.lineType}
                     <select
+                      disabled={importSource === 'SHIPPING_PROVIDER'}
                       onChange={(event) =>
                         updateLine(index, { type: event.target.value as LineType })
                       }
@@ -580,6 +814,7 @@ export function FinancialReconciliationWorkbench({
                     >
                       <option value="PAYMENT">{t.payment}</option>
                       <option value="REFUND">{t.refund}</option>
+                      <option value="COD_REMITTANCE">{t.codRemittance}</option>
                     </select>
                   </label>
                   <label>
@@ -614,7 +849,7 @@ export function FinancialReconciliationWorkbench({
                     />
                   </label>
                   <label>
-                    {t.gross}
+                    {importSource === 'SHIPPING_PROVIDER' ? t.remittanceCod : t.gross}
                     <input
                       max={Number.MAX_SAFE_INTEGER}
                       min="1"
@@ -625,18 +860,49 @@ export function FinancialReconciliationWorkbench({
                       value={line.gross}
                     />
                   </label>
-                  <label>
-                    {t.fee}
-                    <input
-                      max={Number.MAX_SAFE_INTEGER}
-                      min="0"
-                      onChange={(event) => updateLine(index, { fee: event.target.value })}
-                      required
-                      step="1"
-                      type="number"
-                      value={line.fee}
-                    />
-                  </label>
+                  {importSource === 'SHIPPING_PROVIDER' ? (
+                    <>
+                      <label>
+                        {t.shippingFee}
+                        <input
+                          max={Number.MAX_SAFE_INTEGER}
+                          min="0"
+                          onChange={(event) =>
+                            updateLine(index, { shippingFee: event.target.value })
+                          }
+                          required
+                          step="1"
+                          type="number"
+                          value={line.shippingFee}
+                        />
+                      </label>
+                      <label>
+                        {t.codFee}
+                        <input
+                          max={Number.MAX_SAFE_INTEGER}
+                          min="0"
+                          onChange={(event) => updateLine(index, { codFee: event.target.value })}
+                          required
+                          step="1"
+                          type="number"
+                          value={line.codFee}
+                        />
+                      </label>
+                    </>
+                  ) : (
+                    <label>
+                      {t.fee}
+                      <input
+                        max={Number.MAX_SAFE_INTEGER}
+                        min="0"
+                        onChange={(event) => updateLine(index, { fee: event.target.value })}
+                        required
+                        step="1"
+                        type="number"
+                        value={line.fee}
+                      />
+                    </label>
+                  )}
                   <button
                     aria-label={t.removeLine}
                     className="icon-button"
@@ -655,7 +921,9 @@ export function FinancialReconciliationWorkbench({
             <button
               className="secondary"
               disabled={lines.length >= 500}
-              onClick={() => setLines((current) => [...current, newLine(current.length + 1)])}
+              onClick={() =>
+                setLines((current) => [...current, newLine(current.length + 1, importSource)])
+              }
               type="button"
             >
               + {t.addLine}

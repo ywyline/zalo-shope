@@ -2,6 +2,35 @@
 
 This file records completed repository changes. Each entry uses `Date`, `Added`, `Changed`, `Fixed`, `Removed` and `Docs`. Task status and future work belong only in `TASKS.md`.
 
+## 2026-08-01 - P0-M5-005 COD Reconciliation Slice B (`0.1.0`)
+
+### Added
+
+- Store-isolated COD receivable projections and normalized GHN remittance imports with integer-VND gross, fee, net and difference facts.
+- Shipping-channel reconciliation batches and shipment-linked lines covering matched, amount/fee mismatch, missing reference/fee, non-final, non-receivable and duplicate-reference outcomes.
+- Three-language administrator COD receivable, source filtering and GHN import workflows with responsive loading, empty, error and success states.
+
+### Changed
+
+- Generalized append-only reconciliation batches to bind exactly one payment or shipping channel while preserving the Slice A payment/refund contract.
+- Extended filtered COD pagination to scan before slicing and require every cursor to remain inside the target store's delivered GHN COD scope.
+
+### Fixed
+
+- Prevented a GHN shipment reference repeated in the same or a later batch from being counted or linked as a second remittance.
+- Made quote and prior-line selection deterministic, aligned string digesting with Slice A and cleared stale batch detail immediately when an administrator changes stores.
+- Removed two lint failures found by the final repository gate without weakening runtime response validation.
+
+### Removed
+
+- None.
+
+### Docs
+
+- Synchronized M5 OpenAPI, data dictionary, permission matrix, architecture, implementation plan and README with the COD/GHN repository boundary.
+- Verified full format/lint/typecheck/build/schema gates, 631/631 unit tests, 348/348 integration tests, 26/26 Chromium/WebKit E2E tests and the 54-migration M2 upgrade/down/forward exercise. Production dependency audit remains 3 moderate and 0 high/critical advisories; OpenAPI strict YAML and 285 local references passed with no external or missing references.
+- Slice B is repository/local-test validated only. Real GHN formats, sandbox/production channels, funds, deployment and rollout remain `BLOCKED/NOT_RUN`; maker-checker Slice C remains incomplete and `P0-M5-005` stays `In Progress`.
+
 ## 2026-08-01 - P0-M5-005 Payment And Refund Reconciliation Slice A (`0.1.0`)
 
 ### Added

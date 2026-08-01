@@ -7,11 +7,15 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type {
+  CodReceivableListQuery,
+  CodRemittanceBatchImport,
   FinancialReconciliationBatchListQuery,
   PaymentSettlementBatchImport,
 } from '@zalo-shop/contracts';
 import {
   FinancialReconciliationCommandError,
+  importCodRemittanceBatch,
+  listCodReceivables,
   importPaymentSettlementBatch,
   type FinancialReconciliationBatchResult,
   type PrismaClient,
@@ -124,6 +128,74 @@ export class FinancialReconciliationService {
     });
   }
 
+  public async importCodBatch(
+    headers: AdminHeaders,
+    storeId: string,
+    idempotencyKey: string,
+    input: CodRemittanceBatchImport,
+  ) {
+    const context = await this.admin.authorizeSensitive(
+      headers,
+      storeId,
+      'store.finance.reconcile',
+    );
+    try {
+      return this.codBatchResultView(
+        await importCodRemittanceBatch(this.database, context, {
+          batchReference: input.batch_reference,
+          businessDate: input.business_date,
+          confirmation: input.confirmation_code,
+          idempotencyKey,
+          providerCode: input.provider_code,
+          providerEnvironment: input.provider_environment,
+          reason: input.reason,
+          records: input.records.map((record) => ({
+            codAmountVnd: record.cod_amount_vnd,
+            codFeeVnd: record.cod_fee_vnd,
+            occurredAt: record.occurred_at,
+            providerReference: record.provider_reference,
+            recordReference: record.record_reference,
+            shippingFeeVnd: record.shipping_fee_vnd,
+          })),
+        }),
+      );
+    } catch (error) {
+      this.mapCommandError(error);
+    }
+  }
+
+  public async listCodReceivables(
+    headers: AdminHeaders,
+    storeId: string,
+    query: CodReceivableListQuery,
+  ) {
+    const context = await this.admin.authorize(headers, storeId, 'store.finance.read');
+    try {
+      const result = await listCodReceivables(this.database, context, {
+        ...(query.cursor ? { cursor: query.cursor } : {}),
+        limit: query.limit,
+        ...(query.status ? { status: query.status } : {}),
+      });
+      return {
+        items: result.items.map((item) => ({
+          delivered_at: item.deliveredAt?.toISOString() ?? null,
+          expected_cod_amount_vnd: item.expectedCodAmountVnd,
+          expected_fee_amount_vnd: item.expectedFeeAmountVnd,
+          expected_net_amount_vnd: item.expectedNetAmountVnd,
+          id: item.id,
+          last_batch_id: item.lastBatchId,
+          order_number: item.orderNumber,
+          provider_reference_masked: item.providerReferenceMasked,
+          public_shipment_number: item.publicShipmentNumber,
+          status: item.status,
+        })),
+        next_cursor: result.nextCursor,
+      };
+    } catch (error) {
+      this.mapCommandError(error);
+    }
+  }
+
   public async getBatch(headers: AdminHeaders, storeId: string, batchId: string) {
     const context = await this.admin.authorize(headers, storeId, 'store.finance.read');
     return withStoreTransaction(this.database, context, async (transaction) => {
@@ -137,11 +209,17 @@ export class FinancialReconciliationService {
         lines: batch.lines.map((line) => ({
           difference_vnd: line.differenceVnd === null ? null : safeInteger(line.differenceVnd),
           fee_amount_vnd: safeInteger(line.feeAmountVnd),
+          fee_difference_vnd:
+            line.feeDifferenceVnd === null ? null : safeInteger(line.feeDifferenceVnd),
           gross_amount_vnd: safeInteger(line.grossAmountVnd),
           id: line.id,
           line_number: line.lineNumber,
           local_expected_amount_vnd:
             line.localExpectedAmountVnd === null ? null : safeInteger(line.localExpectedAmountVnd),
+          local_expected_fee_amount_vnd:
+            line.localExpectedFeeAmountVnd === null
+              ? null
+              : safeInteger(line.localExpectedFeeAmountVnd),
           net_amount_vnd: safeInteger(line.netAmountVnd),
           occurred_at: line.occurredAt.toISOString(),
           provider_reference_masked: line.providerReferenceMasked,
@@ -160,9 +238,11 @@ export class FinancialReconciliationService {
     differenceVnd: bigint;
     exceptionCount: number;
     feeAmountVnd: bigint;
+    feeDifferenceVnd: bigint;
     grossAmountVnd: bigint;
     id: string;
     localExpectedAmountVnd: bigint;
+    localExpectedFeeAmountVnd: bigint;
     matchedCount: number;
     netAmountVnd: bigint;
     recordCount: number;
@@ -178,9 +258,11 @@ export class FinancialReconciliationService {
       difference_vnd: safeInteger(batch.differenceVnd),
       exception_count: batch.exceptionCount,
       fee_amount_vnd: safeInteger(batch.feeAmountVnd),
+      fee_difference_vnd: safeInteger(batch.feeDifferenceVnd),
       gross_amount_vnd: safeInteger(batch.grossAmountVnd),
       id: batch.id,
       local_expected_amount_vnd: safeInteger(batch.localExpectedAmountVnd),
+      local_expected_fee_amount_vnd: safeInteger(batch.localExpectedFeeAmountVnd),
       matched_count: batch.matchedCount,
       net_amount_vnd: safeInteger(batch.netAmountVnd),
       record_count: batch.recordCount,
@@ -204,10 +286,12 @@ export class FinancialReconciliationService {
       lines: batch.lines.map((line) => ({
         difference_vnd: line.differenceVnd,
         fee_amount_vnd: line.feeAmountVnd,
+        fee_difference_vnd: line.feeDifferenceVnd,
         gross_amount_vnd: line.grossAmountVnd,
         id: line.id,
         line_number: line.lineNumber,
         local_expected_amount_vnd: line.localExpectedAmountVnd,
+        local_expected_fee_amount_vnd: line.localExpectedFeeAmountVnd,
         net_amount_vnd: line.netAmountVnd,
         occurred_at: line.occurredAt.toISOString(),
         provider_reference_masked: line.providerReferenceMasked,
@@ -216,6 +300,83 @@ export class FinancialReconciliationService {
         type: line.type,
       })),
       local_expected_amount_vnd: batch.localExpectedAmountVnd,
+      local_expected_fee_amount_vnd: batch.localExpectedFeeAmountVnd,
+      fee_difference_vnd: batch.feeDifferenceVnd,
+      matched_count: batch.matchedCount,
+      net_amount_vnd: batch.netAmountVnd,
+      record_count: batch.recordCount,
+      replayed: batch.replayed,
+      source: batch.source,
+      status: batch.status,
+      version: batch.version,
+    };
+  }
+
+  private codBatchResultView(batch: {
+    batchReferenceMasked: string;
+    businessDate: string;
+    createdAt: Date;
+    differenceVnd: number;
+    exceptionCount: number;
+    feeAmountVnd: number;
+    feeDifferenceVnd: number;
+    grossAmountVnd: number;
+    id: string;
+    lines: readonly {
+      differenceVnd: number | null;
+      feeAmountVnd: number;
+      feeDifferenceVnd: number | null;
+      grossAmountVnd: number;
+      id: string;
+      lineNumber: number;
+      localExpectedAmountVnd: number | null;
+      localExpectedFeeAmountVnd: number | null;
+      netAmountVnd: number;
+      occurredAt: Date;
+      providerReferenceMasked: string;
+      recordReferenceMasked: string;
+      status: string;
+      type: 'COD_REMITTANCE';
+    }[];
+    localExpectedAmountVnd: number;
+    localExpectedFeeAmountVnd: number;
+    matchedCount: number;
+    netAmountVnd: number;
+    recordCount: number;
+    replayed: boolean;
+    source: string;
+    status: string;
+    version: number;
+  }) {
+    return {
+      batch_reference_masked: batch.batchReferenceMasked,
+      business_date: batch.businessDate,
+      created_at: batch.createdAt.toISOString(),
+      currency: 'VND' as const,
+      difference_vnd: batch.differenceVnd,
+      exception_count: batch.exceptionCount,
+      fee_amount_vnd: batch.feeAmountVnd,
+      fee_difference_vnd: batch.feeDifferenceVnd,
+      gross_amount_vnd: batch.grossAmountVnd,
+      id: batch.id,
+      lines: batch.lines.map((line) => ({
+        difference_vnd: line.differenceVnd,
+        fee_amount_vnd: line.feeAmountVnd,
+        fee_difference_vnd: line.feeDifferenceVnd,
+        gross_amount_vnd: line.grossAmountVnd,
+        id: line.id,
+        line_number: line.lineNumber,
+        local_expected_amount_vnd: line.localExpectedAmountVnd,
+        local_expected_fee_amount_vnd: line.localExpectedFeeAmountVnd,
+        net_amount_vnd: line.netAmountVnd,
+        occurred_at: line.occurredAt.toISOString(),
+        provider_reference_masked: line.providerReferenceMasked,
+        record_reference_masked: line.recordReferenceMasked,
+        status: line.status,
+        type: line.type,
+      })),
+      local_expected_amount_vnd: batch.localExpectedAmountVnd,
+      local_expected_fee_amount_vnd: batch.localExpectedFeeAmountVnd,
       matched_count: batch.matchedCount,
       net_amount_vnd: batch.netAmountVnd,
       record_count: batch.recordCount,
@@ -235,7 +396,10 @@ export class FinancialReconciliationService {
         throw new ForbiddenException('Access denied');
       }
       if (error.code === 'FINANCIAL_RECONCILIATION_CHANNEL_NOT_FOUND') {
-        throw new NotFoundException('Payment channel not found');
+        throw new NotFoundException('Provider channel not found');
+      }
+      if (error.code === 'FINANCIAL_RECONCILIATION_CURSOR_NOT_FOUND') {
+        throw new NotFoundException('Financial reconciliation cursor not found');
       }
       throw new ConflictException(error.code);
     }

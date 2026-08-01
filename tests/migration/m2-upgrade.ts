@@ -71,6 +71,7 @@ const B4_MIGRATIONS = [
 
 const B5_MIGRATION_NAME = '20260731150000_m63_b5_after_sale_return_trust' as const;
 const P0_M5_005_MIGRATION_NAME = '20260801090000_p0_m5_005_financial_reconciliation' as const;
+const P0_M5_005_COD_MIGRATION_NAME = '20260801100000_p0_m5_005_cod_reconciliation' as const;
 
 const M6_MIGRATIONS = [
   '20260727110000_m62_after_sales_member_share_foundation',
@@ -1636,6 +1637,79 @@ async function assertFinancialReconciliationBoundary(
   }
 }
 
+async function assertCodReconciliationBoundary(
+  client: PrismaClientType,
+  shouldExist: boolean,
+): Promise<void> {
+  const [state] = await client.$queryRaw<
+    Array<{
+      columns: bigint;
+      constraints: bigint;
+      enum_values: bigint;
+      function_has_shipping_guard: boolean;
+      indexes: bigint;
+    }>
+  >`
+    SELECT
+      (SELECT count(*) FROM information_schema.columns
+       WHERE table_schema = 'public' AND (
+         (table_name = 'financial_reconciliation_batches' AND column_name IN (
+           'shipping_channel_id', 'local_expected_fee_amount_vnd', 'fee_difference_vnd'
+         )) OR
+         (table_name = 'financial_reconciliation_lines' AND column_name IN (
+           'shipment_id', 'local_expected_fee_amount_vnd', 'fee_difference_vnd'
+         ))
+       )) AS columns,
+      (SELECT count(*) FROM pg_catalog.pg_constraint
+       WHERE conname IN (
+         'financial_reconciliation_batches_source_channel_check',
+         'financial_reconciliation_batches_shipping_channel_fkey',
+         'financial_reconciliation_lines_shipment_fkey'
+       )) AS constraints,
+      (SELECT count(*) FROM pg_catalog.pg_enum enum_value
+       JOIN pg_catalog.pg_type enum_type ON enum_type.oid = enum_value.enumtypid
+       WHERE (enum_type.typname = 'financial_reconciliation_source' AND enum_value.enumlabel = 'SHIPPING_PROVIDER')
+          OR (enum_type.typname = 'financial_reconciliation_line_type' AND enum_value.enumlabel = 'COD_REMITTANCE')
+          OR (enum_type.typname = 'financial_reconciliation_line_status' AND enum_value.enumlabel IN (
+            'FEE_MISMATCH', 'COD_NOT_RECEIVABLE', 'EXPECTED_FEE_NOT_FOUND'
+          ))) AS enum_values,
+      COALESCE((SELECT pg_catalog.pg_get_functiondef(function_definition.oid) LIKE '%shipping_channel_id%'
+       FROM pg_catalog.pg_proc function_definition
+       JOIN pg_catalog.pg_namespace namespace ON namespace.oid = function_definition.pronamespace
+       WHERE namespace.nspname = 'app_security'
+         AND function_definition.proname = 'assert_financial_reconciliation_batch_integrity'), false)
+        AS function_has_shipping_guard,
+      (SELECT count(*) FROM pg_catalog.pg_indexes
+       WHERE schemaname = 'public' AND indexname IN (
+         'financial_reconciliation_batches_shipping_channel_reference_key',
+         'financial_reconciliation_lines_shipment_idx'
+       )) AS indexes
+  `;
+  const valid = shouldExist
+    ? state?.columns === 6n &&
+      state.constraints === 3n &&
+      state.enum_values === 5n &&
+      state.function_has_shipping_guard &&
+      state.indexes === 2n
+    : state?.columns === 0n &&
+      state.constraints === 0n &&
+      state.enum_values === 0n &&
+      !state.function_has_shipping_guard &&
+      state.indexes === 0n;
+  if (!valid) {
+    fail(
+      `P0-M5-005 COD reconciliation catalog differs: ${JSON.stringify({
+        columns: String(state?.columns),
+        constraints: String(state?.constraints),
+        enum_values: String(state?.enum_values),
+        function_has_shipping_guard: state?.function_has_shipping_guard,
+        indexes: String(state?.indexes),
+        shouldExist,
+      })}`,
+    );
+  }
+}
+
 async function assertM63B5DownBoundary(client: PrismaClientType): Promise<void> {
   const [catalogState] = await client.$queryRaw<
     Array<{
@@ -2663,8 +2737,8 @@ async function run(): Promise<void> {
   if (M2_MIGRATIONS.some((migrationName, index) => allMigrationNames[index] !== migrationName)) {
     fail('the tracked migration prefix no longer matches the approved M2 boundary');
   }
-  if (allMigrationNames.at(-1) !== P0_M5_005_MIGRATION_NAME) {
-    fail('the approved P0-M5-005 financial reconciliation migration must be the current tail');
+  if (allMigrationNames.at(-1) !== P0_M5_005_COD_MIGRATION_NAME) {
+    fail('the approved P0-M5-005 COD reconciliation migration must be the current tail');
   }
   const m5BoundaryIndex = allMigrationNames.indexOf(M5_MIGRATIONS.at(-1) ?? '');
   if (m5BoundaryIndex < 0) fail('the approved M5 boundary migration was not found');
@@ -2688,7 +2762,8 @@ async function run(): Promise<void> {
     allMigrationNames[b3MigrationIndex + 1] !== B4_MIGRATIONS[0] ||
     allMigrationNames[b3MigrationIndex + 2] !== B4_MIGRATIONS[1] ||
     allMigrationNames[b3MigrationIndex + 3] !== B5_MIGRATION_NAME ||
-    allMigrationNames[b3MigrationIndex + 4] !== P0_M5_005_MIGRATION_NAME
+    allMigrationNames[b3MigrationIndex + 4] !== P0_M5_005_MIGRATION_NAME ||
+    allMigrationNames[b3MigrationIndex + 5] !== P0_M5_005_COD_MIGRATION_NAME
   ) {
     fail('the approved M6.3-B3 to B5 migration boundary was not found');
   }
@@ -3415,6 +3490,7 @@ async function run(): Promise<void> {
     await assertM63B4ReviewBoundary(scratchClient);
     await assertM63B5ReturnBoundary(scratchClient);
     await assertFinancialReconciliationBoundary(scratchClient, true);
+    await assertCodReconciliationBoundary(scratchClient, true);
 
     await scratchClient.$transaction(async (transaction) => {
       await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
@@ -3553,6 +3629,7 @@ async function run(): Promise<void> {
     const repeatedB4CatalogFingerprint = await assertM63B4ReviewBoundary(scratchClient);
     const repeatedB5CatalogFingerprint = await assertM63B5ReturnBoundary(scratchClient);
     await assertFinancialReconciliationBoundary(scratchClient, true);
+    await assertCodReconciliationBoundary(scratchClient, true);
     await assertM63B2bD5ProtectedReadLock(scratchClient);
     await exerciseD5MigrationAtomicity(
       scratchClient,
@@ -3912,6 +3989,21 @@ async function run(): Promise<void> {
       P0_M5_005_MIGRATION_NAME,
       'down.sql',
     );
+    const codReconciliationDownPath = join(
+      MIGRATIONS_ROOT,
+      P0_M5_005_COD_MIGRATION_NAME,
+      'down.sql',
+    );
+    runPrisma(
+      ['db', 'execute', '--file', codReconciliationDownPath, '--schema', fullSchemaPath],
+      scratchDatabaseUrl,
+    );
+    await assertFinancialReconciliationBoundary(scratchClient, true);
+    await assertCodReconciliationBoundary(scratchClient, false);
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations"
+      WHERE migration_name = ${P0_M5_005_COD_MIGRATION_NAME}
+    `;
     runPrisma(
       ['db', 'execute', '--file', financialReconciliationDownPath, '--schema', fullSchemaPath],
       scratchDatabaseUrl,
@@ -3924,6 +4016,17 @@ async function run(): Promise<void> {
     runPrisma(['migrate', 'deploy', '--schema', fullSchemaPath], scratchDatabaseUrl);
     await assertMigrationState(scratchClient, allMigrationNames);
     await assertFinancialReconciliationBoundary(scratchClient, true);
+    await assertCodReconciliationBoundary(scratchClient, true);
+    runPrisma(
+      ['db', 'execute', '--file', codReconciliationDownPath, '--schema', fullSchemaPath],
+      scratchDatabaseUrl,
+    );
+    await assertFinancialReconciliationBoundary(scratchClient, true);
+    await assertCodReconciliationBoundary(scratchClient, false);
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations"
+      WHERE migration_name = ${P0_M5_005_COD_MIGRATION_NAME}
+    `;
     runPrisma(
       ['db', 'execute', '--file', financialReconciliationDownPath, '--schema', fullSchemaPath],
       scratchDatabaseUrl,
@@ -4078,6 +4181,7 @@ async function run(): Promise<void> {
     await assertM63B4ReviewBoundary(scratchClient);
     await assertM63B5ReturnBoundary(scratchClient);
     await assertFinancialReconciliationBoundary(scratchClient, true);
+    await assertCodReconciliationBoundary(scratchClient, true);
     const afterForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterForwardRepairFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during the M5/M6 forward repair exercise');
@@ -4270,6 +4374,7 @@ async function run(): Promise<void> {
     await assertM63B4ReviewBoundary(scratchClient);
     await assertM63B5ReturnBoundary(scratchClient);
     await assertFinancialReconciliationBoundary(scratchClient, true);
+    await assertCodReconciliationBoundary(scratchClient, true);
     const [d0RoundTripShape] = await scratchClient.$queryRaw<
       Array<{ ledger_exists: boolean; object_role_exists: boolean }>
     >`
@@ -4757,6 +4862,7 @@ async function run(): Promise<void> {
     await assertM63B4ReviewBoundary(scratchClient);
     await assertM63B5ReturnBoundary(scratchClient);
     await assertFinancialReconciliationBoundary(scratchClient, true);
+    await assertCodReconciliationBoundary(scratchClient, true);
 
     console.log(
       `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair, B3 historical policy preflight, B4 review/expiration, B5 return-trust and P0-M5-005 financial reconciliation catalog restoration and rollback guards`,
