@@ -283,7 +283,7 @@ docs/
 - 管理端订单工作台读取商城隔离的支付、退款和脱敏 outbox 状态，支持退款、支付/退款查询和
   dead-letter 重放；任务元数据还按支付、退款、物流领域 read 权限过滤。买家订单详情只读本人
   公开退款事实。三语 UI 不展示原始 payload、密钥、完整供应商引用或管理员内部原因。
-- 当前对账能力仅为逐笔权威查询、本地转换/异常和死信视图。Zalo 商户结算文件、手续费、日界线、
+- M5.7 完成时的对账能力仅为逐笔权威查询、本地转换/异常和死信视图。Zalo 商户结算文件、手续费、日界线、
   GHN COD 回款及差异处置材料未提供，保持外部 `BLOCKED/NOT_RUN`，不得称为日结对账完成。
 
 ### P0-M5-005 Slice A 已实施支付/退款财务对账边界
@@ -317,7 +317,26 @@ docs/
   `SELECT/INSERT`，迁移不扩生产角色权限。
 - 管理端提供来源筛选、三语 GHN 导入、COD 应收与窄屏状态；商城切换立即清除旧商城详情。Slice B
   仍只是 repository/local-test 规范化边界，真实 GHN 文件/账号/资金证据继续由 `P0-M5-004` 和外部
-  门禁跟踪，maker-checker 差异关闭仍属于 Slice C，因此任务继续 `In Progress`。
+  门禁跟踪；后续 maker-checker 差异关闭见 Slice C。
+
+### P0-M5-005 Slice C 已实施 maker-checker 差异关闭边界
+
+- 批次列表增加 `OPEN/CLOSED_ACCEPTED/CLOSED_ESCALATED` 复核投影和筛选；详情按不可变逐笔状态汇总
+  异常数量、毛额、净额、金额差异与费用差异，并返回可空的不可变 review 结果。
+- `POST /v1/admin/financial-reconciliation/batches/{batchId}/review` 只接受固定确认码、decision、固定
+  batch version 和 10..500 字原因。管理员必须具有目标商城直接 `store.finance.reconcile`、近期 MFA，
+  且不能是批次导入人；cross-access-only 不能关闭差异。
+- 命令取得商城/批次 advisory lock 后，在同一 Serializable 事务锁定并重验商城、管理员、session、
+  token/MFA、直接角色和权限。相同幂等键同请求重放冻结结果；同键异参、不同结论并发或已有关闭事实
+  冲突；锁等待期间撤权会在首笔业务写入前失败关闭。
+- `financial_reconciliation_reviews` 按商城和批次唯一、FORCE RLS 且只追加；runtime 仅有
+  `SELECT/INSERT`。延迟数据库 guard 复验 batch 仍为有异常的版本 1，且 reviewer 与 importer 不同。
+  审计只保存 review ID、decision、批次汇总和异常分类，不保存完整供应商引用或幂等键。
+- 管理端提供三语复核筛选、异常汇总、二次确认关闭表单和已关闭结果，双商城切换清理详情，并以
+  640px 窄屏断言避免页面级横向溢出。关闭结论不修改支付、退款、订单、库存、运单或现金状态。
+- Slice A/B/C 完成 `P0-M5-005` 的 repository/local-test Description；真实 ZaloPay/GHN 文件、sandbox、
+  资金、部署与 production rollout 仍分别由外部 acceptance/operations tasks 跟踪，不能据此宣称 M5、
+  P0 或项目 Production Ready。
 
 ### M6.1 已冻结售后、会员与主动分享边界
 

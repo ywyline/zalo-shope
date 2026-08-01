@@ -4,7 +4,7 @@
 >
 > Project version: `0.1.0` (repository package version)
 >
-> Project progress: **approximately 64%** of the full `REQUIREMENTS.md` scope
+> Project progress: **approximately 65%** of the full `REQUIREMENTS.md` scope
 >
 > Production readiness: **Not Ready**
 
@@ -18,17 +18,17 @@ Allowed status values are `Todo`, `In Progress`, `Done` and `Blocked`. `Done` me
 
 ## 2. Current Control State
 
-| Field             | Value                                                                                                                                                                                                                                                                                                  |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Current Sprint    | `S03 - Dependency recovery; execution resumed`                                                                                                                                                                                                                                                         |
-| Sprint Goal       | Restore independently executable vertical slices without changing product scope or business rules.                                                                                                                                                                                                     |
-| Current Task      | `P0-M5-005` - implement repository/local-test financial reconciliation on the existing provider-neutral facts.                                                                                                                                                                                         |
-| Next Task         | `P0-M6-007` - implement COD refund settlement after `P0-M5-005` completes; its implementation prerequisites are already satisfied.                                                                                                                                                                     |
-| Production Status | Not Ready; P0 product, external acceptance, compliance and operations gates remain open.                                                                                                                                                                                                               |
-| Main Sync         | Not performed: this recovery only updates task management; existing dirty worktree changes remain preserved.                                                                                                                                                                                           |
-| Last Verification | 2026-08-01: dependency recovery scan found independent P0/P1/P2 implementation slices; no business code changed. Existing P0-M6-009 hardening evidence remains 337/337 integration, 627/627 unit, 25/25 browser E2E, full verify and security gates; 3 moderate and 0 high/critical advisories remain. |
-| Task Counts       | `53` total: `16` Done, `24` Todo, `1` In Progress, `12` Blocked. Project progress remains approximately `64%`; starting P0-M5-005 does not change delivered capability.                                                                                                                                |
-| Eligible Queue    | `17` tasks are currently eligible: `P0-M5-005`, `P0-M6-007`, `P0-M6-008`, `P0-M7-001`, `P0-M7-002`, `P0-M7-003`, `P0-M7-005`, seven P1 implementation slices and three P2 implementation slices.                                                                                                       |
+| Field             | Value                                                                                                                                                                                                                                                           |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Current Sprint    | `S03 - Dependency recovery; execution resumed`                                                                                                                                                                                                                  |
+| Sprint Goal       | Restore independently executable vertical slices without changing product scope or business rules.                                                                                                                                                              |
+| Current Task      | `P0-M6-007` - selected as the next Ready Task; update it from `Todo` to `In Progress` only when implementation starts on its task branch.                                                                                                                       |
+| Next Task         | `P0-M6-008` - implement return inspection, exactly-once inventory restoration, refund eligibility and exchange fulfillment after the current task.                                                                                                              |
+| Production Status | Not Ready; P0 product, external acceptance, compliance and operations gates remain open.                                                                                                                                                                        |
+| Main Sync         | P0-M5-005 Slice A/B are on local `main`; the verified Slice C completion commit is eligible for same-run local Merge Gate synchronization. No remote push, PR, deployment or production enablement is authorized.                                               |
+| Last Verification | 2026-08-01: P0-M5-005 final state passed full verify (633/633 unit), 351/351 integration, 26/26 browser E2E, 55-migration guarded down/forward, OpenAPI 302-reference, Compose, Gitleaks and diff/security gates; audit remains 3 moderate and 0 high/critical. |
+| Task Counts       | `53` total: `17` Done, `24` Todo, `0` In Progress, `12` Blocked. Project progress is approximately `65%`; P0-M5-005 closes one provider-neutral M5 reconciliation point while external provider acceptance remains open.                                        |
+| Eligible Queue    | `17` tasks are currently eligible: six P0 slices beginning with `P0-M6-007`, eight P1 slices including newly eligible `P1-FIN-001`, and three P2 slices.                                                                                                        |
 
 ## 3. Progress Baseline
 
@@ -37,11 +37,11 @@ Progress is a recovered engineering estimate, not a release claim. It is weighte
 | Workstream                                           |   Weight |  Earned | Evidence Summary                                                                                                              |
 | ---------------------------------------------------- | -------: | ------: | ----------------------------------------------------------------------------------------------------------------------------- |
 | M0-M4 foundation, security, catalog and COD commerce |      42% |     42% | Repository implementation and automated closeout reports exist.                                                               |
-| M5 online payment, refund and GHN integration        |      13% |      9% | Core, adapters and buyer launch/recovery exist; real provider acceptance and financial closure remain open.                   |
+| M5 online payment, refund and GHN integration        |      13% |     10% | Core, buyer launch/recovery and provider-neutral financial reconciliation are closed; real provider acceptance remains open.  |
 | M6 after-sales, member and sharing                   |      23% |     11% | Data/policy/evidence, B3-B6 and member runtime/UI slices exist; B7, fulfillment, sharing and full after-sales UI remain open. |
 | M7 reports, compliance and operations                |      15% |      1% | Evidence templates and readiness tools exist; operational product and release gates remain open.                              |
 | External production acceptance                       |       7% |      1% | One partial iPhone beauty-store Zalo path exists; full provider/device/legal evidence is blocked.                             |
-| **Total**                                            | **100%** | **64%** | **Approximate current completion: 64%; this is not a production-readiness claim.**                                            |
+| **Total**                                            | **100%** | **65%** | **Approximate current completion: 65%; this is not a production-readiness claim.**                                            |
 
 ## 4. P0 Task Tree
 
@@ -67,13 +67,13 @@ Progress is a recovered engineering estimate, not a release claim. It is weighte
 
 ### 4.3 Payment, Refund And Logistics
 
-| ID        | Description                                                                                                                                                                                                                                             | Priority | Dependencies                                   | Status      |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ---------------------------------------------- | ----------- |
-| P0-M5-001 | Deliver provider-neutral payment/refund/shipping contracts, RLS data model, outbox/inbox, online payment core, Zalo Checkout/ZaloPay and GHN adapters, reconciliation workers and refund workbench. Scope is repository/local-test implementation only. | P0       | P0-M4-001                                      | Done        |
-| P0-M5-002 | Add the buyer Mini App online-payment checkout/launch/retry/recovery experience while keeping SDK and client results non-authoritative.                                                                                                                 | P0       | P0-M5-001                                      | Done        |
-| P0-M5-003 | Validate isolated Zalo Checkout/ZaloPay sandbox channels for both stores, including callbacks, query compensation, refund and reconciliation evidence.                                                                                                  | P0       | P0-M5-001, P0-M5-002, EXT-PAY-001, EXT-NET-001 | Blocked     |
-| P0-M5-004 | Validate both-store GHN sandbox quote/create/cancel/track/label/COD flows and manual exception recovery.                                                                                                                                                | P0       | P0-M5-001, EXT-GHN-001, EXT-NET-001            | Blocked     |
-| P0-M5-005 | Close financial reconciliation for payment settlements, fees, refund differences, COD receivables and GHN remittance.                                                                                                                                   | P0       | P0-M5-001                                      | In Progress |
+| ID        | Description                                                                                                                                                                                                                                             | Priority | Dependencies                                   | Status  |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ---------------------------------------------- | ------- |
+| P0-M5-001 | Deliver provider-neutral payment/refund/shipping contracts, RLS data model, outbox/inbox, online payment core, Zalo Checkout/ZaloPay and GHN adapters, reconciliation workers and refund workbench. Scope is repository/local-test implementation only. | P0       | P0-M4-001                                      | Done    |
+| P0-M5-002 | Add the buyer Mini App online-payment checkout/launch/retry/recovery experience while keeping SDK and client results non-authoritative.                                                                                                                 | P0       | P0-M5-001                                      | Done    |
+| P0-M5-003 | Validate isolated Zalo Checkout/ZaloPay sandbox channels for both stores, including callbacks, query compensation, refund and reconciliation evidence.                                                                                                  | P0       | P0-M5-001, P0-M5-002, EXT-PAY-001, EXT-NET-001 | Blocked |
+| P0-M5-004 | Validate both-store GHN sandbox quote/create/cancel/track/label/COD flows and manual exception recovery.                                                                                                                                                | P0       | P0-M5-001, EXT-GHN-001, EXT-NET-001            | Blocked |
+| P0-M5-005 | Close financial reconciliation for payment settlements, fees, refund differences, COD receivables and GHN remittance.                                                                                                                                   | P0       | P0-M5-001                                      | Done    |
 
 ### 4.4 After-Sales, Member And Sharing
 
@@ -150,7 +150,7 @@ The previous tree treated production acceptance as an implementation prerequisit
 
 The queue is ordered by priority and task-tree order. `Current Task` is the first item; `Next Task` is the next P0 slice after it.
 
-`P0-M5-005`, `P0-M6-007`, `P0-M6-008`, `P0-M7-001`, `P0-M7-002`, `P0-M7-003`, `P0-M7-005`, `P1-LOG-001`, `P1-INV-001`, `P1-MEM-001`, `P1-MKT-001`, `P1-AFF-001`, `P1-COD-001`, `P1-I18N-001`, `P2-TEN-001`, `P2-REC-001` and `P2-AICS-001` can start without any new external input.
+`P0-M6-007`, `P0-M6-008`, `P0-M7-001`, `P0-M7-002`, `P0-M7-003`, `P0-M7-005`, `P1-LOG-001`, `P1-INV-001`, `P1-MEM-001`, `P1-MKT-001`, `P1-AFF-001`, `P1-COD-001`, `P1-FIN-001`, `P1-I18N-001`, `P2-TEN-001`, `P2-REC-001` and `P2-AICS-001` can start without any new external input.
 
 ## 8. External Dependencies And Blocked Tasks
 
@@ -178,8 +178,8 @@ External dependency IDs are gates, not implementation tasks. No secret may be co
 
 | Risk                                                             | Impact                                                                                                 | Required Closure                                             |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
-| Buyer online payment exists only at repository/local-test scope. | Host, merchant, callback and funds defects may surface only in real Zalo/sandbox environments.         | Complete P0-M5-003 and financial closure.                    |
-| Real payment/refund and GHN/COD flows are unvalidated.           | Amount, callback, settlement, shipping and cash-reconciliation defects may surface only in production. | Complete P0-M5-003 through P0-M5-005.                        |
+| Buyer online payment exists only at repository/local-test scope. | Host, merchant, callback and funds defects may surface only in real Zalo/sandbox environments.         | Complete P0-M5-003 external payment acceptance.              |
+| Real payment/refund and GHN/COD flows are unvalidated.           | Amount, callback, settlement, shipping and cash-reconciliation defects may surface only in production. | Complete P0-M5-003 and P0-M5-004 external acceptance.        |
 | Basic after-sales is incomplete end to end.                      | Return inspection, COD refund, stock restore, exchange and customer/admin UX are unavailable.          | Complete P0-M6-007 through P0-M6-011.                        |
 | Reports and public compliance pages are absent.                  | Operations and Vietnam launch obligations cannot be met.                                               | Complete P0-M7-001 and P0-M7-002 plus professional sign-off. |
 | Deployment, observability, backup and recovery are unproven.     | Incidents, data loss or provider outages cannot be operated safely.                                    | Complete P0-M7-003 and P0-M7-004.                            |

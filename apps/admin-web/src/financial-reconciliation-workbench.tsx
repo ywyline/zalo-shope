@@ -5,6 +5,8 @@ type Store = { code: string; default_locale: Locale; id: string };
 type Request = <T>(path: string, options?: RequestInit) => Promise<T>;
 type BatchStatus = 'MATCHED' | 'REVIEW_REQUIRED';
 type BatchSource = 'PAYMENT_PROVIDER' | 'SHIPPING_PROVIDER';
+type ReviewStatus = 'OPEN' | 'CLOSED_ACCEPTED' | 'CLOSED_ESCALATED';
+type ReviewDecision = Exclude<ReviewStatus, 'OPEN'>;
 type LineStatus =
   | 'MATCHED'
   | 'AMOUNT_MISMATCH'
@@ -31,6 +33,7 @@ type BatchSummary = {
   matched_count: number;
   net_amount_vnd: number;
   record_count: number;
+  review_status: ReviewStatus;
   source: BatchSource;
   status: BatchStatus;
   version: number;
@@ -51,7 +54,25 @@ type BatchLine = {
   status: LineStatus;
   type: LineType;
 };
-type BatchDetail = BatchSummary & { lines: BatchLine[]; replayed?: boolean };
+type ExceptionSummary = {
+  difference_vnd: number;
+  fee_difference_vnd: number;
+  gross_amount_vnd: number;
+  line_count: number;
+  net_amount_vnd: number;
+  status: LineStatus;
+};
+type BatchDetail = BatchSummary & {
+  exception_summary: ExceptionSummary[];
+  lines: BatchLine[];
+  replayed?: boolean;
+  review: {
+    decision: ReviewDecision;
+    id: string;
+    reason: string;
+    reviewed_at: string;
+  } | null;
+};
 type BatchPage = { items: BatchSummary[]; next_cursor: string | null };
 type DraftLine = {
   codFee: string;
@@ -81,9 +102,16 @@ const copy = {
     addLine: 'Thêm dòng',
     allSources: 'Tất cả nguồn',
     allStatuses: 'Tất cả trạng thái',
+    allReviewStatuses: 'Tất cả kết luận',
+    closedAccepted: 'Đã đóng · chấp nhận chênh lệch',
+    closedEscalated: 'Đã đóng · chuyển cấp xử lý',
     batchReference: 'Mã tham chiếu lô',
     businessDate: 'Ngày nghiệp vụ',
     cancel: 'Hủy',
+    closeAccepted: 'Đóng và chấp nhận chênh lệch',
+    closeEscalated: 'Đóng và chuyển cấp xử lý',
+    closeReview: 'Ghi nhận kết luận độc lập',
+    closeReviewSuccess: 'Kết luận đối soát đã được ghi nhận.',
     confirmation: 'Tôi xác nhận dữ liệu chuẩn hóa đã được tài chính kiểm tra.',
     codEmpty: 'Chưa có khoản phải thu COD trong phạm vi này.',
     codFee: 'Phí COD',
@@ -95,6 +123,7 @@ const copy = {
     error: 'Không thể hoàn tất yêu cầu đối soát.',
     fee: 'Phí',
     feeDifference: 'Chênh lệch phí',
+    exceptionSummary: 'Tổng hợp ngoại lệ',
     expectedCod: 'COD dự kiến',
     expectedFee: 'Phí dự kiến',
     from: 'Từ ngày',
@@ -107,11 +136,17 @@ const copy = {
     loading: 'Đang tải dữ liệu tài chính…',
     matched: 'Khớp',
     net: 'Ròng',
+    openReview: 'Chờ rà soát độc lập',
     occurredAt: 'Thời điểm phát sinh',
     payment: 'Thanh toán',
     paymentSource: 'Thanh toán / hoàn tiền',
     providerReference: 'Tham chiếu nhà cung cấp',
     reason: 'Lý do nhập',
+    reviewConfirmation: 'Tôi xác nhận người nhập lô không thực hiện bước đóng này.',
+    reviewDecision: 'Kết luận rà soát',
+    reviewReason: 'Lý do kết luận',
+    reviewResult: 'Kết quả rà soát độc lập',
+    reviewedAt: 'Thời điểm kết luận',
     recordReference: 'Tham chiếu dòng',
     refresh: 'Làm mới',
     remittanceCod: 'COD đã chuyển',
@@ -132,9 +167,16 @@ const copy = {
     addLine: '添加记录',
     allSources: '全部来源',
     allStatuses: '全部状态',
+    allReviewStatuses: '全部复核结论',
+    closedAccepted: '已关闭 · 接受差异',
+    closedEscalated: '已关闭 · 升级处理',
     batchReference: '批次引用',
     businessDate: '业务日期',
     cancel: '取消',
+    closeAccepted: '关闭并接受差异',
+    closeEscalated: '关闭并升级处理',
+    closeReview: '记录独立复核结论',
+    closeReviewSuccess: '对账复核结论已记录。',
     confirmation: '我确认财务已复核该规范化数据。',
     codEmpty: '当前范围暂无 COD 应收。',
     codFee: 'COD 手续费',
@@ -146,6 +188,7 @@ const copy = {
     error: '财务对账请求未能完成。',
     fee: '手续费',
     feeDifference: '费用差异',
+    exceptionSummary: '异常分类汇总',
     expectedCod: '应收 COD',
     expectedFee: '预期费用',
     from: '开始日期',
@@ -158,11 +201,17 @@ const copy = {
     loading: '正在加载财务数据…',
     matched: '已匹配',
     net: '净额',
+    openReview: '等待独立复核',
     occurredAt: '发生时间',
     payment: '支付',
     paymentSource: '支付 / 退款',
     providerReference: '供应商引用',
     reason: '导入原因',
+    reviewConfirmation: '我确认本次关闭操作人与批次导入人不同。',
+    reviewDecision: '复核结论',
+    reviewReason: '结论原因',
+    reviewResult: '独立复核结果',
+    reviewedAt: '结论时间',
     recordReference: '记录引用',
     refresh: '刷新',
     remittanceCod: '回款 COD',
@@ -183,9 +232,16 @@ const copy = {
     addLine: 'Add record',
     allSources: 'All sources',
     allStatuses: 'All statuses',
+    allReviewStatuses: 'All review outcomes',
+    closedAccepted: 'Closed · variance accepted',
+    closedEscalated: 'Closed · escalated',
     batchReference: 'Batch reference',
     businessDate: 'Business date',
     cancel: 'Cancel',
+    closeAccepted: 'Close and accept variance',
+    closeEscalated: 'Close and escalate variance',
+    closeReview: 'Record independent review',
+    closeReviewSuccess: 'The reconciliation review was recorded.',
     confirmation: 'I confirm finance reviewed this normalized data.',
     codEmpty: 'No COD receivables exist in this scope.',
     codFee: 'COD fee',
@@ -197,6 +253,7 @@ const copy = {
     error: 'The financial reconciliation request could not be completed.',
     fee: 'Fee',
     feeDifference: 'Fee difference',
+    exceptionSummary: 'Exception summary',
     expectedCod: 'Expected COD',
     expectedFee: 'Expected fee',
     from: 'From date',
@@ -209,11 +266,17 @@ const copy = {
     loading: 'Loading financial data…',
     matched: 'Matched',
     net: 'Net',
+    openReview: 'Awaiting independent review',
     occurredAt: 'Occurred at',
     payment: 'Payment',
     paymentSource: 'Payment / refund',
     providerReference: 'Provider reference',
     reason: 'Import reason',
+    reviewConfirmation: 'I confirm the batch importer is not performing this closeout.',
+    reviewDecision: 'Review outcome',
+    reviewReason: 'Review reason',
+    reviewResult: 'Independent review result',
+    reviewedAt: 'Reviewed at',
     recordReference: 'Record reference',
     refresh: 'Refresh',
     remittanceCod: 'Remitted COD',
@@ -268,6 +331,24 @@ const statusCopy: Record<Locale, Record<BatchStatus | LineStatus, string>> = {
   },
 };
 
+const reviewStatusCopy: Record<Locale, Record<ReviewStatus, string>> = {
+  vi: {
+    CLOSED_ACCEPTED: copy.vi.closedAccepted,
+    CLOSED_ESCALATED: copy.vi.closedEscalated,
+    OPEN: copy.vi.openReview,
+  },
+  zh: {
+    CLOSED_ACCEPTED: copy.zh.closedAccepted,
+    CLOSED_ESCALATED: copy.zh.closedEscalated,
+    OPEN: copy.zh.openReview,
+  },
+  en: {
+    CLOSED_ACCEPTED: copy.en.closedAccepted,
+    CLOSED_ESCALATED: copy.en.closedEscalated,
+    OPEN: copy.en.openReview,
+  },
+};
+
 function today(): string {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
@@ -304,6 +385,13 @@ function formatVnd(value: number, locale: Locale): string {
   }).format(value);
 }
 
+function formatDateTime(value: string, locale: Locale): string {
+  return new Intl.DateTimeFormat(locale === 'vi' ? 'vi-VN' : locale === 'zh' ? 'zh-CN' : 'en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value));
+}
+
 export function FinancialReconciliationWorkbench({
   headers,
   locale,
@@ -320,6 +408,7 @@ export function FinancialReconciliationWorkbench({
   const [cursor, setCursor] = useState<string | null>(null);
   const [status, setStatus] = useState<'' | BatchStatus>('');
   const [source, setSource] = useState<'' | BatchSource>('');
+  const [reviewStatus, setReviewStatus] = useState<'' | ReviewStatus>('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [detail, setDetail] = useState<BatchDetail>();
@@ -330,12 +419,16 @@ export function FinancialReconciliationWorkbench({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [reviewSuccess, setReviewSuccess] = useState(false);
   const [batchReference, setBatchReference] = useState('');
   const [businessDate, setBusinessDate] = useState(today());
   const [environment, setEnvironment] = useState<'SANDBOX' | 'PRODUCTION'>('SANDBOX');
   const [reason, setReason] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [lines, setLines] = useState<DraftLine[]>([newLine(1)]);
+  const [reviewDecision, setReviewDecision] = useState<ReviewDecision>('CLOSED_ESCALATED');
+  const [reviewReason, setReviewReason] = useState('');
+  const [reviewConfirmed, setReviewConfirmed] = useState(false);
 
   const load = async (append = false, nextCursor: string | null = null): Promise<void> => {
     setBusy(true);
@@ -344,6 +437,7 @@ export function FinancialReconciliationWorkbench({
       const query = new URLSearchParams({ limit: '20', store_id: store.id });
       if (status) query.set('status', status);
       if (source) query.set('source', source);
+      if (reviewStatus) query.set('review_status', reviewStatus);
       if (dateFrom) query.set('business_date_from', dateFrom);
       if (dateTo) query.set('business_date_to', dateTo);
       if (nextCursor) query.set('cursor', nextCursor);
@@ -377,7 +471,7 @@ export function FinancialReconciliationWorkbench({
 
   useEffect(() => {
     void load();
-  }, [store.id, status, source, dateFrom, dateTo]);
+  }, [store.id, status, source, reviewStatus, dateFrom, dateTo]);
 
   useEffect(() => {
     void loadReceivables();
@@ -386,11 +480,16 @@ export function FinancialReconciliationWorkbench({
   useEffect(() => {
     setDetail(undefined);
     setImportOpen(false);
+    setReviewReason('');
+    setReviewConfirmed(false);
+    setReviewSuccess(false);
   }, [store.id]);
 
   const showDetail = async (batchId: string): Promise<void> => {
     setBusy(true);
     setError(false);
+    setReviewReason('');
+    setReviewConfirmed(false);
     try {
       setDetail(
         await request<BatchDetail>(
@@ -398,6 +497,41 @@ export function FinancialReconciliationWorkbench({
           { headers: headers() },
         ),
       );
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const closeReview = async (event: FormEvent): Promise<void> => {
+    event.preventDefault();
+    if (!detail || !reviewConfirmed || detail.review_status !== 'OPEN') return;
+    setBusy(true);
+    setError(false);
+    setReviewSuccess(false);
+    try {
+      await request(
+        `/v1/admin/financial-reconciliation/batches/${detail.id}/review?store_id=${encodeURIComponent(store.id)}`,
+        {
+          body: JSON.stringify({
+            confirmation_code: 'CLOSE_FINANCIAL_RECONCILIATION',
+            decision: reviewDecision,
+            expected_batch_version: detail.version,
+            reason: reviewReason,
+          }),
+          headers: {
+            ...headers(),
+            'Content-Type': 'application/json',
+            'Idempotency-Key': `financial-reconciliation-review:${crypto.randomUUID()}`,
+          },
+          method: 'POST',
+        },
+      );
+      setReviewSuccess(true);
+      setReviewReason('');
+      setReviewConfirmed(false);
+      await Promise.all([load(), showDetail(detail.id)]);
     } catch {
       setError(true);
     } finally {
@@ -457,7 +591,6 @@ export function FinancialReconciliationWorkbench({
           method: 'POST',
         },
       );
-      setDetail(result);
       setSuccess(true);
       setImportOpen(false);
       setBatchReference('');
@@ -465,7 +598,7 @@ export function FinancialReconciliationWorkbench({
       setConfirmed(false);
       setImportSource('PAYMENT_PROVIDER');
       setLines([newLine(1)]);
-      await Promise.all([load(), loadReceivables()]);
+      await Promise.all([load(), loadReceivables(), showDetail(result.id)]);
     } catch {
       setError(true);
     } finally {
@@ -514,6 +647,18 @@ export function FinancialReconciliationWorkbench({
           </select>
         </label>
         <label>
+          {t.allReviewStatuses}
+          <select
+            onChange={(event) => setReviewStatus(event.target.value as '' | ReviewStatus)}
+            value={reviewStatus}
+          >
+            <option value="">{t.allReviewStatuses}</option>
+            <option value="OPEN">{t.openReview}</option>
+            <option value="CLOSED_ACCEPTED">{t.closedAccepted}</option>
+            <option value="CLOSED_ESCALATED">{t.closedEscalated}</option>
+          </select>
+        </label>
+        <label>
           {t.from}
           <input
             onChange={(event) => setDateFrom(event.target.value)}
@@ -529,6 +674,7 @@ export function FinancialReconciliationWorkbench({
 
       {error && <p className="workbench-message error">{t.error}</p>}
       {success && <p className="workbench-message success">{t.importSuccess}</p>}
+      {reviewSuccess && <p className="workbench-message success">{t.closeReviewSuccess}</p>}
       {busy && items.length === 0 ? (
         <p className="empty-state">{t.loading}</p>
       ) : items.length === 0 ? (
@@ -545,6 +691,7 @@ export function FinancialReconciliationWorkbench({
                 <th>{t.fee}</th>
                 <th>{t.difference}</th>
                 <th>{t.allStatuses}</th>
+                <th>{t.reviewDecision}</th>
                 <th />
               </tr>
             </thead>
@@ -560,6 +707,13 @@ export function FinancialReconciliationWorkbench({
                   <td>
                     <span className={`reconciliation-status status-${batch.status.toLowerCase()}`}>
                       {statusCopy[locale][batch.status]}
+                    </span>
+                  </td>
+                  <td>
+                    <span
+                      className={`reconciliation-status status-${batch.review_status.toLowerCase()}`}
+                    >
+                      {reviewStatusCopy[locale][batch.review_status]}
                     </span>
                   </td>
                   <td>
@@ -663,6 +817,11 @@ export function FinancialReconciliationWorkbench({
             <div>
               <p className="eyebrow">{detail.batch_reference_masked}</p>
               <h3>{statusCopy[locale][detail.status]}</h3>
+              <span
+                className={`reconciliation-status status-${detail.review_status.toLowerCase()}`}
+              >
+                {reviewStatusCopy[locale][detail.review_status]}
+              </span>
             </div>
             <button
               aria-label={t.cancel}
@@ -696,6 +855,95 @@ export function FinancialReconciliationWorkbench({
               <dd>{formatVnd(detail.fee_difference_vnd, locale)}</dd>
             </div>
           </dl>
+          {detail.exception_summary.length > 0 && (
+            <div className="reconciliation-exceptions">
+              <h4>{t.exceptionSummary}</h4>
+              <div className="reconciliation-table-wrap">
+                <table className="reconciliation-table">
+                  <thead>
+                    <tr>
+                      <th>{t.allStatuses}</th>
+                      <th>{t.total}</th>
+                      <th>{t.gross}</th>
+                      <th>{t.net}</th>
+                      <th>{t.difference}</th>
+                      <th>{t.feeDifference}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detail.exception_summary.map((summary) => (
+                      <tr key={summary.status}>
+                        <td>{statusCopy[locale][summary.status]}</td>
+                        <td>{summary.line_count}</td>
+                        <td>{formatVnd(summary.gross_amount_vnd, locale)}</td>
+                        <td>{formatVnd(summary.net_amount_vnd, locale)}</td>
+                        <td>{formatVnd(summary.difference_vnd, locale)}</td>
+                        <td>{formatVnd(summary.fee_difference_vnd, locale)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {detail.review ? (
+            <div className="reconciliation-review-result">
+              <h4>{t.reviewResult}</h4>
+              <dl>
+                <div>
+                  <dt>{t.reviewDecision}</dt>
+                  <dd>{reviewStatusCopy[locale][detail.review.decision]}</dd>
+                </div>
+                <div>
+                  <dt>{t.reviewedAt}</dt>
+                  <dd>{formatDateTime(detail.review.reviewed_at, locale)}</dd>
+                </div>
+                <div className="wide">
+                  <dt>{t.reviewReason}</dt>
+                  <dd>{detail.review.reason}</dd>
+                </div>
+              </dl>
+            </div>
+          ) : detail.status === 'REVIEW_REQUIRED' ? (
+            <form className="reconciliation-review" onSubmit={(event) => void closeReview(event)}>
+              <h4>{t.closeReview}</h4>
+              <div className="reconciliation-review-fields">
+                <label>
+                  {t.reviewDecision}
+                  <select
+                    onChange={(event) => setReviewDecision(event.target.value as ReviewDecision)}
+                    value={reviewDecision}
+                  >
+                    <option value="CLOSED_ACCEPTED">{t.closeAccepted}</option>
+                    <option value="CLOSED_ESCALATED">{t.closeEscalated}</option>
+                  </select>
+                </label>
+                <label>
+                  {t.reviewReason}
+                  <textarea
+                    maxLength={500}
+                    minLength={10}
+                    onChange={(event) => setReviewReason(event.target.value)}
+                    required
+                    value={reviewReason}
+                  />
+                </label>
+              </div>
+              <label className="reconciliation-confirm">
+                <input
+                  checked={reviewConfirmed}
+                  onChange={(event) => setReviewConfirmed(event.target.checked)}
+                  type="checkbox"
+                />
+                {t.reviewConfirmation}
+              </label>
+              <div className="reconciliation-form-actions">
+                <button className="primary" disabled={busy || !reviewConfirmed} type="submit">
+                  {busy ? t.loading : t.closeReview}
+                </button>
+              </div>
+            </form>
+          ) : null}
           <div className="reconciliation-lines">
             {detail.lines.map((line) => (
               <article key={line.id}>

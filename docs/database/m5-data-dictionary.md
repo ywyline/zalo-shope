@@ -389,16 +389,40 @@ header 失真也会整事务拒绝。
 - 回款导入和应收读取不调用 GHN、不解析或保存供应商文件，不确认现金到账，也不修改订单、运单、
   支付、库存或现金状态。
 
-### 9.4 权限、迁移与回滚
+### 9.4 Slice C 差异关闭与独立复核
 
-- `store.finance.read` 只读批次/逐笔；`store.finance.reconcile` 要求直接商城角色、近期 MFA、
-  `Idempotency-Key`、固定确认码与原因。迁移只登记权限，production 角色不自动获得。
-- runtime role 仅有两表 `SELECT/INSERT`，显式撤销 `UPDATE/DELETE`；两表 FORCE RLS。
+`financial_reconciliation_reviews` 是每个存在异常的批次最多一条、商城隔离、只追加的关闭证明，
+不修改 batch header、逐笔、支付、退款、订单、库存、运单或现金状态。
+
+| 字段                                    | 类型/语义    | 约束                                                                                      |
+| --------------------------------------- | ------------ | ----------------------------------------------------------------------------------------- |
+| `id/store_id/batch_id`                  | uuid         | `UNIQUE(store_id,id)` 与 `UNIQUE(store_id,batch_id)`；复合 FK 指向同商城 batch；FORCE RLS |
+| `decision`                              | enum         | 只能为 `CLOSED_ACCEPTED` 或 `CLOSED_ESCALATED`                                            |
+| `expected_batch_version`                | integer      | 固定为 1；只能证明仍是 `REVIEW_REQUIRED` 且有异常的批次                                   |
+| `reason`                                | varchar(500) | trim 后 10..500；写入审计但不含供应商原文                                                 |
+| `idempotency_key_hash/request_hash`     | char(64)     | 同商城幂等键唯一；同键异参冲突，明文键不落库                                              |
+| `reviewed_by/correlation_id/created_at` | 审计元数据   | reviewer 与 batch `created_by` 必须不同；时间只追加                                       |
+
+- `financial_reconciliation_reviews_append_only` 拒绝 UPDATE/DELETE；延迟完整性触发器在提交时重新检查
+  batch 仍有异常、版本一致且 reviewer 不是导入人。数据库 guard 与服务端 maker-checker 双重保护。
+- review table 独立启用并强制 RLS；runtime role 仅有 `SELECT/INSERT`，显式没有 `UPDATE/DELETE`。
+  `review_status` 是 API 投影：无 review 为 `OPEN`，否则使用不可变 decision。
+- 异常分类汇总按不可变逐笔 `status`、毛额、净额、金额差异与费用差异计算；关闭结论只证明人工处理
+  方向，不表示供应商、银行或现金已确认。
+
+### 9.5 权限、迁移与回滚
+
+- `store.finance.read` 只读批次/逐笔/复核投影；`store.finance.reconcile` 导入或关闭异常时均要求直接
+  商城角色、近期 MFA、`Idempotency-Key`、固定确认码与原因。迁移只登记权限，production 角色不自动获得。
+- runtime role 对 batch、line、review 三表仅有 `SELECT/INSERT`，显式撤销 `UPDATE/DELETE`；三表 FORCE RLS。
 - `20260801090000_p0_m5_005_financial_reconciliation` 只增加枚举、两表、索引、约束、触发器和权限目录，
   不回填批次，不创建渠道，不生成供应商成功事实。
 - `20260801100000_p0_m5_005_cod_reconciliation` 只扩展来源/类型/状态、互斥渠道绑定、运单复合外键、
   费用差异与完整性 guard；不创建渠道、运单、回款或真实供应商事实。
-- `down.sql` 仅供没有任何 batch/line 的 local/test scratch；存在事实时以 SQLSTATE `55000` 拒绝。
+- `20260801110000_p0_m5_005_reconciliation_closeout` 只增加 review enum、只追加复核表、RLS、最小
+  授权和 maker-checker guard；不回填或关闭历史批次，不生成财务或供应商成功事实。
+- `down.sql` 仅供没有对应事实的 local/test scratch；存在 review、shipping batch 或任一 batch/line 时，
+  各 Slice 分别以 SQLSTATE `55000` 拒绝，必须按 Slice C → B → A 逆向。
   已有事实或 production 环境只能向前修复。
 
 ## 10. RLS、最小权限与审计
@@ -439,6 +463,10 @@ header 失真也会整事务拒绝。
   物流渠道绑定、COD 回款行、运单复合外键、预期费用/费用差异和扩展延迟完整性 guard。空 scratch
   可先逆向 Slice B 再逆向 Slice A；存在任一 `SHIPPING_PROVIDER` 批次时 Slice B down 以 `55000`
   拒绝。生产和已有事实环境只允许向前修复。
+- P0-M5-005 Slice C 新增 `20260801110000_p0_m5_005_reconciliation_closeout`，建立异人关闭的
+  immutable review record、review decision enum、FORCE RLS、最小 runtime grant 与延迟 maker-checker
+  guard。空 scratch 必须先逆向 Slice C；存在任一 review fact 时 Slice C down 以 `55000` 拒绝，
+  不得删除或重写已关闭的异常结论。
 - local/test seed 只登记权限，不创建持久化支付/物流渠道或任何业务事实。集成测试仅在回滚事务
   中创建禁用、非秘密测试渠道，避免把虚构商户配置误认为可用 sandbox。
 - fresh deploy、M2-to-current、重复 deploy、生产运行角色权限、RLS、指纹和索引均需自动化

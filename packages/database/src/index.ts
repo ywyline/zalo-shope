@@ -134,5 +134,6 @@ export * from './shipping-primitives';
 export * from './shipping-callback-primitives';
 export * from './financial-reconciliation-primitives';
 export * from './cod-reconciliation-primitives';
+export * from './financial-reconciliation-review-primitives';
 export * from './search-projection';
 export * from './reliable-messaging';

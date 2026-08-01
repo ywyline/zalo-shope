@@ -2992,7 +2992,8 @@ label {
 }
 
 .reconciliation-filters label,
-.reconciliation-import label {
+.reconciliation-import label,
+.reconciliation-review label {
   display: grid;
   color: var(--color-text-muted);
   font-size: 0.72rem;
@@ -3004,7 +3005,10 @@ label {
 .reconciliation-filters select,
 .reconciliation-import input,
 .reconciliation-import select,
-.reconciliation-import textarea {
+.reconciliation-import textarea,
+.reconciliation-review input,
+.reconciliation-review select,
+.reconciliation-review textarea {
   width: 100%;
   box-sizing: border-box;
 }
@@ -3066,6 +3070,16 @@ label {
   background: #fff0ee;
 }
 
+.reconciliation-status.status-closed_accepted {
+  color: #286349;
+  background: #e4f4ea;
+}
+
+.reconciliation-status.status-open {
+  color: #70540f;
+  background: #fff4cf;
+}
+
 .reconciliation-more {
   justify-self: center;
 }
@@ -3111,6 +3125,74 @@ label {
   overflow-wrap: anywhere;
   font-size: 0.8rem;
   font-weight: 780;
+}
+
+.reconciliation-exceptions,
+.reconciliation-review,
+.reconciliation-review-result {
+  display: grid;
+  gap: 12px;
+}
+
+.reconciliation-exceptions h4,
+.reconciliation-review h4,
+.reconciliation-review-result h4 {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.reconciliation-exceptions .reconciliation-table {
+  min-width: 720px;
+}
+
+.reconciliation-review,
+.reconciliation-review-result {
+  padding: 16px;
+  border: 1px solid var(--color-line);
+  background: #f9faf8;
+}
+
+.reconciliation-review-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.55fr) minmax(0, 1.45fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.reconciliation-review textarea {
+  min-height: 88px;
+  padding: 10px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.reconciliation-review-result dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  gap: 12px;
+}
+
+.reconciliation-review-result dl > div {
+  min-width: 0;
+}
+
+.reconciliation-review-result .wide {
+  grid-column: 1 / -1;
+}
+
+.reconciliation-review-result dt {
+  color: var(--color-text-muted);
+  font-size: 0.67rem;
+  font-weight: 720;
+}
+
+.reconciliation-review-result dd {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+  font-weight: 680;
 }
 
 .reconciliation-lines {
@@ -3261,6 +3343,9 @@ label {
   }
   .reconciliation-draft-lines fieldset {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .reconciliation-review-fields {
+    grid-template-columns: 1fr;
   }
   .reconciliation-draft-lines .icon-button {
     width: 100%;
@@ -3586,6 +3671,7 @@ label {
   .reconciliation-filters,
   .reconciliation-summary,
   .reconciliation-import-meta,
+  .reconciliation-review-result dl,
   .reconciliation-draft-lines fieldset,
   .reconciliation-lines article {
     grid-template-columns: 1fr;

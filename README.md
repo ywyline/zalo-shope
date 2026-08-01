@@ -202,7 +202,12 @@ FORCE RLS 的支付/退款对账批次与逐笔、延迟汇总/渠道 guard 和�
 Slice B 前向迁移 `20260801100000_p0_m5_005_cod_reconciliation` 扩展互斥支付/物流渠道绑定、COD
 回款类型、运单复合外键、可信预期费用和费用差异 guard，不创建渠道、运单、回款或供应商成功事实。
 空白 local/test scratch 可逆向本段后保留 Slice A；存在任一物流对账批次时以 SQLSTATE `55000`
-拒绝，production 与事实环境只允许向前修复。当前 fresh deploy 共 54 条迁移。
+拒绝，production 与事实环境只允许向前修复。
+
+Slice C 前向迁移 `20260801110000_p0_m5_005_reconciliation_closeout` 增加商城隔离的只追加复核表、
+review decision enum、FORCE RLS、最小 runtime grant 和延迟 maker-checker guard，不回填或关闭历史批次。
+空白 local/test scratch 必须按 Slice C → B → A 逆向；存在任一复核事实时 Slice C down 以 SQLSTATE
+`55000` 拒绝。当前 fresh deploy 共 55 条迁移。
 
 D1 不修改 Prisma、RLS 或数据库迁移；M2→current 仍为 43 段，不能把 storage adapter 记作第 44
 段迁移。D1 回滚通过保持 evidence provider disabled 完成，不能通过删除 bucket 或数据库事实清理未来
@@ -330,16 +335,21 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
 - 导入要求直接商城 `store.finance.reconcile`、近期 MFA、幂等键、固定确认码和原因。批次与逐笔
   FORCE RLS、只追加且由延迟约束在提交时重算汇总/渠道归属；完整批次、记录和供应商引用不落库，
   API 与审计只保存摘要、掩码和整数 VND 汇总。
-- `GET /v1/admin/financial-reconciliation/batches` 与详情提供稳定游标、日期/状态筛选、逐笔差异和
-  越南语/中文/英文管理工作台。生产角色不自动获得新增权限；local/test seed 仅为测试角色显式授权。
+- `GET /v1/admin/financial-reconciliation/batches` 与详情提供稳定游标、日期/状态/复核结论筛选、逐笔
+  差异、不可变异常分类汇总和越南语/中文/英文管理工作台。生产角色不自动获得新增权限；local/test
+  seed 仅为测试角色显式授权。
 - `GET /v1/admin/financial-reconciliation/cod-receivables` 只投影当前商城 GHN 已签收 COD 运单，预期
   费用来自建单前同渠道/订单/service 的最近可信报价；状态筛选先于稳定游标分页。`POST .../cod-batches`
   接受显式规范化 COD 回款、运费和 COD 费，分类金额、费用、非终态、非应收、缺失和同批次/跨批次
   重复异常；不会修改订单、运单、支付、库存或现金状态。
-- 管理端支持支付/物流来源筛选、COD 应收及三语 GHN 导入，商城切换会清除旧详情，640px 窄屏无
-  横向溢出。Slice B 不解析 GHN 文件、不发供应商请求，也不确认真实资金到账。
-- 本节只代表 P0-M5-005 Slice A/B repository implementation + local/test validation。maker-checker 差异
-  关闭、真实 provider/sandbox/资金/生产仍未完成，不能据此标记任务完成或 Production Ready。
+- `POST /v1/admin/financial-reconciliation/batches/{batchId}/review` 只为有异常的 version 1 batch 追加
+  `CLOSED_ACCEPTED` 或 `CLOSED_ESCALATED` 结论。它要求目标商城直接 `store.finance.reconcile`、近期 MFA、
+  固定确认码、原因和幂等键，复核人不能是导入人；同键重放冻结结果，异参/并发不同结论冲突。
+- 管理端支持支付/物流来源和复核结论筛选、COD 应收、三语 GHN 导入、异常汇总、独立复核确认和已关闭
+  结果；商城切换会清除旧详情，640px 窄屏无横向溢出。Slice B/C 不解析 GHN 文件、不发供应商请求，也
+  不确认真实资金到账或改变业务状态。
+- 本节代表 P0-M5-005 的完整 repository/local-test implementation + validation。真实 provider/sandbox/
+  资金/生产仍未完成，不能据此标记 M5、项目 Production Ready 或外部验收完成。
 - 实施边界见 `docs/plans/p0-m5-005-financial-reconciliation-plan.md`；契约、数据与权限分别见
   `docs/api/openapi.m5.yaml`、`docs/database/m5-data-dictionary.md` 和
   `docs/security/m5-permission-matrix.md`。

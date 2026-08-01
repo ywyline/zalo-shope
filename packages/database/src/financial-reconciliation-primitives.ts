@@ -17,6 +17,10 @@ export type FinancialReconciliationCommandErrorCode =
   | 'FINANCIAL_RECONCILIATION_IDEMPOTENCY_CONFLICT'
   | 'FINANCIAL_RECONCILIATION_BATCH_REFERENCE_CONFLICT'
   | 'FINANCIAL_RECONCILIATION_CURSOR_NOT_FOUND'
+  | 'FINANCIAL_RECONCILIATION_BATCH_NOT_FOUND'
+  | 'FINANCIAL_RECONCILIATION_BATCH_NOT_REVIEWABLE'
+  | 'FINANCIAL_RECONCILIATION_MAKER_CHECKER_CONFLICT'
+  | 'FINANCIAL_RECONCILIATION_REVIEW_CONFLICT'
   | 'FINANCIAL_RECONCILIATION_FACT_INVALID';
 
 export class FinancialReconciliationCommandError extends Error {
@@ -254,7 +258,7 @@ function normalizeInput(
   };
 }
 
-async function assertReconcileAuthorization(
+export async function assertReconcileAuthorization(
   transaction: StoreTransaction,
   context: StoreContext,
 ): Promise<void> {
@@ -628,7 +632,7 @@ async function importInTransaction(
   return result(batch, false);
 }
 
-function isSerializationConflict(error: unknown): boolean {
+export function isFinancialReconciliationSerializationConflict(error: unknown): boolean {
   return (
     (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') ||
     (error instanceof Error && error.message.includes('40001'))
@@ -668,7 +672,11 @@ export async function importPaymentSettlementBatch(
           { isolationLevel: 'Serializable', timeout: 20_000 },
         );
       } catch (error) {
-        if (!isSerializationConflict(error) || ++attempts >= SERIALIZATION_RETRY_LIMIT) throw error;
+        if (
+          !isFinancialReconciliationSerializationConflict(error) ||
+          ++attempts >= SERIALIZATION_RETRY_LIMIT
+        )
+          throw error;
       }
     }
   } catch (error) {

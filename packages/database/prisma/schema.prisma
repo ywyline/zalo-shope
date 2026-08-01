@@ -153,6 +153,7 @@ model Store {
   inboxMessages                  InboxMessage[]
   financialReconciliationBatches FinancialReconciliationBatch[]
   financialReconciliationLines   FinancialReconciliationLine[]
+  financialReconciliationReviews FinancialReconciliationReview[]
   afterSaleSetting               StoreAfterSaleSetting?
   afterSalePolicies              AfterSalePolicy[]
   afterSalePolicyVersions        AfterSalePolicyVersion[]
@@ -275,6 +276,7 @@ model AdminUser {
   afterSaleSettlementsRequested AfterSaleSettlement[]         @relation("AfterSaleSettlementRequestedBy")
   afterSaleSettlementsConfirmed AfterSaleSettlement[]         @relation("AfterSaleSettlementConfirmedBy")
   financialReconciliationBatches FinancialReconciliationBatch[]
+  financialReconciliationReviews FinancialReconciliationReview[] @relation("FinancialReconciliationReviewReviewer")
 
   @@map("admin_users")
 }
@@ -3176,6 +3178,7 @@ model FinancialReconciliationBatch {
   shippingChannel StoreShippingChannel?        @relation("FinancialReconciliationShippingChannel", fields: [storeId, shippingChannelId], references: [storeId, id], onDelete: Restrict)
   creator        AdminUser                     @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   lines          FinancialReconciliationLine[]
+  review         FinancialReconciliationReview?
 
   @@unique([storeId, id])
   @@unique([storeId, paymentChannelId, batchReferenceDigest])
@@ -3184,6 +3187,30 @@ model FinancialReconciliationBatch {
   @@index([storeId, businessDate(sort: Desc), createdAt(sort: Desc), id(sort: Desc)])
   @@index([storeId, status, businessDate(sort: Desc), id(sort: Desc)])
   @@map("financial_reconciliation_batches")
+}
+
+model FinancialReconciliationReview {
+  id                   String                              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeId              String                              @map("store_id") @db.Uuid
+  batchId              String                              @map("batch_id") @db.Uuid
+  decision             FinancialReconciliationReviewDecision
+  expectedBatchVersion Int                                 @map("expected_batch_version")
+  reason               String                              @db.VarChar(500)
+  idempotencyKeyHash   String                              @map("idempotency_key_hash") @db.Char(64)
+  requestHash          String                              @map("request_hash") @db.Char(64)
+  reviewedBy           String                              @map("reviewed_by") @db.Uuid
+  correlationId        String                              @map("correlation_id") @db.VarChar(128)
+  createdAt            DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  store    Store                        @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  batch    FinancialReconciliationBatch @relation(fields: [storeId, batchId], references: [storeId, id], onDelete: Restrict)
+  reviewer AdminUser                    @relation("FinancialReconciliationReviewReviewer", fields: [reviewedBy], references: [id], onDelete: Restrict)
+
+  @@unique([storeId, id])
+  @@unique([storeId, batchId])
+  @@unique([storeId, idempotencyKeyHash])
+  @@index([storeId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("financial_reconciliation_reviews")
 }
 
 model FinancialReconciliationLine {
@@ -3645,6 +3672,13 @@ enum FinancialReconciliationBatchStatus {
   REVIEW_REQUIRED
 
   @@map("financial_reconciliation_batch_status")
+}
+
+enum FinancialReconciliationReviewDecision {
+  CLOSED_ACCEPTED
+  CLOSED_ESCALATED
+
+  @@map("financial_reconciliation_review_decision")
 }
 
 enum FinancialReconciliationLineType {

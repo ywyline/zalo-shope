@@ -925,42 +925,54 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
     business_date: '2026-08-01',
     created_at: '2026-08-01T03:00:00.000Z',
     currency: 'VND',
-    difference_vnd: 0,
-    exception_count: 0,
+    difference_vnd: 5_000,
+    exception_count: 1,
     fee_amount_vnd: 2_000,
     fee_difference_vnd: 0,
     gross_amount_vnd: 120_000,
     id: batchId,
-    local_expected_amount_vnd: 120_000,
+    local_expected_amount_vnd: 115_000,
     local_expected_fee_amount_vnd: 0,
     matched_count: 1,
     net_amount_vnd: 118_000,
     record_count: 1,
+    review_status: 'OPEN',
     source: 'PAYMENT_PROVIDER',
-    status: 'MATCHED',
+    status: 'REVIEW_REQUIRED',
     version: 1,
   };
   const detail = {
     ...batch,
+    exception_summary: [
+      {
+        difference_vnd: 5_000,
+        fee_difference_vnd: 0,
+        gross_amount_vnd: 120_000,
+        line_count: 1,
+        net_amount_vnd: 118_000,
+        status: 'AMOUNT_MISMATCH',
+      },
+    ],
     lines: [
       {
-        difference_vnd: 0,
+        difference_vnd: 5_000,
         fee_amount_vnd: 2_000,
         fee_difference_vnd: null,
         gross_amount_vnd: 120_000,
         id: '50000000-0000-4000-8000-000000000002',
         line_number: 1,
-        local_expected_amount_vnd: 120_000,
+        local_expected_amount_vnd: 115_000,
         local_expected_fee_amount_vnd: null,
         net_amount_vnd: 118_000,
         occurred_at: '2026-08-01T02:30:00.000Z',
         provider_reference_masked: 'za********er',
         record_reference_masked: 'li******01',
-        status: 'MATCHED',
+        status: 'AMOUNT_MISMATCH',
         type: 'PAYMENT',
       },
     ],
     replayed: false,
+    review: null,
   };
   const codBatch = {
     ...batch,
@@ -972,10 +984,13 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
     id: codBatchId,
     local_expected_fee_amount_vnd: 25_000,
     net_amount_vnd: 95_000,
+    review_status: 'OPEN',
     source: 'SHIPPING_PROVIDER',
+    status: 'MATCHED',
   };
   const codDetail = {
     ...codBatch,
+    exception_summary: [],
     lines: [
       {
         difference_vnd: 0,
@@ -995,6 +1010,7 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
       },
     ],
     replayed: false,
+    review: null,
   };
   const codReceivable = {
     delivered_at: '2026-08-01T04:30:00.000Z',
@@ -1012,16 +1028,23 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
   let importIdempotencyKey = '';
   let codImportRequest: Record<string, unknown> | undefined;
   let codImportIdempotencyKey = '';
+  let reviewRequest: Record<string, unknown> | undefined;
+  let reviewIdempotencyKey = '';
+  let reviewClosed = false;
 
   await page.route('**/v1/admin/financial-reconciliation/batches?*', async (route) => {
     const url = new URL(route.request().url());
     const source = url.searchParams.get('source');
-    const items =
-      source === 'PAYMENT_PROVIDER'
-        ? [batch]
-        : source === 'SHIPPING_PROVIDER'
-          ? [codBatch]
-          : [codBatch, batch];
+    const reviewStatus = url.searchParams.get('review_status');
+    const currentBatch = {
+      ...batch,
+      review_status: reviewClosed ? 'CLOSED_ESCALATED' : 'OPEN',
+    };
+    const items = [codBatch, currentBatch].filter(
+      (item) =>
+        (!source || item.source === source) &&
+        (!reviewStatus || item.review_status === reviewStatus),
+    );
     await route.fulfill({
       contentType: 'application/json',
       json:
@@ -1032,8 +1055,58 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
     });
   });
   await page.route(`**/v1/admin/financial-reconciliation/batches/${batchId}?*`, async (route) => {
-    await route.fulfill({ contentType: 'application/json', json: detail, status: 200 });
+    await route.fulfill({
+      contentType: 'application/json',
+      json: reviewClosed
+        ? {
+            ...detail,
+            review_status: 'CLOSED_ESCALATED',
+            review: {
+              decision: 'CLOSED_ESCALATED',
+              id: '50000000-0000-4000-8000-000000000006',
+              reason: 'Escalate the amount variance for independent finance handling',
+              reviewed_at: '2026-08-01T06:00:00.000Z',
+            },
+          }
+        : detail,
+      status: 200,
+    });
   });
+  await page.route(
+    `**/v1/admin/financial-reconciliation/batches/${codBatchId}?*`,
+    async (route) => {
+      await route.fulfill({ contentType: 'application/json', json: codDetail, status: 200 });
+    },
+  );
+  await page.route(
+    `**/v1/admin/financial-reconciliation/batches/${batchId}/review?*`,
+    async (route) => {
+      reviewRequest = route.request().postDataJSON() as Record<string, unknown>;
+      reviewIdempotencyKey = route.request().headers()['idempotency-key'] ?? '';
+      reviewClosed = true;
+      await route.fulfill({
+        contentType: 'application/json',
+        json: {
+          batch: {
+            difference_vnd: 5_000,
+            exception_count: 1,
+            fee_difference_vnd: 0,
+            id: batchId,
+            status: 'REVIEW_REQUIRED',
+            version: 1,
+          },
+          created_at: '2026-08-01T06:00:00.000Z',
+          decision: 'CLOSED_ESCALATED',
+          exception_summary: detail.exception_summary,
+          expected_batch_version: 1,
+          id: '50000000-0000-4000-8000-000000000006',
+          reason: 'Escalate the amount variance for independent finance handling',
+          replayed: false,
+        },
+        status: 201,
+      });
+    },
+  );
   await page.route('**/v1/admin/financial-reconciliation/payment-batches?*', async (route) => {
     importRequest = route.request().postDataJSON() as Record<string, unknown>;
     importIdempotencyKey = route.request().headers()['idempotency-key'] ?? '';
@@ -1071,14 +1144,44 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
   await page.getByRole('button', { name: 'View details' }).last().click();
   await expect(page.locator('.reconciliation-detail')).toContainText('za********er');
   await expect(page.locator('.reconciliation-detail')).not.toContainText(fullProviderReference);
+  await expect(page.locator('.reconciliation-detail')).toContainText('Amount mismatch');
 
   const language = page.getByLabel('Language');
   await language.selectOption('zh');
   await expect(page.getByRole('heading', { name: '财务对账' })).toBeVisible();
-  await expect(page.locator('.reconciliation-detail')).toContainText('已匹配');
+  await expect(page.locator('.reconciliation-detail')).toContainText('需要复核');
   await language.selectOption('vi');
   await expect(page.getByRole('heading', { name: 'Đối soát tài chính' })).toBeVisible();
   await language.selectOption('en');
+
+  const reviewForm = page.locator('.reconciliation-review');
+  await reviewForm.getByLabel('Review outcome').selectOption('CLOSED_ESCALATED');
+  await reviewForm
+    .getByLabel('Review reason')
+    .fill('Escalate the amount variance for independent finance handling');
+  await reviewForm
+    .getByLabel('I confirm the batch importer is not performing this closeout.')
+    .check();
+  const reviewResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/financial-reconciliation/batches/${batchId}/review`),
+  );
+  await reviewForm.getByRole('button', { name: 'Record independent review' }).click();
+  expect((await reviewResponse).status()).toBe(201);
+  expect(reviewRequest).toEqual({
+    confirmation_code: 'CLOSE_FINANCIAL_RECONCILIATION',
+    decision: 'CLOSED_ESCALATED',
+    expected_batch_version: 1,
+    reason: 'Escalate the amount variance for independent finance handling',
+  });
+  expect(reviewRequest).not.toHaveProperty('store_id');
+  expect(reviewIdempotencyKey).toMatch(/^financial-reconciliation-review:[0-9a-f-]{36}$/u);
+  await expect(page.locator('.reconciliation-workbench')).toContainText(
+    'The reconciliation review was recorded.',
+  );
+  await expect(page.locator('.reconciliation-detail')).toContainText('Closed · escalated');
+  await expect(reviewForm).toHaveCount(0);
 
   const storeSelect = page.getByLabel('Select store');
   await storeSelect.selectOption(FASHION_STORE_ID);
@@ -1093,6 +1196,11 @@ test('financial reconciliation stays store-scoped, redacted and operable in thre
   await expect(batchRows).toHaveCount(1);
   await expect(batchRows).toContainText('gh********01');
   await page.getByLabel('All sources').selectOption('');
+  await expect(batchRows).toHaveCount(2);
+  await page.getByLabel('All review outcomes').selectOption('CLOSED_ESCALATED');
+  await expect(batchRows).toHaveCount(1);
+  await expect(batchRows).toContainText('se********01');
+  await page.getByLabel('All review outcomes').selectOption('');
   await expect(batchRows).toHaveCount(2);
 
   await page.getByRole('button', { name: 'Import batch' }).click();

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   codRemittanceBatchImportSchema,
+  closeFinancialReconciliationSchema,
+  financialReconciliationBatchListQuerySchema,
   paymentAttemptCreateRequestSchema,
   paymentProviderOrderBindRequestSchema,
   paymentSettlementBatchImportSchema,
@@ -195,6 +197,43 @@ describe('P0-M5-005 strict financial reconciliation DTOs', () => {
         ...validCodBatch,
         records: [{ ...validCodBatch.records[0], cod_fee_vnd: 0.5 }],
       }),
+    ).toThrow();
+  });
+
+  it('accepts only an explicit maker-checker closeout decision at the immutable batch version', () => {
+    expect(
+      closeFinancialReconciliationSchema.parse({
+        confirmation_code: 'CLOSE_FINANCIAL_RECONCILIATION',
+        decision: 'CLOSED_ESCALATED',
+        expected_batch_version: 1,
+        reason: 'Escalate the verified variance to the external finance owner.',
+      }),
+    ).toMatchObject({ decision: 'CLOSED_ESCALATED', expected_batch_version: 1 });
+    expect(() =>
+      closeFinancialReconciliationSchema.parse({
+        confirmation_code: 'CLOSE_FINANCIAL_RECONCILIATION',
+        decision: 'CLOSED_ACCEPTED',
+        expected_batch_version: 2,
+        reason: 'Accept the verified variance after independent finance review.',
+      }),
+    ).toThrow();
+    expect(() =>
+      closeFinancialReconciliationSchema.parse({
+        confirmation_code: 'CLOSE_FINANCIAL_RECONCILIATION',
+        decision: 'CLOSED_ACCEPTED',
+        expected_batch_version: 1,
+        reason: 'Accept the verified variance after independent finance review.',
+        reviewed_by: orderId,
+      }),
+    ).toThrow();
+  });
+
+  it('accepts only the three projected review filters', () => {
+    expect(
+      financialReconciliationBatchListQuerySchema.parse({ review_status: 'OPEN' }),
+    ).toMatchObject({ limit: 20, review_status: 'OPEN' });
+    expect(() =>
+      financialReconciliationBatchListQuerySchema.parse({ review_status: 'CLOSED' }),
     ).toThrow();
   });
 });

@@ -1,6 +1,7 @@
 # P0-M5-005 财务对账实施计划
 
-> 状态：`In Progress`；Slice A 已集成，Slice B 已通过仓库/local-test 门禁，Slice C 尚未开始
+> 状态：`Complete`；Slice A/B/C 已完成 repository implementation + local/test validation，真实
+> provider、资金、部署与 production acceptance 由独立外部任务继续跟踪
 >
 > 日期：2026-08-01
 >
@@ -53,6 +54,7 @@
 
 - `financial_reconciliation_batches`：`store_id`、来源、支付/物流渠道之一、业务日期、批次引用摘要/掩码、输入摘要、幂等摘要、状态、整数 VND 汇总、记录/匹配/异常数量、创建管理员、原因、版本与时间。
 - `financial_reconciliation_lines`：`store_id`、批次、行号、类型、供应商记录/业务引用摘要与掩码、发生时间、毛额、手续费、带方向净额、本地预期金额、差异、匹配状态，以及可空的支付/退款/运单复合外键。
+- `financial_reconciliation_reviews`：每个异常批次最多一条异人关闭记录，包含不可变 decision、原因、预期批次版本、reviewer、关联 ID 与请求/幂等摘要；不修改 batch 或逐笔事实。
 - 批次必须恰好绑定一个与来源一致的商城渠道；逐笔匹配目标必须与批次商城一致。
 - 支付净额为 `gross - fee`，退款净额为 `-(gross + fee)`；费用不得为负，所有输入和计算必须在 JavaScript safe integer 与 PostgreSQL bigint 范围内。
 - 同商城、同来源、同渠道的批次引用不可重复；同批次记录引用不可重复。幂等重放必须返回原结果，不同请求使用同键必须冲突。
@@ -65,7 +67,8 @@
 - `POST /v1/admin/financial-reconciliation/cod-batches`：复用同一敏感操作边界，只接受规范化 GHN COD 回款、运费和 COD 费；同批次及此前批次已出现的渠道引用均进入重复异常。
 - `GET /v1/admin/financial-reconciliation/cod-receivables`：只读当前商城 GHN 已签收 COD 运单，按建单前可信报价投影费用，并在状态过滤后提供稳定游标。
 - `GET /v1/admin/financial-reconciliation/batches`：按商城、状态、来源和日期分页读取。
-- `GET /v1/admin/financial-reconciliation/batches/{batchId}`：返回批次及逐笔差异，供应商引用只返回掩码。
+- `GET /v1/admin/financial-reconciliation/batches/{batchId}`：返回批次、逐笔差异、不可变异常分类汇总与可空 review；供应商引用只返回掩码。
+- `POST /v1/admin/financial-reconciliation/batches/{batchId}/review`：只允许直接商城财务复核人以近期 MFA、确认码、原因、幂等键和 version 1 对异常批次追加 `CLOSED_ACCEPTED` 或 `CLOSED_ESCALATED`；importer 不能关闭自己的批次。
 - 跨商城平台访问只用于只读且必须带审计原因；导入要求目标商城直接角色，不允许仅凭跨商城平台权限写入。
 
 ## 5. 原子性、兼容与回滚
@@ -73,9 +76,9 @@
 1. 在 Serializable 事务内取得商城/渠道/批次幂等 advisory lock。
 2. 锁定并重新验证商城、管理员、会话/MFA、token 到期时间和直接商城权限。
 3. 解析同商城渠道，按稳定顺序读取匹配支付/退款事实；原始规范化输入不写入日志或审计。
-4. 原子写入批次、逐笔记录和脱敏审计；任一约束失败整批回滚。
+4. 原子写入批次、逐笔记录和脱敏审计；差异关闭在独立 Serializable 事务追加 review、审计与异常分类，任一约束失败整批回滚。
 5. 现有 M4/M5 支付、退款、订单、库存、运单 API 和状态机不变；新增 API 与表均为加法式。
-6. `down.sql` 只允许无财务批次事实的 local/test scratch 环境；存在事实时以 SQLSTATE `55000` 拒绝。生产或已有事实环境只允许向前修复。
+6. `down.sql` 只允许无对应财务事实的 local/test scratch 环境；存在 review 时 Slice C、存在 shipping batch 时 Slice B、存在 batch/line 时 Slice A 均以 SQLSTATE `55000` 拒绝，逆向顺序固定为 C → B → A。生产或已有事实环境只允许向前修复。
 
 ## 6. 风险与外部依赖
 
@@ -118,3 +121,22 @@
   0 个外部/缺失引用通过。仓库仍无专用 OpenAPI 3.1 语义 linter。
 - `git diff --check`、高信号敏感信息和新增 TODO/FIXME/HACK/debug 扫描通过；未调用真实
   GHN/ZaloPay、未确认资金、未部署或启用 production capability。
+
+## 10. Slice C 实施与最终验证记录
+
+- 前向迁移 `20260801110000_p0_m5_005_reconciliation_closeout` 增加 review decision enum、
+  `financial_reconciliation_reviews`、复合商城/批次外键、append-only trigger、延迟 maker-checker
+  integrity guard、FORCE RLS 与 runtime `SELECT/INSERT` 最小授权；存在 review fact 时 down 以 `55000`
+  失败关闭。
+- 服务端以 batch scope advisory lock 和 Serializable 事务实现复核；锁等待后重新校验商城、管理员、
+  session/MFA、直接角色与 `store.finance.reconcile`。同键重放冻结结果、同键异参冲突，任意不同结论
+  并发只会落一条 review，batch importer 或撤权后的 reviewer 均失败关闭。
+- 批次列表提供 `OPEN/CLOSED_ACCEPTED/CLOSED_ESCALATED` 筛选；详情和导入响应统一返回异常分类汇总、
+  review status 与可空 review。管理端实现三语筛选、异常汇总、确认关闭表单、关闭结果和窄屏布局。
+- 已通过 M5 contracts 11/11、P0-M5-005 integration 14/14、完整 integration 39 个文件/351 项、
+  完整 `verify` 76 个文件/633 项 unit、完整 Chromium/WebKit E2E 26/26，以及 55 条迁移 fresh deploy
+  和 C → B → A guarded down/forward 演练。
+- 生产依赖审计为 3 moderate、0 high/critical；M5 OpenAPI 3.1.0 的 302 个本地引用均可解析且无外部
+  或缺失引用；Gitleaks、Compose、`git diff --check`、敏感信息、调试标记与最终高风险差异复审通过。
+- 完成证据见 `docs/reports/p0-m5-005-financial-reconciliation-completion-report.md`。真实 ZaloPay/GHN
+  sandbox、资金、Zalo 宿主、部署和 production rollout 均保持 `BLOCKED / NOT_RUN`。

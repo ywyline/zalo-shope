@@ -1,6 +1,6 @@
 # M5 支付、退款、物流与集成任务权限矩阵
 
-> 状态：M5.2 权限目录已实施；P0-M5-005 Slice B 复用已登记财务对账权限
+> 状态：M5.2 权限目录已实施；P0-M5-005 Slice C 复用已登记财务对账权限
 >
 > 日期：2026-07-24
 >
@@ -23,39 +23,40 @@
 | `store.integrations.manage`    | 创建、启停和轮换当前商城渠道 secret reference    | 极高 |
 | `store.integration-jobs.retry` | 受审重试当前商城 dead-letter 外部任务            | 极高 |
 | `store.finance.read`           | 查看当前商城脱敏财务对账批次与逐笔差异           | 高   |
-| `store.finance.reconcile`      | 导入规范化支付/退款或 GHN COD 回款事实并形成差异 | 极高 |
+| `store.finance.reconcile`      | 导入规范化结算事实并以 maker-checker 关闭差异    | 极高 |
 
-M5.2 与 P0-M5-005 Slice A 迁移只登记权限目录，不自动授予生产角色；Slice B 不新增权限或角色授权。local/test `store-admin` 可显式获得这些权限以
+M5.2 与 P0-M5-005 Slice A 迁移只登记权限目录，不自动授予生产角色；Slice B/C 不新增权限或角色授权。local/test `store-admin` 可显式获得这些权限以
 支持自动化测试；生产必须按岗位和最小权限受审分配。任何 `read` 都不隐含写入、退款、对账、
 面单或重试权限。
 
 ## 2. 管理端动作矩阵
 
-| 动作               | 所需权限                                          | 附加控制                                                                        |
-| ------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------- |
-| 支付列表/详情      | `store.payments.read`                             | RLS、商城 Header/查询一致、供应商引用掩码                                       |
-| 支付主动查单       | `store.payments.reconcile`                        | `Idempotency-Key`、expected version、原因、审计；不接受结果/金额                |
-| 退款列表/详情      | `store.refunds.read`                              | 当前商城支付复合关系和 RLS                                                      |
-| 创建退款           | `store.refunds.create`                            | MFA freshness、二次确认、expected payment version、可退款余额行锁、原因和审计   |
-| 查询退款结果       | `store.payments.reconcile` + `store.refunds.read` | 只调用已绑定供应商退款引用，不接受客户端供应商 ID                               |
-| 运单列表/详情/轨迹 | `store.shipments.read`                            | 地址/手机号掩码，未知供应商文案不直出                                           |
-| GHN 报价           | `store.shipments.create`                          | 从订单/仓库/地址重载重量、地区和 COD；请求不接受费用                            |
-| 创建运单           | `store.shipments.create`                          | MFA freshness、二次确认、订单版本、状态机、全量行、幂等和审计                   |
-| 取消运单           | `store.shipments.cancel`                          | MFA freshness、二次确认、运单版本、供应商当前状态复核                           |
-| 获取面单           | `store.shipments.label.read`                      | 单次/短期访问、格式 allowlist、每次读取审计，不返回 GHN Token                   |
-| 主动同步物流/对账  | `store.shipments.reconcile`                       | 受控批次、原因、幂等、差异只追加                                                |
-| 读取渠道           | `store.integrations.read`                         | 不回显 secret ref 全值、密钥、GHN Token 或 Checkout Private Key                 |
-| 修改/启停/轮换渠道 | `store.integrations.manage`                       | MFA freshness、二次确认、目标环境 allowlist、配置预检、版本和审计               |
-| 读取失败任务       | 对应领域 `read`                                   | 只返回错误类别/计数/时间，不返回原始 payload                                    |
-| 重试 dead-letter   | `store.integration-jobs.retry` + 对应领域写权限   | MFA freshness、expected version、原因、审计；不能改 payload/商城                |
-| 读取财务对账批次   | `store.finance.read`                              | FORCE RLS、目标商城、稳定游标、引用掩码；平台跨商城读取需访问原因               |
-| 导入支付/退款批次  | `store.finance.reconcile`                         | 直接商城角色、近期 MFA、幂等键、固定确认码、原因、规范化输入和只追加审计        |
-| 读取 COD 应收      | `store.finance.read`                              | 仅当前商城 GHN 已签收 COD 运单、可信历史报价、状态先筛选后稳定分页、引用掩码    |
-| 导入 GHN COD 回款  | `store.finance.reconcile`                         | 直接商城角色、近期 MFA、幂等、确认、规范化金额/费用、跨批次重复检测和只追加审计 |
+| 动作               | 所需权限                                          | 附加控制                                                                           |
+| ------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 支付列表/详情      | `store.payments.read`                             | RLS、商城 Header/查询一致、供应商引用掩码                                          |
+| 支付主动查单       | `store.payments.reconcile`                        | `Idempotency-Key`、expected version、原因、审计；不接受结果/金额                   |
+| 退款列表/详情      | `store.refunds.read`                              | 当前商城支付复合关系和 RLS                                                         |
+| 创建退款           | `store.refunds.create`                            | MFA freshness、二次确认、expected payment version、可退款余额行锁、原因和审计      |
+| 查询退款结果       | `store.payments.reconcile` + `store.refunds.read` | 只调用已绑定供应商退款引用，不接受客户端供应商 ID                                  |
+| 运单列表/详情/轨迹 | `store.shipments.read`                            | 地址/手机号掩码，未知供应商文案不直出                                              |
+| GHN 报价           | `store.shipments.create`                          | 从订单/仓库/地址重载重量、地区和 COD；请求不接受费用                               |
+| 创建运单           | `store.shipments.create`                          | MFA freshness、二次确认、订单版本、状态机、全量行、幂等和审计                      |
+| 取消运单           | `store.shipments.cancel`                          | MFA freshness、二次确认、运单版本、供应商当前状态复核                              |
+| 获取面单           | `store.shipments.label.read`                      | 单次/短期访问、格式 allowlist、每次读取审计，不返回 GHN Token                      |
+| 主动同步物流/对账  | `store.shipments.reconcile`                       | 受控批次、原因、幂等、差异只追加                                                   |
+| 读取渠道           | `store.integrations.read`                         | 不回显 secret ref 全值、密钥、GHN Token 或 Checkout Private Key                    |
+| 修改/启停/轮换渠道 | `store.integrations.manage`                       | MFA freshness、二次确认、目标环境 allowlist、配置预检、版本和审计                  |
+| 读取失败任务       | 对应领域 `read`                                   | 只返回错误类别/计数/时间，不返回原始 payload                                       |
+| 重试 dead-letter   | `store.integration-jobs.retry` + 对应领域写权限   | MFA freshness、expected version、原因、审计；不能改 payload/商城                   |
+| 读取财务对账批次   | `store.finance.read`                              | FORCE RLS、目标商城、稳定游标、引用掩码；平台跨商城读取需访问原因                  |
+| 导入支付/退款批次  | `store.finance.reconcile`                         | 直接商城角色、近期 MFA、幂等键、固定确认码、原因、规范化输入和只追加审计           |
+| 读取 COD 应收      | `store.finance.read`                              | 仅当前商城 GHN 已签收 COD 运单、可信历史报价、状态先筛选后稳定分页、引用掩码       |
+| 导入 GHN COD 回款  | `store.finance.reconcile`                         | 直接商城角色、近期 MFA、幂等、确认、规范化金额/费用、跨批次重复检测和只追加审计    |
+| 关闭对账差异       | `store.finance.reconcile`                         | 直接商城角色、近期 MFA、异于导入人、幂等键、批次版本、固定确认码、原因和只追加审计 |
 
 订单客服的 `store.orders.read/manage` 不自动拥有支付退款、渠道、运单或面单能力。仓库岗位可获
 运单 create/read/label，但不获退款和渠道管理；财务岗位可获支付/退款/对账，但不获渠道密钥
-轮换，避免单人同时控制凭据和资金动作。
+轮换。批次导入人与差异关闭人必须不同；拥有同一权限不取消运行时 maker-checker 校验。
 
 ## 3. 买家能力
 

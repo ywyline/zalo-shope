@@ -15,6 +15,15 @@ const businessDateSchema = z
 export const financialReconciliationStoreQuerySchema = z.object({ store_id: uuidSchema }).strict();
 export const financialReconciliationBatchParamsSchema = z.object({ batchId: uuidSchema }).strict();
 
+export const closeFinancialReconciliationSchema = z
+  .object({
+    confirmation_code: z.literal('CLOSE_FINANCIAL_RECONCILIATION'),
+    decision: z.enum(['CLOSED_ACCEPTED', 'CLOSED_ESCALATED']),
+    expected_batch_version: z.literal(1),
+    reason: z.string().trim().min(10).max(500),
+  })
+  .strict();
+
 export const paymentSettlementRecordSchema = z
   .object({
     fee_amount_vnd: nonnegativeVndSchema,
@@ -112,6 +121,7 @@ export const financialReconciliationBatchListQuerySchema = z
     business_date_to: businessDateSchema.optional(),
     cursor: uuidSchema.optional(),
     limit: z.coerce.number().int().min(1).max(100).default(20),
+    review_status: z.enum(['OPEN', 'CLOSED_ACCEPTED', 'CLOSED_ESCALATED']).optional(),
     source: z.enum(['PAYMENT_PROVIDER', 'SHIPPING_PROVIDER']).optional(),
     status: z.enum(['MATCHED', 'REVIEW_REQUIRED']).optional(),
   })
@@ -140,6 +150,7 @@ export const codReceivableListQuerySchema = z
 
 export type PaymentSettlementBatchImport = z.infer<typeof paymentSettlementBatchImportSchema>;
 export type CodRemittanceBatchImport = z.infer<typeof codRemittanceBatchImportSchema>;
+export type CloseFinancialReconciliation = z.infer<typeof closeFinancialReconciliationSchema>;
 export type FinancialReconciliationBatchListQuery = z.infer<
   typeof financialReconciliationBatchListQuerySchema
 >;

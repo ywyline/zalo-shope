@@ -1,15 +1,16 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M5 Payment, Refund, Shipping and Integration API
-  version: 0.5.9-cod-reconciliation
+  version: 0.5.10-reconciliation-closeout
   description: >-
     M5.5 已实施在线订单、支付尝试、异步 launch、provider-order 绑定、本人查询/重试、
     Zalo Checkout 主动查单和验签 webhook；M5.6 已实施 GHN 报价、运单命令、面单代理、
     权威轨迹查询和未签名 webhook hint。M5.7 已实施商城隔离的支付/退款列表、部分或全额
     退款命令、支付与退款主动查询、脱敏集成任务列表及受审 dead-letter 重放。P0-M5-005
-    Slice A 已增加规范化支付/退款结算批次导入、脱敏列表和差异详情；它不解析供应商文件，
-    不调用供应商，也不推进支付、退款、订单或库存状态。真实商户退款、结算文件、GHN COD
-    回款和 Zalo 宿主验收仍为 BLOCKED/NOT_RUN。
+    Slice A 已增加规范化支付/退款结算批次导入，Slice B 增加 COD 应收/GHN 回款，Slice C 增加
+    maker-checker 差异关闭和不可变复核结果；它们不解析供应商文件，不调用供应商，也不推进
+    支付、退款、订单、库存或运单状态。真实商户退款、结算文件、GHN COD 回款和 Zalo 宿主验收
+    仍为 BLOCKED/NOT_RUN。
     本文与 openapi.m1-m4.yaml 共同描述增量 API。
     支付采用 ZaloPay through Zalo Checkout，物流采用 GHN，两个商城使用独立渠道配置。
     客户端 Checkout/PaymentDone、供应商回调和 GHN webhook 均不能直接修改金额、库存或状态。
@@ -472,6 +473,9 @@ paths:
         - name: status
           in: query
           schema: { $ref: '#/components/schemas/FinancialReconciliationBatchStatus' }
+        - name: review_status
+          in: query
+          schema: { $ref: '#/components/schemas/FinancialReconciliationReviewStatus' }
         - name: business_date_from
           in: query
           schema: { type: string, format: date }
@@ -510,6 +514,40 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/financial-reconciliation/batches/{batchId}/review:
+    post:
+      tags: [Admin financial reconciliation]
+      summary: 以 maker-checker 规则关闭对账差异
+      description: >-
+        仅允许目标商城直接财务复核权限、近期 MFA、固定确认码、原因和幂等键。复核人不能是批次
+        导入人；服务端在 Serializable 事务内重新校验商城授权、批次版本和异常汇总，并只追加一条
+        不可变 CLOSED_ACCEPTED 或 CLOSED_ESCALATED 复核记录。该操作不改变支付、退款、订单、库存、
+        运单或现金状态。
+      security: [{ StoreCode: [], AdminBearer: [] }]
+      parameters:
+        - $ref: '#/components/parameters/StoreCode'
+        - $ref: '#/components/parameters/StoreIdQuery'
+        - name: batchId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FinancialReconciliationReviewRequest' }
+      responses:
+        '201':
+          description: 已追加的不可变复核结果与异常分类汇总
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinancialReconciliationReviewResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /v1/admin/shipping/quotes:
     post:
       tags: [Admin shipping]
@@ -1014,6 +1052,18 @@ components:
     FinancialReconciliationBatchStatus:
       type: string
       enum: [MATCHED, REVIEW_REQUIRED]
+    FinancialReconciliationReviewStatus:
+      type: string
+      enum: [OPEN, CLOSED_ACCEPTED, CLOSED_ESCALATED]
+    FinancialReconciliationReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmation_code, decision, expected_batch_version, reason]
+      properties:
+        confirmation_code: { type: string, const: CLOSE_FINANCIAL_RECONCILIATION }
+        decision: { type: string, enum: [CLOSED_ACCEPTED, CLOSED_ESCALATED] }
+        expected_batch_version: { type: integer, const: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
     FinancialReconciliationLineStatus:
       type: string
       enum:
@@ -1097,6 +1147,7 @@ components:
           fee_difference_vnd,
           version,
           created_at,
+          review_status,
         ]
       properties:
         id: { type: string, format: uuid }
@@ -1117,17 +1168,82 @@ components:
         fee_difference_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
         version: { type: integer, const: 1 }
         created_at: { type: string, format: date-time }
+        review_status: { $ref: '#/components/schemas/FinancialReconciliationReviewStatus' }
     FinancialReconciliationBatchDetail:
       allOf:
         - $ref: '#/components/schemas/FinancialReconciliationBatchSummary'
         - type: object
-          required: [lines]
+          required: [lines, exception_summary, review]
           properties:
+            exception_summary:
+              type: array
+              items: { $ref: '#/components/schemas/FinancialReconciliationExceptionSummary' }
+            review:
+              oneOf:
+                - { type: 'null' }
+                - $ref: '#/components/schemas/FinancialReconciliationReview'
             lines:
               type: array
               minItems: 1
               maxItems: 500
               items: { $ref: '#/components/schemas/FinancialReconciliationLine' }
+    FinancialReconciliationExceptionSummary:
+      type: object
+      additionalProperties: false
+      required:
+        [status, line_count, gross_amount_vnd, net_amount_vnd, difference_vnd, fee_difference_vnd]
+      properties:
+        status: { $ref: '#/components/schemas/FinancialReconciliationLineStatus' }
+        line_count: { type: integer, minimum: 1, maximum: 500 }
+        gross_amount_vnd: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        net_amount_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+        difference_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+        fee_difference_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+    FinancialReconciliationReview:
+      type: object
+      additionalProperties: false
+      required: [id, decision, reason, reviewed_at]
+      properties:
+        id: { type: string, format: uuid }
+        decision: { type: string, enum: [CLOSED_ACCEPTED, CLOSED_ESCALATED] }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+        reviewed_at: { type: string, format: date-time }
+    FinancialReconciliationReviewResult:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          decision,
+          reason,
+          created_at,
+          expected_batch_version,
+          replayed,
+          batch,
+          exception_summary,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        decision: { type: string, enum: [CLOSED_ACCEPTED, CLOSED_ESCALATED] }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+        created_at: { type: string, format: date-time }
+        expected_batch_version: { type: integer, const: 1 }
+        replayed: { type: boolean }
+        batch:
+          type: object
+          additionalProperties: false
+          required: [id, status, version, exception_count, difference_vnd, fee_difference_vnd]
+          properties:
+            id: { type: string, format: uuid }
+            status: { $ref: '#/components/schemas/FinancialReconciliationBatchStatus' }
+            version: { type: integer, const: 1 }
+            exception_count: { type: integer, minimum: 1, maximum: 500 }
+            difference_vnd: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+            fee_difference_vnd:
+              { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+        exception_summary:
+          type: array
+          items: { $ref: '#/components/schemas/FinancialReconciliationExceptionSummary' }
     FinancialReconciliationImportResult:
       allOf:
         - $ref: '#/components/schemas/FinancialReconciliationBatchDetail'

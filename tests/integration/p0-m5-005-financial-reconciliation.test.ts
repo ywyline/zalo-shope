@@ -46,12 +46,14 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
     memberId: randomUUID(),
     readerAdminId: randomUUID(),
     readerRoleId: randomUUID(),
+    reviewerAdminId: randomUUID(),
     shippingChannelId: randomUUID(),
   };
   let scratchCreated = false;
   let app: INestApplication;
   let adminToken = '';
   let readerToken = '';
+  let reviewerToken = '';
   let staleAdminToken = '';
   let storeAdminRoleId = '';
   let warehouseId = '';
@@ -349,6 +351,13 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
           id: fixture.readerAdminId,
           passwordHash: 'test-fixture-not-used',
         },
+        {
+          displayName: 'P0-M5-005 finance reviewer',
+          email: `p0-m5-005-reviewer-${suffix}@example.test`,
+          emailNormalized: `p0-m5-005-reviewer-${suffix}@example.test`,
+          id: fixture.reviewerAdminId,
+          passwordHash: 'test-fixture-not-used',
+        },
       ],
     });
     const storeAdminRole = await owner.storeRole.findUniqueOrThrow({
@@ -382,6 +391,12 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
           adminUserId: fixture.readerAdminId,
           grantedBy: fixture.adminId,
           roleId: fixture.readerRoleId,
+          storeId: BEAUTY_STORE_ID,
+        },
+        {
+          adminUserId: fixture.reviewerAdminId,
+          grantedBy: fixture.adminId,
+          roleId: storeAdminRole.id,
           storeId: BEAUTY_STORE_ID,
         },
       ],
@@ -428,6 +443,7 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
     });
     adminToken = await issueAdminToken(fixture.adminId, new Date());
     readerToken = await issueAdminToken(fixture.readerAdminId, new Date());
+    reviewerToken = await issueAdminToken(fixture.reviewerAdminId, new Date());
     staleAdminToken = await issueAdminToken(fixture.adminId, new Date(Date.now() - 11 * 60_000));
 
     const [{ AppModule }, { ApiExceptionFilter }] = await Promise.all([
@@ -1117,6 +1133,283 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
     expect(new Set(actualIds).size).toBe(actualIds.length);
   });
 
+  it('closes one exception batch through an independent idempotent finance reviewer', async () => {
+    const providerReference = `review-payment-${suffix}`;
+    await createPayment('review-closeout', { providerReference });
+    const imported = await api()
+      .post(`/v1/admin/financial-reconciliation/payment-batches?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...headers(), 'Idempotency-Key': `review-batch-import-${suffix}` })
+      .send(
+        importBody(`review-batch-${suffix}`, [
+          {
+            fee_amount_vnd: 2_000,
+            gross_amount_vnd: 110_000,
+            occurred_at: '2026-08-01T09:00:00.000Z',
+            provider_reference: providerReference,
+            record_reference: `review-line-${suffix}`,
+            type: 'PAYMENT',
+          },
+        ]),
+      )
+      .expect(201);
+    expect(imported.body).toMatchObject({ exception_count: 1, status: 'REVIEW_REQUIRED' });
+
+    const path = `/v1/admin/financial-reconciliation/batches/${imported.body.id}/review?store_id=${BEAUTY_STORE_ID}`;
+    const key = `review-closeout-key-${suffix}`;
+    const body = {
+      confirmation_code: 'CLOSE_FINANCIAL_RECONCILIATION',
+      decision: 'CLOSED_ACCEPTED',
+      expected_batch_version: 1,
+      reason: 'Accept the verified settlement variance after independent finance review.',
+    };
+    await api()
+      .post(path)
+      .set({ ...headers(), 'Idempotency-Key': key })
+      .send(body)
+      .expect(403);
+    await api()
+      .post(path)
+      .set({ ...headers(readerToken), 'Idempotency-Key': key })
+      .send(body)
+      .expect(403);
+
+    const closed = await api()
+      .post(path)
+      .set({ ...headers(reviewerToken), 'Idempotency-Key': key })
+      .send(body)
+      .expect(201);
+    expect(closed.body).toMatchObject({
+      batch: {
+        difference_vnd: -10_000,
+        exception_count: 1,
+        id: imported.body.id,
+        status: 'REVIEW_REQUIRED',
+      },
+      decision: 'CLOSED_ACCEPTED',
+      expected_batch_version: 1,
+      replayed: false,
+    });
+    expect(closed.body.exception_summary).toEqual([
+      expect.objectContaining({
+        difference_vnd: -10_000,
+        line_count: 1,
+        status: 'AMOUNT_MISMATCH',
+      }),
+    ]);
+
+    const replay = await api()
+      .post(path)
+      .set({ ...headers(reviewerToken), 'Idempotency-Key': key })
+      .send(body)
+      .expect(201);
+    expect(replay.body).toMatchObject({ id: closed.body.id, replayed: true });
+    await api()
+      .post(path)
+      .set({ ...headers(reviewerToken), 'Idempotency-Key': key })
+      .send({ ...body, decision: 'CLOSED_ESCALATED' })
+      .expect(409);
+    await api()
+      .post(path)
+      .set({ ...headers(reviewerToken), 'Idempotency-Key': `second-review-${suffix}` })
+      .send(body)
+      .expect(409);
+
+    const detail = await api()
+      .get(
+        `/v1/admin/financial-reconciliation/batches/${imported.body.id}?store_id=${BEAUTY_STORE_ID}`,
+      )
+      .set(headers(readerToken))
+      .expect(200);
+    expect(detail.body).toMatchObject({
+      review: {
+        decision: 'CLOSED_ACCEPTED',
+        id: closed.body.id,
+        reason: body.reason,
+      },
+      review_status: 'CLOSED_ACCEPTED',
+    });
+    expect(detail.body.exception_summary).toEqual(closed.body.exception_summary);
+
+    const filtered = await api()
+      .get(
+        `/v1/admin/financial-reconciliation/batches?store_id=${BEAUTY_STORE_ID}&review_status=CLOSED_ACCEPTED&limit=100`,
+      )
+      .set(headers(readerToken))
+      .expect(200);
+    expect(filtered.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: imported.body.id, review_status: 'CLOSED_ACCEPTED' }),
+      ]),
+    );
+    expect(
+      filtered.body.items.every(
+        (item: { review_status: string }) => item.review_status === 'CLOSED_ACCEPTED',
+      ),
+    ).toBe(true);
+
+    const open = await api()
+      .get(
+        `/v1/admin/financial-reconciliation/batches?store_id=${BEAUTY_STORE_ID}&review_status=OPEN&limit=100`,
+      )
+      .set(headers(readerToken))
+      .expect(200);
+    expect(open.body.items).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: imported.body.id })]),
+    );
+    expect(
+      open.body.items.every((item: { review_status: string }) => item.review_status === 'OPEN'),
+    ).toBe(true);
+    const audit = await owner.auditLog.findFirstOrThrow({
+      where: { action: 'financial-reconciliation.batch.reviewed', targetId: closed.body.id },
+    });
+    expect(JSON.stringify(audit)).not.toContain(providerReference);
+    expect(audit).toMatchObject({ actorId: fixture.reviewerAdminId, reason: body.reason });
+
+    const fashionVisible = await withStoreTransaction(
+      runtime,
+      context(FASHION_STORE_ID),
+      (transaction) =>
+        transaction.financialReconciliationReview.findFirst({ where: { id: closed.body.id } }),
+    );
+    expect(fashionVisible).toBeNull();
+  });
+
+  it('serializes competing closeout decisions to one immutable review', async () => {
+    const providerReference = `concurrent-review-payment-${suffix}`;
+    await createPayment('concurrent-review', { providerReference });
+    const imported = await api()
+      .post(`/v1/admin/financial-reconciliation/payment-batches?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...headers(), 'Idempotency-Key': `concurrent-review-import-${suffix}` })
+      .send(
+        importBody(`concurrent-review-batch-${suffix}`, [
+          {
+            fee_amount_vnd: 2_000,
+            gross_amount_vnd: 100_000,
+            occurred_at: '2026-08-01T09:15:00.000Z',
+            provider_reference: providerReference,
+            record_reference: `concurrent-review-line-${suffix}`,
+            type: 'PAYMENT',
+          },
+        ]),
+      )
+      .expect(201);
+    const path = `/v1/admin/financial-reconciliation/batches/${imported.body.id}/review?store_id=${BEAUTY_STORE_ID}`;
+    const review = (decision: 'CLOSED_ACCEPTED' | 'CLOSED_ESCALATED', key: string) =>
+      api()
+        .post(path)
+        .set({ ...headers(reviewerToken), 'Idempotency-Key': key })
+        .send({
+          confirmation_code: 'CLOSE_FINANCIAL_RECONCILIATION',
+          decision,
+          expected_batch_version: 1,
+          reason: `Record the independently verified ${decision.toLowerCase()} finance conclusion.`,
+        })
+        .then((response) => response);
+    const responses = await Promise.all([
+      review('CLOSED_ACCEPTED', `concurrent-accepted-${suffix}`),
+      review('CLOSED_ESCALATED', `concurrent-escalated-${suffix}`),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
+    expect(
+      await owner.financialReconciliationReview.count({
+        where: { batchId: imported.body.id, storeId: BEAUTY_STORE_ID },
+      }),
+    ).toBe(1);
+  });
+
+  it('revalidates reviewer permission after the batch closeout lock wait', async () => {
+    const providerReference = `revoked-review-payment-${suffix}`;
+    await createPayment('revoked-review', { providerReference });
+    const imported = await api()
+      .post(`/v1/admin/financial-reconciliation/payment-batches?store_id=${BEAUTY_STORE_ID}`)
+      .set({ ...headers(), 'Idempotency-Key': `revoked-review-import-${suffix}` })
+      .send(
+        importBody(`revoked-review-batch-${suffix}`, [
+          {
+            fee_amount_vnd: 2_000,
+            gross_amount_vnd: 90_000,
+            occurred_at: '2026-08-01T09:30:00.000Z',
+            provider_reference: providerReference,
+            record_reference: `revoked-review-line-${suffix}`,
+            type: 'PAYMENT',
+          },
+        ]),
+      )
+      .expect(201);
+    const advisoryKey = `financial-reconciliation-review:${BEAUTY_STORE_ID}:${imported.body.id}`;
+    let releaseLock = () => undefined;
+    let markLockAcquired = () => undefined;
+    const lockRelease = new Promise<void>((resolveLock) => {
+      releaseLock = resolveLock;
+    });
+    const lockAcquired = new Promise<void>((resolveLock) => {
+      markLockAcquired = resolveLock;
+    });
+    const blocker = owner.$transaction(
+      async (transaction) => {
+        await transaction.$executeRaw`
+          SELECT pg_advisory_xact_lock(hashtextextended(${advisoryKey}, 0))
+        `;
+        markLockAcquired();
+        await lockRelease;
+      },
+      { timeout: 15_000 },
+    );
+    let assignmentRevoked = false;
+    let pendingRequest: Promise<request.Response> | undefined;
+    try {
+      await lockAcquired;
+      pendingRequest = api()
+        .post(
+          `/v1/admin/financial-reconciliation/batches/${imported.body.id}/review?store_id=${BEAUTY_STORE_ID}`,
+        )
+        .set({
+          ...headers(reviewerToken),
+          'Idempotency-Key': `revoked-review-closeout-${suffix}`,
+        })
+        .send({
+          confirmation_code: 'CLOSE_FINANCIAL_RECONCILIATION',
+          decision: 'CLOSED_ESCALATED',
+          expected_batch_version: 1,
+          reason: 'Escalate this verified variance after the independent finance review.',
+        })
+        .then((response) => response);
+      await waitForBlockedAdvisoryLock();
+      await owner.adminStoreRole.delete({
+        where: {
+          storeId_adminUserId_roleId: {
+            adminUserId: fixture.reviewerAdminId,
+            roleId: storeAdminRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+        },
+      });
+      assignmentRevoked = true;
+      releaseLock();
+      await blocker;
+      expect((await pendingRequest).status).toBe(403);
+      expect(
+        await owner.financialReconciliationReview.count({
+          where: { batchId: imported.body.id, storeId: BEAUTY_STORE_ID },
+        }),
+      ).toBe(0);
+    } finally {
+      releaseLock();
+      await blocker.catch(() => undefined);
+      await pendingRequest?.catch(() => undefined);
+      if (assignmentRevoked) {
+        await owner.adminStoreRole.create({
+          data: {
+            adminUserId: fixture.reviewerAdminId,
+            grantedBy: fixture.adminId,
+            roleId: storeAdminRoleId,
+            storeId: BEAUTY_STORE_ID,
+          },
+        });
+      }
+    }
+  });
+
   it('keeps financial facts append-only and runtime grants minimal', async () => {
     const batch = await owner.financialReconciliationBatch.findFirstOrThrow({
       where: { storeId: BEAUTY_STORE_ID },
@@ -1124,12 +1417,22 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
     await expect(
       owner.$executeRaw`UPDATE financial_reconciliation_batches SET reason = 'Mutation must be rejected' WHERE id = ${batch.id}::uuid`,
     ).rejects.toMatchObject({ meta: expect.objectContaining({ code: '42501' }) });
+    const review = await owner.financialReconciliationReview.findFirstOrThrow({
+      where: { storeId: BEAUTY_STORE_ID },
+    });
+    await expect(
+      owner.$executeRaw`UPDATE financial_reconciliation_reviews SET reason = 'Mutation must be rejected' WHERE id = ${review.id}::uuid`,
+    ).rejects.toMatchObject({ meta: expect.objectContaining({ code: '42501' }) });
 
     const grants = await owner.$queryRaw<Array<{ privilege_type: string; table_name: string }>>`
       SELECT table_name, privilege_type
       FROM information_schema.role_table_grants
       WHERE grantee = 'zalo_shop_runtime'
-        AND table_name IN ('financial_reconciliation_batches', 'financial_reconciliation_lines')
+        AND table_name IN (
+          'financial_reconciliation_batches',
+          'financial_reconciliation_lines',
+          'financial_reconciliation_reviews'
+        )
       ORDER BY table_name, privilege_type
     `;
     expect(grants).toEqual([
@@ -1137,6 +1440,8 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
       { privilege_type: 'SELECT', table_name: 'financial_reconciliation_batches' },
       { privilege_type: 'INSERT', table_name: 'financial_reconciliation_lines' },
       { privilege_type: 'SELECT', table_name: 'financial_reconciliation_lines' },
+      { privilege_type: 'INSERT', table_name: 'financial_reconciliation_reviews' },
+      { privilege_type: 'SELECT', table_name: 'financial_reconciliation_reviews' },
     ]);
 
     const lineCount = await owner.financialReconciliationLine.count({
@@ -1171,6 +1476,19 @@ describe('P0-M5-005 financial reconciliation API and database invariants', () =>
   });
 
   it('rejects the local/test down script before deleting existing financial facts', async () => {
+    const reviewDownPath = resolve(
+      REPOSITORY_ROOT,
+      'packages/database/prisma/migrations/20260801110000_p0_m5_005_reconciliation_closeout/down.sql',
+    );
+    const reviewDownSql = readFileSync(reviewDownPath, 'utf8');
+    const reviewGuardEnd = reviewDownSql.indexOf('$$;');
+    expect(reviewGuardEnd).toBeGreaterThan(0);
+    await expect(
+      owner.$executeRawUnsafe(reviewDownSql.slice(0, reviewGuardEnd + 3)),
+    ).rejects.toMatchObject({
+      meta: expect.objectContaining({ code: '55000' }),
+    });
+
     const codDownPath = resolve(
       REPOSITORY_ROOT,
       'packages/database/prisma/migrations/20260801100000_p0_m5_005_cod_reconciliation/down.sql',

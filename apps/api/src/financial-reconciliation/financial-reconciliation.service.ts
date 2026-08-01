@@ -9,11 +9,13 @@ import {
 import type {
   CodReceivableListQuery,
   CodRemittanceBatchImport,
+  CloseFinancialReconciliation,
   FinancialReconciliationBatchListQuery,
   PaymentSettlementBatchImport,
 } from '@zalo-shop/contracts';
 import {
   FinancialReconciliationCommandError,
+  closeFinancialReconciliation,
   importCodRemittanceBatch,
   listCodReceivables,
   importPaymentSettlementBatch,
@@ -27,6 +29,18 @@ import { DATABASE_CLIENT } from '../auth/auth.tokens';
 
 function safeInteger(value: bigint): number {
   const result = Number(value);
+  if (!Number.isSafeInteger(result)) throw new ConflictException('AMOUNT_INVALID');
+  return result;
+}
+
+function safeAmount(value: bigint | number): number {
+  if (typeof value === 'bigint') return safeInteger(value);
+  if (!Number.isSafeInteger(value)) throw new ConflictException('AMOUNT_INVALID');
+  return value;
+}
+
+function checkedAdd(left: number, right: number): number {
+  const result = left + right;
   if (!Number.isSafeInteger(result)) throw new ConflictException('AMOUNT_INVALID');
   return result;
 }
@@ -81,20 +95,28 @@ export class FinancialReconciliationService {
   ) {
     const context = await this.admin.authorize(headers, storeId, 'store.finance.read');
     return withStoreTransaction(this.database, context, async (transaction) => {
+      const reviewFilter =
+        query.review_status === 'OPEN'
+          ? { review: null }
+          : query.review_status
+            ? { review: { is: { decision: query.review_status } } }
+            : {};
       const cursor = query.cursor
         ? await transaction.financialReconciliationBatch.findFirst({
             select: { createdAt: true, id: true },
-            where: { id: query.cursor, storeId },
+            where: { id: query.cursor, storeId, ...reviewFilter },
           })
         : null;
       if (query.cursor && !cursor) {
         throw new NotFoundException('Financial reconciliation cursor not found');
       }
       const rows = await transaction.financialReconciliationBatch.findMany({
+        include: { review: true },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: query.limit + 1,
         where: {
           storeId,
+          ...reviewFilter,
           ...(query.source ? { source: query.source } : {}),
           ...(query.status ? { status: query.status } : {}),
           ...(query.business_date_from || query.business_date_to
@@ -200,12 +222,21 @@ export class FinancialReconciliationService {
     const context = await this.admin.authorize(headers, storeId, 'store.finance.read');
     return withStoreTransaction(this.database, context, async (transaction) => {
       const batch = await transaction.financialReconciliationBatch.findFirst({
-        include: { lines: { orderBy: { lineNumber: 'asc' } } },
+        include: { lines: { orderBy: { lineNumber: 'asc' } }, review: true },
         where: { id: batchId, storeId },
       });
       if (!batch) throw new NotFoundException('Financial reconciliation batch not found');
       return {
         ...this.batchSummaryView(batch),
+        exception_summary: this.exceptionSummaryView(batch.lines),
+        review: batch.review
+          ? {
+              decision: batch.review.decision,
+              id: batch.review.id,
+              reason: batch.review.reason,
+              reviewed_at: batch.review.createdAt.toISOString(),
+            }
+          : null,
         lines: batch.lines.map((line) => ({
           difference_vnd: line.differenceVnd === null ? null : safeInteger(line.differenceVnd),
           fee_amount_vnd: safeInteger(line.feeAmountVnd),
@@ -249,6 +280,7 @@ export class FinancialReconciliationService {
     source: string;
     status: string;
     version: number;
+    review?: { decision: string } | null;
   }) {
     return {
       batch_reference_masked: batch.batchReferenceMasked,
@@ -266,10 +298,110 @@ export class FinancialReconciliationService {
       matched_count: batch.matchedCount,
       net_amount_vnd: safeInteger(batch.netAmountVnd),
       record_count: batch.recordCount,
+      review_status: batch.review?.decision ?? 'OPEN',
       source: batch.source,
       status: batch.status,
       version: batch.version,
     };
+  }
+
+  private exceptionSummaryView(
+    lines: readonly {
+      differenceVnd: bigint | number | null;
+      feeDifferenceVnd: bigint | number | null;
+      grossAmountVnd: bigint | number;
+      netAmountVnd: bigint | number;
+      status: string;
+    }[],
+  ) {
+    const summaries = new Map<
+      string,
+      {
+        difference_vnd: number;
+        fee_difference_vnd: number;
+        gross_amount_vnd: number;
+        line_count: number;
+        net_amount_vnd: number;
+        status: string;
+      }
+    >();
+    for (const line of lines) {
+      if (line.status === 'MATCHED') continue;
+      const current = summaries.get(line.status) ?? {
+        difference_vnd: 0,
+        fee_difference_vnd: 0,
+        gross_amount_vnd: 0,
+        line_count: 0,
+        net_amount_vnd: 0,
+        status: line.status,
+      };
+      current.difference_vnd = checkedAdd(
+        current.difference_vnd,
+        line.differenceVnd === null ? 0 : safeAmount(line.differenceVnd),
+      );
+      current.fee_difference_vnd = checkedAdd(
+        current.fee_difference_vnd,
+        line.feeDifferenceVnd === null ? 0 : safeAmount(line.feeDifferenceVnd),
+      );
+      current.gross_amount_vnd = checkedAdd(
+        current.gross_amount_vnd,
+        safeAmount(line.grossAmountVnd),
+      );
+      current.line_count += 1;
+      current.net_amount_vnd = checkedAdd(current.net_amount_vnd, safeAmount(line.netAmountVnd));
+      summaries.set(line.status, current);
+    }
+    return [...summaries.values()].sort((left, right) => left.status.localeCompare(right.status));
+  }
+
+  public async reviewBatch(
+    headers: AdminHeaders,
+    storeId: string,
+    batchId: string,
+    idempotencyKey: string,
+    input: CloseFinancialReconciliation,
+  ) {
+    const context = await this.admin.authorizeSensitive(
+      headers,
+      storeId,
+      'store.finance.reconcile',
+    );
+    try {
+      const result = await closeFinancialReconciliation(this.database, context, {
+        batchId,
+        confirmation: input.confirmation_code,
+        decision: input.decision,
+        expectedBatchVersion: input.expected_batch_version,
+        idempotencyKey,
+        reason: input.reason,
+      });
+      return {
+        batch: {
+          difference_vnd: result.batch.differenceVnd,
+          exception_count: result.batch.exceptionCount,
+          fee_difference_vnd: result.batch.feeDifferenceVnd,
+          id: result.batch.id,
+          status: result.batch.status,
+          version: result.batch.version,
+        },
+        created_at: result.createdAt.toISOString(),
+        decision: result.decision,
+        exception_summary: result.exceptionSummary.map((summary) => ({
+          difference_vnd: summary.differenceVnd,
+          fee_difference_vnd: summary.feeDifferenceVnd,
+          gross_amount_vnd: summary.grossAmountVnd,
+          line_count: summary.lineCount,
+          net_amount_vnd: summary.netAmountVnd,
+          status: summary.status,
+        })),
+        expected_batch_version: result.expectedBatchVersion,
+        id: result.id,
+        reason: result.reason,
+        replayed: result.replayed,
+      };
+    } catch (error) {
+      this.mapCommandError(error);
+    }
   }
 
   private batchResultView(batch: FinancialReconciliationBatchResult) {
@@ -283,6 +415,7 @@ export class FinancialReconciliationService {
       fee_amount_vnd: batch.feeAmountVnd,
       gross_amount_vnd: batch.grossAmountVnd,
       id: batch.id,
+      exception_summary: this.exceptionSummaryView(batch.lines),
       lines: batch.lines.map((line) => ({
         difference_vnd: line.differenceVnd,
         fee_amount_vnd: line.feeAmountVnd,
@@ -306,6 +439,8 @@ export class FinancialReconciliationService {
       net_amount_vnd: batch.netAmountVnd,
       record_count: batch.recordCount,
       replayed: batch.replayed,
+      review: null,
+      review_status: 'OPEN' as const,
       source: batch.source,
       status: batch.status,
       version: batch.version,
@@ -359,6 +494,7 @@ export class FinancialReconciliationService {
       fee_difference_vnd: batch.feeDifferenceVnd,
       gross_amount_vnd: batch.grossAmountVnd,
       id: batch.id,
+      exception_summary: this.exceptionSummaryView(batch.lines),
       lines: batch.lines.map((line) => ({
         difference_vnd: line.differenceVnd,
         fee_amount_vnd: line.feeAmountVnd,
@@ -381,6 +517,8 @@ export class FinancialReconciliationService {
       net_amount_vnd: batch.netAmountVnd,
       record_count: batch.recordCount,
       replayed: batch.replayed,
+      review: null,
+      review_status: 'OPEN' as const,
       source: batch.source,
       status: batch.status,
       version: batch.version,
@@ -400,6 +538,12 @@ export class FinancialReconciliationService {
       }
       if (error.code === 'FINANCIAL_RECONCILIATION_CURSOR_NOT_FOUND') {
         throw new NotFoundException('Financial reconciliation cursor not found');
+      }
+      if (error.code === 'FINANCIAL_RECONCILIATION_BATCH_NOT_FOUND') {
+        throw new NotFoundException('Financial reconciliation batch not found');
+      }
+      if (error.code === 'FINANCIAL_RECONCILIATION_MAKER_CHECKER_CONFLICT') {
+        throw new ForbiddenException('A different finance administrator must review this batch');
       }
       throw new ConflictException(error.code);
     }

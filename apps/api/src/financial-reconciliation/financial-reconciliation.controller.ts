@@ -15,6 +15,7 @@ import {
   financialReconciliationBatchParamsSchema,
   codReceivableListQuerySchema,
   codRemittanceBatchImportSchema,
+  closeFinancialReconciliationSchema,
   financialReconciliationStoreQuerySchema,
   paymentSettlementBatchImportSchema,
 } from '@zalo-shop/contracts';
@@ -100,6 +101,7 @@ export class FinancialReconciliationController {
           : { business_date_to: query.business_date_to }),
         ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
         ...(query.limit === undefined ? {} : { limit: query.limit }),
+        ...(query.review_status === undefined ? {} : { review_status: query.review_status }),
         ...(query.source === undefined ? {} : { source: query.source }),
         ...(query.status === undefined ? {} : { status: query.status }),
       }),
@@ -153,6 +155,25 @@ export class FinancialReconciliationController {
       adminHeaders(authorization, storeCode, accessReason),
       parse(financialReconciliationStoreQuerySchema, query).store_id,
       parse(financialReconciliationBatchParamsSchema, params).batchId,
+    );
+  }
+
+  @Post('batches/:batchId/review')
+  public reviewBatch(
+    @Query() query: unknown,
+    @Param() params: unknown,
+    @Body() body: unknown,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @Headers('idempotency-key') key: string | undefined,
+  ) {
+    return this.reconciliation.reviewBatch(
+      adminHeaders(authorization, storeCode, accessReason),
+      parse(financialReconciliationStoreQuerySchema, query).store_id,
+      parse(financialReconciliationBatchParamsSchema, params).batchId,
+      idempotencyKey(key),
+      parse(closeFinancialReconciliationSchema, body),
     );
   }
 }

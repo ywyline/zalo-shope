@@ -2,6 +2,34 @@
 
 This file records completed repository changes. Each entry uses `Date`, `Added`, `Changed`, `Fixed`, `Removed` and `Docs`. Task status and future work belong only in `TASKS.md`.
 
+## 2026-08-01 - P0-M5-005 Financial Reconciliation Closeout Slice C (`0.1.0`)
+
+### Added
+
+- Store-isolated, immutable maker-checker review records for accepting or escalating exceptional reconciliation batches without mutating payment, refund, order, inventory, shipment or cash facts.
+- An audited closeout API with direct-store permission, recent MFA, importer/reviewer separation, idempotent replay, conflicting-key rejection and concurrent single-winner behavior.
+- Three-language review filters, exception summaries, closeout form/results and responsive administrator layouts.
+
+### Changed
+
+- Batch list, detail and import responses now expose review status, immutable exception summaries and an optional closeout result.
+- Completed the repository/local-test P0-M5-005 Description across payment settlements, fees, refund differences, COD receivables, normalized GHN remittance and independent variance review.
+
+### Fixed
+
+- Applied `review_status` to both cursor validation and the actual batch query so `OPEN`, `CLOSED_ACCEPTED` and `CLOSED_ESCALATED` pages cannot contain rows from another review state.
+- Revalidated direct-store authorization after the batch review lock wait and kept database maker-checker, RLS, append-only and rollback guards authoritative under races or direct writes.
+
+### Removed
+
+- None.
+
+### Docs
+
+- Added the P0-M5-005 completion report and synchronized M5 OpenAPI, architecture, data dictionary, permission matrix, implementation plan and README.
+- Verified full format/lint/typecheck/build/schema gates, 633/633 unit tests, 351/351 integration tests, 26/26 Chromium/WebKit E2E tests and the 55-migration M2 upgrade/down/forward exercise. Production dependency audit remains 3 moderate and 0 high/critical advisories; OpenAPI 3.1.0 strict YAML and 302 local references passed with no external or missing references.
+- P0-M5-005 is repository/local-test complete only. Real ZaloPay/GHN sandbox channels, funds, Zalo host validation, deployment and production rollout remain `BLOCKED/NOT_RUN`; the project is not Production Ready.
+
 ## 2026-08-01 - P0-M5-005 COD Reconciliation Slice B (`0.1.0`)
 
 ### Added
