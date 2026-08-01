@@ -241,17 +241,64 @@ M1 已提供身份/RBAC 数据迁移、种子及 API 集成测试。迁移回滚
 ## 13. Git 和代码审查
 
 - 不覆盖或回退用户未授权的现有修改。
+
+### 13.1 Git Workflow
+
 - `main` 是集成分支；业务开发必须从最新 `main` 创建 `feature/<task-id>-<slug>` 或
   `fix/<task-id>-<slug>` 分支，不得直接在 `main` 上持续开发。分支策略采用已验证的
   `feature/fix -> main` 集成路径。
-- 提交保持小而聚焦，提交信息说明业务意图。
+- 一个 Task 可以跨多个开发会话并包含多个 Commit。开始实现时将 Task 从 `Todo` 更新为 `In Progress`；
+  在达到 Definition of Done 前始终保持 `In Progress`，只有真正受外部条件阻塞时才标记为 `Blocked`，
+  达到完成定义后才标记为 `Done`。
+- `TASKS.md` 只在任务状态实际发生变化时更新；状态未变化的阶段性 Commit 不重复改写 Task 状态、
+  Current Task 或 Next Task。状态变化时必须同步相关控制字段、阻塞原因、项目进度和验证证据。
+- 每个 Commit 必须聚焦同一 Task 中具有独立价值的阶段性成果，保持受影响范围可运行、可构建、可测试，
+  并能独立审查和回滚；Commit Message 必须包含 Task ID 和业务意图。
+- 每完成一个 Commit，按顺序执行：验证受影响范围、更新 `CHANGELOG.md`、审查并暂存该 Task 的差异、
+  创建 Git Commit，然后按第 13.2 节评估是否同步到 `main`。
+- Task 尚未达到 Definition of Done 时，只要当前 Commit 通过 Merge Gate，也允许同步到 `main`；
+  Task 继续保持 `In Progress`，后续会话从 `TASKS.md`、`CHANGELOG.md` 和 Git 历史恢复并继续开发。
+- 禁止长期积累大量未提交的 Modified 或 Untracked 文件。任何具有独立价值且通过适用验证的阶段性成果
+  都应及时 Commit；尚不可独立验证的中间状态必须保持范围清晰，不得冒充可集成成果。
 - 不提交密钥、生产数据、构建产物、临时文件、调试日志或无关格式化改动。
-- 完成前检查 diff，重点关注跨商城泄漏、权限绕过、金额错误、重复扣库存、状态跳跃和错误信息泄露。
-- 任务完成前必须完成本文件第 16.11 节的 End of Development Gate。测试通过后，才允许在任务分支
-  创建完成提交；测试失败只能保留为 `In Progress`/`Blocked`，不得作为完成提交同步。
-- 完成提交后，只有在本次任务测试和适用门禁通过、`TASKS.md` 中没有 `Blocked` 节点且工作区差异已审查时，
-  才能按分支策略同步到本地 `main`（优先 fast-forward 或受审合并）。存在失败测试或任一 `Blocked` 项目时，
-  必须留在任务分支，记录精确原因和恢复输入，不得同步到 `main`；远程推送、PR、部署和发布仍需用户明确授权。
+- 每次提交前检查 diff，重点关注跨商城泄漏、权限绕过、金额错误、重复扣库存、状态跳跃和错误信息泄露。
+
+### 13.2 Merge Gate（main 同步门禁）
+
+Merge Gate 只评估准备同步的当前 Commit，不以整个项目是否存在其它 `Blocked` Task 作为判断条件。
+一次同步包含多个尚未进入 `main` 的 Commit 时，范围内每个 Commit 都必须分别满足本门禁。
+
+满足以下全部条件时，允许按分支策略同步到本地 `main`（优先 fast-forward 或受审合并）：
+
+1. 当前 Commit 表达的阶段性成果完整，具有独立价值，可以独立验证和回滚。
+2. 当前 Commit 已通过受影响范围要求的测试、lint、格式、类型、构建、迁移、安全、依赖和差异检查。
+3. 当前 Commit 的 Task 依赖已经满足，且当前 Commit 不依赖任何 `Blocked` Task 或未获得的外部输入。
+4. 工作区干净；不存在与当前 Commit 无关的 Modified 或 Untracked 文件，已验证内容与提交内容一致。
+5. `TASKS.md`、`CHANGELOG.md` 与 Git 历史一致；`TASKS.md` 仅在任务状态变化时更新，
+   `CHANGELOG.md` 已记录当前 Commit 的实际变更和验证边界。
+6. 将当前 Commit 集成到最新 `main` 后不会破坏其稳定性，受影响范围仍可构建、可测试且不存在伪完成路径；
+   如果 `main` 在本次验证后前移，必须基于最新 `main` 重新验证受影响范围，仓库配置的 required CI 必须通过。
+
+出现以下任一情况时禁止同步到 `main`：
+
+1. 当前 Commit 的适用验证失败、未运行或证据失效。
+2. 当前 Commit 依赖未满足，或只能依靠尚未获得的输入、权限、凭据或决定运行。
+3. 当前 Commit 本身属于 `Blocked` Task，或触发本文件第 16.7 节 Stop Protocol。
+4. 当前 Commit 会导致 `main` 无法构建、无法测试、破坏已交付行为，或以不完整路径冒充可用功能。
+5. 当前 Commit 混合多个 Task 的修改且无法独立审查或回滚。
+
+其它与当前 Commit 无依赖关系的 `Blocked` Task，例如 ZaloPay、GHN、云资源、法律审批或生产验收，
+不得阻止当前 Commit 同步到 `main`。远程推送、PR、部署和发布仍需用户明确授权；通过 Merge Gate
+不等于获得生产操作授权，也不等于当前 Task 已达到 Definition of Done。
+
+### 13.3 Branch Synchronization（分支同步）
+
+1. 每次完成 Merge 到 `main` 后，必须将最新 `main` 同步到当前 Feature Branch。
+2. 后续所有开发必须基于最新 `main` 继续进行，避免形成 Long-lived Branch。
+3. Feature Branch 与 `main` 的差异应保持最小化，避免累计大量未同步 Commit。
+4. 若 `main` 已更新，开始新的开发任务前必须先同步最新 `main`，再继续开发。
+5. 除非存在 Release Branch、Hotfix Branch 等特殊原因，不得长期脱离 `main` 独立开发。
+6. 若 Feature Branch 已明显落后于 `main`，应优先完成同步与验证，再继续开发新的 Task。
 
 ## 14. 完成定义
 
@@ -368,15 +415,19 @@ AI 可以在 Current Task 和已批准计划内自主决定普通、局部、可
 
 ### 16.11 End of Development Gate
 
-每完成一个 TASKS.md 任务，必须按以下顺序收口：
+每完成一个具有独立价值的阶段性 Commit，必须按以下顺序收口：
 
-1. 更新 `TASKS.md`：任务状态、Current Task、Next Task、Blocked Tasks 和项目完成度必须反映实际代码与证据。
-2. 更新 `CHANGELOG.md`：使用统一的 Date/Added/Changed/Fixed/Removed/Docs 格式记录本任务。
-3. 运行受影响模块测试，并运行风险要求的集成、E2E、lint、格式、类型、构建、迁移、安全、依赖和差异门禁。
-4. 只有适用测试和门禁全部通过，才在任务分支创建完成 Git commit；提交信息必须包含任务 ID 和业务意图。
-5. 只有完成提交且 `TASKS.md` 没有任何 `Blocked` 项目时，才按第 13 节分支策略同步到 `main`；同步前重新确认
-   `main` 基线、工作区、提交范围和门禁结果。测试失败或存在 `Blocked` 项目时禁止同步，并在 `TASKS.md` 或完成报告中记录原因。
-6. 提交/同步后再次更新 `Current Task`、`Next Task`、项目完成度和验证证据；不能把“代码已提交”当作“任务已完成”。
+1. 确认 Task 状态：开始实现时从 `Todo` 更新为 `In Progress`；只有状态实际变化时才更新 `TASKS.md`
+   及相关 Current Task、Next Task、Blocked Tasks、项目进度和验证证据。
+2. 运行受影响模块测试，并运行风险要求的集成、E2E、lint、格式、类型、构建、迁移、安全、依赖和差异门禁。
+3. 更新 `CHANGELOG.md`：使用统一的 Date/Added/Changed/Fixed/Removed/Docs 格式记录当前 Commit 的
+   实际成果、兼容影响和验证边界。
+4. 只有当前阶段性成果具有独立价值且适用门禁通过，才在任务分支创建 Git Commit；提交必须可独立回滚，
+   Commit Message 必须包含 Task ID 和业务意图。
+5. 提交后按第 13.2 节仅评估当前 Commit。通过 Merge Gate 即可同步到 `main`，即使 Task 仍为
+   `In Progress`；无依赖关系的其它 `Blocked` Task 不得阻止同步。未通过时留在任务分支并记录精确原因和恢复输入。
+6. Commit 或同步完成后，未达到 Definition of Done 的 Task 继续保持 `In Progress`；只有完成定义全部满足时
+   才更新为 `Done` 并选择 Next Task。不能把“代码已提交”或“已同步 main”当作“任务已完成”。
 
 文档-only 任务的受影响测试至少包括格式检查、Markdown/YAML 结构检查和 `git diff --check`；不能以没有业务代码变更为由跳过可执行验证。
 

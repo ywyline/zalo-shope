@@ -2,6 +2,30 @@
 
 This file records completed repository changes. Each entry uses `Date`, `Added`, `Changed`, `Fixed`, `Removed` and `Docs`. Task status and future work belong only in `TASKS.md`.
 
+## 2026-08-01 - Commit-Level Merge Gate Clarification (`0.1.0`)
+
+### Added
+
+- Explicit commit-level Merge Gate criteria and feature-branch synchronization rules.
+
+### Changed
+
+- Independently verified commits may synchronize to `main` while their Task remains `In Progress`.
+- Unrelated blocked tasks no longer prevent a verified commit from synchronizing to `main`.
+
+### Fixed
+
+- Removed the workflow contradiction that required all project blockers to close before any independent commit could reach the integration branch.
+
+### Removed
+
+- None.
+
+### Docs
+
+- Clarified task status transitions, phase-commit evidence, rollback scope and post-merge branch synchronization in `AGENTS.md`.
+- No business code, requirements or Task Tree changes were made.
+
 ## 2026-08-01 - Task Tree Recovery (`0.1.0`)
 
 ### Added
