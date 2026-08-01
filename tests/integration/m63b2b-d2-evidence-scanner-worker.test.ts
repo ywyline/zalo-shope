@@ -225,23 +225,32 @@ describe.sequential('M6.3-B2b-D2 real evidence scanner worker', () => {
       store?: FixtureStore;
     }> = {},
   ): Promise<OutboxMessageRecord> {
-    const messages = await claimOutboxMessages(runtime, workerContext(options.store), {
-      batchSize: 1,
-      leaseDurationMs: options.leaseDurationMs ?? config.OUTBOX_WORKER_LEASE_MS,
-      ...(options.now ? { now: options.now } : {}),
-      workerId,
-    });
-    const message = messages[0];
-    if (
-      !message ||
-      message.eventType !== AFTER_SALE_EVIDENCE_SCAN_EVENT ||
-      message.aggregateId !== evidenceId
-    ) {
-      throw new Error(
-        `Expected scan ${evidenceId}; received ${message?.eventType ?? 'none'} ${message?.aggregateId ?? 'none'}`,
-      );
+    const deadline = Date.now() + 1_000;
+    while (true) {
+      const messages = await claimOutboxMessages(runtime, workerContext(options.store), {
+        batchSize: 1,
+        leaseDurationMs: options.leaseDurationMs ?? config.OUTBOX_WORKER_LEASE_MS,
+        ...(options.now ? { now: options.now } : {}),
+        workerId,
+      });
+      const message = messages[0];
+      if (message) {
+        if (
+          message.eventType !== AFTER_SALE_EVIDENCE_SCAN_EVENT ||
+          message.aggregateId !== evidenceId
+        ) {
+          throw new Error(
+            `Expected scan ${evidenceId}; received ${message.eventType} ${message.aggregateId}`,
+          );
+        }
+        return message;
+      }
+      if (options.now || Date.now() >= deadline) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    return message;
+    throw new Error(`Expected scan ${evidenceId}; received none none`);
   }
 
   async function holdEvidenceRow(evidenceId: string): Promise<() => Promise<void>> {

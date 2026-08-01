@@ -177,6 +177,7 @@ This file records completed repository changes. Each entry uses `Date`, `Added`,
 ### Fixed
 
 - Stabilized the D2 evidence scanner rescan integration test by bounded polling for its intentionally delayed outbox message; full integration passed 330/330 afterward.
+- Git Recovery reconciled the stabilization to `fix(P0-M6-002): stabilize evidence rescan polling`; the D2 suite passed 20/20 and the current full integration suite passed 337/337.
 
 ### Removed
 
