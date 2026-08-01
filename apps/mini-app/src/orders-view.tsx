@@ -223,6 +223,21 @@ export function OrderDetailView({ locale }: { locale: Locale }): JSX.Element {
           <strong>{formatVnd(order.payable_vnd, locale)}</strong>
         </div>
       </section>
+      {order.payment_method === 'ONLINE' && order.status === 'PENDING_PAYMENT' && (
+        <section className="payment-resume-panel">
+          <div>
+            <h2>{message(locale, 'payment.resumeTitle')}</h2>
+            <p>{message(locale, 'payment.resumeBody')}</p>
+          </div>
+          {order.payment_attempt_id ? (
+            <Link className="button-primary" to={`/payments/${order.payment_attempt_id}`}>
+              {message(locale, 'payment.resume')}
+            </Link>
+          ) : (
+            <span className="form-error">{message(locale, 'payment.loadError')}</span>
+          )}
+        </section>
+      )}
       <section className="order-timeline">
         <h2>{message(locale, 'order.timeline')}</h2>
         {order.transitions.map((item) => (
@@ -344,7 +359,7 @@ export function OrderDetailView({ locale }: { locale: Locale }): JSX.Element {
           </div>
         )}
       </section>
-      {order.status === 'PENDING_CONFIRMATION' && (
+      {(order.status === 'PENDING_CONFIRMATION' || order.status === 'PENDING_PAYMENT') && (
         <section className="cancel-order-panel">
           <label>
             {message(locale, 'order.cancelReason')}

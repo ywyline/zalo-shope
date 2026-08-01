@@ -5,11 +5,13 @@ import { Link, useNavigate } from 'react-router-dom';
 import type { Locale } from './catalog-api';
 import { useCart } from './cart-state';
 import {
+  CommerceRequestError,
   createOrder,
   listAddresses,
   quoteCheckout,
   type Address,
   type CheckoutQuote,
+  type PaymentMethod,
 } from './commerce-api';
 import { useMemberSession } from './member-session';
 
@@ -27,8 +29,10 @@ export function CheckoutView({ locale }: { locale: Locale }): JSX.Element {
   const [addressId, setAddressId] = useState('');
   const [couponDraft, setCouponDraft] = useState('');
   const [couponCode, setCouponCode] = useState<string | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('COD');
   const [quote, setQuote] = useState<CheckoutQuote>();
   const [status, setStatus] = useState<'error' | 'loading' | 'ready'>('loading');
+  const [onlineUnavailable, setOnlineUnavailable] = useState(false);
   const [placing, setPlacing] = useState(false);
   const [orderError, setOrderError] = useState(false);
   const items = useMemo(
@@ -61,21 +65,37 @@ export function CheckoutView({ locale }: { locale: Locale }): JSX.Element {
     }
     const controller = new AbortController();
     setStatus('loading');
+    setQuote(undefined);
+    setOnlineUnavailable(false);
     quoteCheckout(
       session.accessToken,
       locale,
-      { address_id: addressId, coupon_code: couponCode, items },
+      { address_id: addressId, coupon_code: couponCode, items, payment_method: paymentMethod },
       controller.signal,
     )
       .then((result) => {
         setQuote(result);
         setStatus('ready');
       })
-      .catch(() => {
-        if (!controller.signal.aborted) setStatus('error');
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setOnlineUnavailable(
+            paymentMethod === 'ONLINE' &&
+              error instanceof CommerceRequestError &&
+              (error.status === 503 ||
+                error.reasonCode === 'ONLINE_PAYMENT_UNAVAILABLE' ||
+                error.reasonCode === 'PAYMENT_PROVIDER_UNAVAILABLE' ||
+                error.reasonCode === 'Service Unavailable'),
+          );
+          setStatus('error');
+        }
       });
     return () => controller.abort();
-  }, [addressId, couponCode, items, locale, session.accessToken]);
+  }, [addressId, couponCode, items, locale, paymentMethod, session.accessToken]);
+
+  useEffect(() => {
+    idempotencyKey.current = crypto.randomUUID();
+  }, [addressId, couponCode, items, paymentMethod]);
 
   const selectedAddress = addresses.find((item) => item.id === addressId);
   const place = async (): Promise<void> => {
@@ -91,12 +111,22 @@ export function CheckoutView({ locale }: { locale: Locale }): JSX.Element {
           address_id: addressId,
           coupon_code: couponCode,
           items,
+          payment_method: paymentMethod,
           quote_hash: quote.quote_hash,
         },
         idempotencyKey.current,
       );
       await cart.refresh();
-      navigate(`/order-result/${order.id}`, { replace: true, state: order });
+      if (paymentMethod === 'ONLINE') {
+        navigate(
+          order.payment_attempt_id
+            ? `/payments/${order.payment_attempt_id}`
+            : `/orders/${order.id}`,
+          { replace: true },
+        );
+      } else {
+        navigate(`/order-result/${order.id}`, { replace: true, state: order });
+      }
     } catch {
       setOrderError(true);
     } finally {
@@ -157,11 +187,21 @@ export function CheckoutView({ locale }: { locale: Locale }): JSX.Element {
           role="group"
           aria-label={message(locale, 'checkout.payment')}
         >
-          <button aria-pressed="true" className="active" type="button">
+          <button
+            aria-pressed={paymentMethod === 'COD'}
+            className={paymentMethod === 'COD' ? 'active' : undefined}
+            onClick={() => setPaymentMethod('COD')}
+            type="button"
+          >
             {message(locale, 'checkout.cod')}
           </button>
-          <button disabled type="button">
-            {message(locale, 'checkout.onlineUnavailable')}
+          <button
+            aria-pressed={paymentMethod === 'ONLINE'}
+            className={paymentMethod === 'ONLINE' ? 'active' : undefined}
+            onClick={() => setPaymentMethod('ONLINE')}
+            type="button"
+          >
+            {message(locale, 'checkout.online')}
           </button>
         </div>
       </section>
@@ -185,7 +225,10 @@ export function CheckoutView({ locale }: { locale: Locale }): JSX.Element {
       {status === 'loading' && <p className="commerce-state">{message(locale, 'app.loading')}</p>}
       {status === 'error' && (
         <p className="commerce-state error" role="alert">
-          {message(locale, 'checkout.quoteError')}
+          {message(
+            locale,
+            onlineUnavailable ? 'checkout.onlineUnavailable' : 'checkout.quoteError',
+          )}
         </p>
       )}
       {quote && selectedAddress && status === 'ready' && (
@@ -227,11 +270,20 @@ export function CheckoutView({ locale }: { locale: Locale }): JSX.Element {
         <strong>{formatVnd(quote?.order_payable_vnd ?? 0, locale)}</strong>
         <button
           className="button-primary"
-          disabled={!quote || !selectedAddress || placing || items.length === 0}
+          disabled={
+            status !== 'ready' || !quote || !selectedAddress || placing || items.length === 0
+          }
           onClick={() => void place()}
           type="button"
         >
-          {message(locale, placing ? 'checkout.placing' : 'checkout.placeOrder')}
+          {message(
+            locale,
+            placing
+              ? 'checkout.placing'
+              : paymentMethod === 'ONLINE'
+                ? 'checkout.placeOnlineOrder'
+                : 'checkout.placeOrder',
+          )}
         </button>
       </div>
     </div>

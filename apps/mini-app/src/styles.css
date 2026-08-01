@@ -2586,6 +2586,132 @@ button.commerce-state {
   background: var(--store-accent-strong);
 }
 
+.payment-page {
+  gap: 18px;
+}
+
+.payment-hero {
+  display: grid;
+  min-height: 245px;
+  padding: 28px 20px;
+  place-content: center;
+  justify-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--store-text) 10%, transparent);
+  text-align: center;
+}
+
+.payment-hero h1,
+.payment-hero p {
+  max-width: 34rem;
+}
+
+.payment-hero h1 {
+  margin: 8px 0 5px;
+  font-size: 1.45rem;
+}
+
+.payment-hero > p:last-child {
+  margin: 0;
+  color: color-mix(in srgb, var(--store-text) 68%, transparent);
+  line-height: 1.55;
+}
+
+.payment-mark {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  place-items: center;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  color: var(--store-accent-strong);
+  font-size: 1.35rem;
+  font-weight: 850;
+}
+
+.tone-success .payment-mark {
+  color: #277659;
+}
+
+.tone-error .payment-mark {
+  color: #a3353b;
+}
+
+.tone-attention .payment-mark {
+  color: #9a5a12;
+}
+
+.payment-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-block: 1px solid color-mix(in srgb, var(--store-text) 10%, transparent);
+}
+
+.payment-facts > div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  padding: 15px 12px;
+  border-right: 1px solid color-mix(in srgb, var(--store-text) 8%, transparent);
+}
+
+.payment-facts > div:last-child {
+  border-right: 0;
+}
+
+.payment-facts span {
+  color: color-mix(in srgb, var(--store-text) 58%, transparent);
+  font-size: 0.67rem;
+}
+
+.payment-facts strong {
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+}
+
+.payment-trust-note,
+.payment-feedback {
+  margin: 0;
+  text-align: center;
+  line-height: 1.55;
+}
+
+.payment-trust-note {
+  color: color-mix(in srgb, var(--store-text) 62%, transparent);
+  font-size: 0.74rem;
+}
+
+.payment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  padding-bottom: calc(20px + env(safe-area-inset-bottom));
+}
+
+.payment-resume-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 17px 0;
+  border-block: 1px solid color-mix(in srgb, var(--store-text) 10%, transparent);
+}
+
+.payment-resume-panel h2,
+.payment-resume-panel p {
+  margin: 0;
+}
+
+.payment-resume-panel h2 {
+  font-size: 0.96rem;
+}
+
+.payment-resume-panel p {
+  margin-top: 5px;
+  color: color-mix(in srgb, var(--store-text) 62%, transparent);
+  font-size: 0.75rem;
+}
+
 .coupon-control {
   display: flex;
   gap: 8px;

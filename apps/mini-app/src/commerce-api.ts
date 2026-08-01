@@ -49,6 +49,7 @@ export type AdministrativeArea = {
 };
 
 export type CheckoutItem = { quantity: number; sku_code: string };
+export type PaymentMethod = 'COD' | 'ONLINE';
 export type CheckoutQuote = {
   base_subtotal_vnd: number;
   cod_policy: { enabled: boolean; max_amount_vnd: number | null };
@@ -68,7 +69,8 @@ export type OrderSummary = {
   items: Array<{ payable_vnd: number; quantity: number; sku_code: string }>;
   order_number: string;
   payable_vnd: number;
-  payment_method: 'COD' | 'ONLINE';
+  payment_attempt_id?: string;
+  payment_method: PaymentMethod;
   payment_status: string;
   status: string;
   version?: number;
@@ -80,6 +82,7 @@ export type OrderDetail = OrderSummary & {
     'created_at' | 'id' | 'is_default' | 'label' | 'status' | 'updated_at' | 'version'
   > | null;
   cancellation_reason: string | null;
+  payment_attempt_id: string | null;
   refunds: Array<{
     amount_vnd: number;
     public_number: string;
@@ -94,6 +97,50 @@ export type OrderDetail = OrderSummary & {
     reason: string | null;
     to_status: string;
   }>;
+};
+
+export type PaymentAttemptStatus =
+  | 'CANCELLED'
+  | 'CREATED'
+  | 'EXPIRED'
+  | 'FAILED'
+  | 'PROVIDER_PENDING'
+  | 'REVIEW_REQUIRED'
+  | 'SUCCEEDED';
+
+export type PaymentAttempt = {
+  amount_vnd: number;
+  created_at: string;
+  currency: 'VND';
+  expires_at: string;
+  id: string;
+  launch_ready: boolean;
+  order_id: string;
+  payment_number: string;
+  provider_order_bound: boolean;
+  status: PaymentAttemptStatus;
+  transitions: Array<{
+    created_at: string;
+    event: string;
+    from_status: PaymentAttemptStatus | null;
+    to_status: PaymentAttemptStatus;
+  }>;
+  version: number;
+};
+
+export type PaymentLaunch = {
+  expires_at: string;
+  kind: 'ZALO_CHECKOUT_CREATE_ORDER';
+  launch_token: string;
+  payload: {
+    amount: number;
+    desc: string;
+    extradata: string;
+    item: Array<{ amount: number; id: string }>;
+    mac: string;
+    method: string;
+  };
+  payment_id: string;
 };
 
 export type Shipment = {
@@ -191,12 +238,17 @@ export function deleteAddress(accessToken: string, addressId: string): Promise<v
 export function quoteCheckout(
   accessToken: string,
   locale: Locale,
-  input: { address_id: string; coupon_code: string | null; items: CheckoutItem[] },
+  input: {
+    address_id: string;
+    coupon_code: string | null;
+    items: CheckoutItem[];
+    payment_method: PaymentMethod;
+  },
   signal?: AbortSignal,
 ): Promise<CheckoutQuote> {
   return request('/v1/checkout/quote', {
     accessToken,
-    body: { ...input, locale, payment_method: 'COD' },
+    body: { ...input, locale },
     method: 'POST',
     signal,
   });
@@ -209,13 +261,71 @@ export function createOrder(
     address_id: string;
     coupon_code: string | null;
     items: CheckoutItem[];
+    payment_method: PaymentMethod;
     quote_hash: string;
   },
   idempotencyKey: string,
 ): Promise<OrderSummary> {
   return request('/v1/checkout/orders', {
     accessToken,
-    body: { ...input, locale, payment_method: 'COD' },
+    body: { ...input, locale },
+    idempotencyKey,
+    method: 'POST',
+  });
+}
+
+export function getPayment(
+  accessToken: string,
+  paymentId: string,
+  signal?: AbortSignal,
+): Promise<PaymentAttempt> {
+  return request(`/v1/payments/${encodeURIComponent(paymentId)}`, { accessToken, signal });
+}
+
+export function getPaymentLaunch(
+  accessToken: string,
+  paymentId: string,
+  signal?: AbortSignal,
+): Promise<PaymentLaunch> {
+  return request(`/v1/payments/${encodeURIComponent(paymentId)}/launch`, {
+    accessToken,
+    signal,
+  });
+}
+
+export function bindPaymentProviderOrder(
+  accessToken: string,
+  orderId: string,
+  paymentId: string,
+  input: { launch_token: string; provider_order_id: string },
+  idempotencyKey: string,
+): Promise<PaymentAttempt> {
+  return request(
+    `/v1/orders/${encodeURIComponent(orderId)}/payments/${encodeURIComponent(paymentId)}/provider-order`,
+    {
+      accessToken,
+      body: input,
+      idempotencyKey,
+      method: 'POST',
+    },
+  );
+}
+
+export function queryPayment(accessToken: string, paymentId: string): Promise<PaymentAttempt> {
+  return request(`/v1/payments/${encodeURIComponent(paymentId)}/query`, {
+    accessToken,
+    method: 'POST',
+  });
+}
+
+export function retryPayment(
+  accessToken: string,
+  orderId: string,
+  idempotencyKey: string,
+): Promise<PaymentAttempt> {
+  return request(`/v1/orders/${encodeURIComponent(orderId)}/payments`, {
+    accessToken,
+    body: {},
     idempotencyKey,
     method: 'POST',
   });

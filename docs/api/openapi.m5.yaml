@@ -800,6 +800,7 @@ components:
           version,
           expires_at,
           launch_ready,
+          provider_order_bound,
           transitions,
           created_at,
         ]
@@ -811,6 +812,9 @@ components:
         currency: { type: string, const: VND }
         status: { $ref: '#/components/schemas/PaymentAttemptStatus' }
         launch_ready: { type: boolean }
+        provider_order_bound:
+          type: boolean
+          description: True only after a provider order is bound; clients must not relaunch while true.
         transitions:
           type: array
           items:

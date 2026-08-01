@@ -34,7 +34,13 @@ import { AdminService, type AdminHeaders } from '../admin/admin.service';
 
 type StoreRecord = { id: string; code: string; default_locale: 'en' | 'vi' | 'zh' };
 type OrderDetailRecord = Prisma.OrderGetPayload<{
-  include: { items: true; refunds: true; snapshots: true; transitions: true };
+  include: {
+    items: true;
+    paymentAttempts: { orderBy: { attemptSequence: 'desc' }; take: 1 };
+    refunds: true;
+    snapshots: true;
+    transitions: true;
+  };
 }>;
 
 @Injectable()
@@ -90,6 +96,7 @@ export class OrdersService {
       const order = await transaction.order.findFirst({
         include: {
           items: { orderBy: { id: 'asc' } },
+          paymentAttempts: { orderBy: { attemptSequence: 'desc' }, take: 1 },
           refunds: { orderBy: [{ requestedAt: 'asc' }, { id: 'asc' }] },
           snapshots: true,
           transitions: { orderBy: { createdAt: 'asc' } },
@@ -183,6 +190,7 @@ export class OrdersService {
       const order = await transaction.order.findFirst({
         include: {
           items: { orderBy: { id: 'asc' } },
+          paymentAttempts: { orderBy: { attemptSequence: 'desc' }, take: 1 },
           refunds: { orderBy: [{ requestedAt: 'asc' }, { id: 'asc' }] },
           snapshots: true,
           transitions: { orderBy: { createdAt: 'asc' } },
@@ -622,6 +630,7 @@ export class OrdersService {
       ...summary,
       address,
       cancellation_reason: order.cancellationReason,
+      payment_attempt_id: order.paymentAttempts[0]?.id ?? null,
       ...(includeAdminFields ? { note: order.adminNote, tags: order.tags } : {}),
       refunds: order.refunds.map((refund) => ({
         amount_vnd: Number(refund.amountVnd),

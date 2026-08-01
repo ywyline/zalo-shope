@@ -14,19 +14,9 @@ import {
   ZaloSessionError,
   type ZaloSessionFailureCode,
 } from './zalo-session-client';
+import { isZaloHostRuntime, localTestBridge } from './zalo-test-bridge';
 
 type SessionStatus = 'error' | 'loading' | 'ready';
-
-const runtimeEnvironment = import.meta.env as unknown as Record<string, string | undefined>;
-const testBridgeEnabled = runtimeEnvironment.VITE_ZALO_TEST_BRIDGE === 'true';
-
-type ZaloShopE2eBridge = { getAccessToken(): Promise<string> | string };
-
-declare global {
-  interface Window {
-    __ZALO_SHOP_E2E_BRIDGE__?: ZaloShopE2eBridge;
-  }
-}
 
 type MemberSession = {
   accessToken?: string;
@@ -39,32 +29,9 @@ type MemberSession = {
 
 const SessionContext = createContext<MemberSession | undefined>(undefined);
 
-function isZaloRuntime(): boolean {
-  const hostname = window.location.hostname.toLowerCase();
-  if (
-    testBridgeEnabled &&
-    (hostname === 'localhost' || hostname === '127.0.0.1') &&
-    window.__ZALO_SHOP_E2E_BRIDGE__
-  ) {
-    return true;
-  }
-  return (
-    /zalo/i.test(window.navigator.userAgent) ||
-    'zmpGlobal' in window ||
-    hostname === 'zalo.me' ||
-    hostname.endsWith('.zalo.me') ||
-    hostname === 'zdn.vn' ||
-    hostname.endsWith('.zdn.vn')
-  );
-}
-
 async function getZaloAccessToken(): Promise<unknown> {
-  const hostname = window.location.hostname.toLowerCase();
-  if (testBridgeEnabled && (hostname === 'localhost' || hostname === '127.0.0.1')) {
-    const bridge = window.__ZALO_SHOP_E2E_BRIDGE__;
-    if (!bridge) throw new Error('The test Zalo bridge is unavailable');
-    return bridge.getAccessToken();
-  }
+  const bridge = localTestBridge();
+  if (bridge) return bridge.getAccessToken();
   const { getAccessToken } = await import('zmp-sdk');
   return getAccessToken();
 }
@@ -91,7 +58,7 @@ export function MemberSessionProvider({ children }: { children: React.ReactNode 
         apiBase: API_BASE,
         fetcher: (input, init) => fetch(input, init),
         getAccessToken: getZaloAccessToken,
-        runtimeAvailable: isZaloRuntime(),
+        runtimeAvailable: isZaloHostRuntime(),
         storeCode: STORE_CODE,
       });
       setAccessToken(session.accessToken);

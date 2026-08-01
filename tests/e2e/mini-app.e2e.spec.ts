@@ -50,18 +50,59 @@ function zaloTokens(projectName: string): Record<string, string> {
   return tokens;
 }
 
-async function installZaloBridge(page: Page, projectName: string): Promise<void> {
+async function installZaloBridge(
+  page: Page,
+  projectName: string,
+  checkout?: { paymentDoneDelayMs: number; providerOrderId: string },
+): Promise<void> {
   const tokens = zaloTokens(projectName);
   await page.addInitScript(
-    ({ beautyToken, fashionToken }) => {
+    ({ beautyToken, checkoutOptions, fashionToken }) => {
+      const paymentDoneListeners = new Set<(data: unknown) => void>();
       const bridgeWindow = window as Window & {
-        __ZALO_SHOP_E2E_BRIDGE__?: { getAccessToken(): string };
+        __ZALO_SHOP_E2E_BRIDGE__?: {
+          checkoutCheckTransaction(data: { orderId: string }): unknown;
+          checkoutCreateOrder(payload: Record<string, unknown>): Promise<{ orderId: string }>;
+          checkoutOffPaymentDone(listener: (data: unknown) => void): void;
+          checkoutOnPaymentDone(listener: (data: unknown) => void): void;
+          getAccessToken(): string;
+        };
+        __ZALO_SHOP_E2E_PAYMENT_CALLS__?: {
+          checks: Array<{ orderId: string }>;
+          payloads: Array<Record<string, unknown>>;
+        };
       };
+      const calls = {
+        checks: [] as Array<{ orderId: string }>,
+        payloads: [] as Array<Record<string, unknown>>,
+      };
+      bridgeWindow.__ZALO_SHOP_E2E_PAYMENT_CALLS__ = calls;
       bridgeWindow.__ZALO_SHOP_E2E_BRIDGE__ = {
+        checkoutCheckTransaction: (data) => {
+          calls.checks.push(data);
+          return { resultCode: 0 };
+        },
+        checkoutCreateOrder: (payload) => {
+          calls.payloads.push(payload);
+          window.setTimeout(
+            () =>
+              paymentDoneListeners.forEach((listener) => listener({ completedOrCancelled: true })),
+            checkoutOptions?.paymentDoneDelayMs ?? 0,
+          );
+          return Promise.resolve({
+            orderId: checkoutOptions?.providerOrderId ?? 'e2e-checkout-order',
+          });
+        },
+        checkoutOffPaymentDone: (listener) => paymentDoneListeners.delete(listener),
+        checkoutOnPaymentDone: (listener) => paymentDoneListeners.add(listener),
         getAccessToken: () => (window.location.port === '5175' ? fashionToken : beautyToken),
       };
     },
-    { beautyToken: tokens['beauty-local'], fashionToken: tokens['fashion-local'] },
+    {
+      beautyToken: tokens['beauty-local'],
+      checkoutOptions: checkout,
+      fashionToken: tokens['fashion-local'],
+    },
   );
 }
 
@@ -459,6 +500,233 @@ test('authenticated buyer creates an address, places one idempotent COD order an
   await expect(page.getByRole('heading', { name: '我的订单' })).toBeVisible();
   await page.getByRole('button', { name: 'EN', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'My orders' })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  expect(browserErrors).toEqual([]);
+});
+
+test('buyer online payment launches only by user action and recovers from server facts', async ({
+  page,
+}, testInfo) => {
+  const browserErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => browserErrors.push(error.message));
+
+  const orderId = '10000000-0000-4000-8000-000000000001';
+  const paymentId = '20000000-0000-4000-8000-000000000001';
+  const retryPaymentId = '20000000-0000-4000-8000-000000000002';
+  const providerOrderId = 'zalo-checkout-e2e-order-1';
+  const launchToken = 'online-payment-e2e-launch-token-0001';
+  const store = storefronts[0];
+  await installZaloBridge(page, testInfo.project.name, {
+    paymentDoneDelayMs: 1_000,
+    providerOrderId,
+  });
+
+  await page.goto(`${store.url}#/addresses`);
+  await page.getByRole('button', { name: /Thêm địa chỉ/ }).click();
+  await page.getByLabel('Người nhận').fill('Nguyen Online');
+  await page.getByLabel('Số điện thoại').fill('+84901234569');
+  const areaSelectors = page.locator('.address-form select');
+  await areaSelectors.nth(0).selectOption('hcm');
+  await areaSelectors.nth(1).selectOption('quan-1');
+  await areaSelectors.nth(2).selectOption('ben-nghe');
+  await page.getByLabel('Địa chỉ chi tiết').fill('18 Nguyen Hue');
+  await page.getByLabel('Nhãn địa chỉ').fill('Online');
+  const addressResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' && response.url().includes('/v1/member/addresses'),
+  );
+  await page.getByRole('button', { name: 'Lưu địa chỉ' }).click();
+  expect((await addressResponse).status()).toBe(201);
+
+  await page.goto(`${store.url}#/products/${store.productCode}`);
+  const addResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'PUT' &&
+      response.url().includes(`/v1/cart/items/by-sku/${store.primarySku}`),
+  );
+  await page.getByRole('button', { name: 'Thêm vào giỏ', exact: true }).click();
+  expect((await addResponse).ok()).toBe(true);
+
+  let checkoutRequest: Record<string, unknown> | undefined;
+  let bindRequest: Record<string, unknown> | undefined;
+  let bindIdempotencyKey = '';
+  let retryIdempotencyKey = '';
+  const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+  const payment = {
+    amount_vnd: store.initialPrice + 30_000,
+    created_at: new Date().toISOString(),
+    currency: 'VND',
+    expires_at: expiresAt,
+    id: paymentId,
+    launch_ready: true,
+    order_id: orderId,
+    payment_number: 'PAY-E2E-ONLINE-1',
+    provider_order_bound: false,
+    status: 'CREATED',
+    transitions: [],
+    version: 1,
+  };
+  const retryAttempt = {
+    ...payment,
+    id: retryPaymentId,
+    launch_ready: false,
+    payment_number: 'PAY-E2E-ONLINE-2',
+    provider_order_bound: false,
+    status: 'CREATED',
+    version: 1,
+  };
+
+  await page.route('**/v1/checkout/quote', async (route) => {
+    const request = route.request().postDataJSON() as Record<string, unknown>;
+    if (request.payment_method !== 'ONLINE') {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        base_subtotal_vnd: store.initialPrice,
+        cod_policy: { enabled: true, max_amount_vnd: null },
+        discount_vnd: 0,
+        lines: [{ payable_vnd: store.initialPrice, quantity: 1, sku_code: store.primarySku }],
+        merchandise_payable_vnd: store.initialPrice,
+        order_payable_vnd: payment.amount_vnd,
+        quote_hash: 'a'.repeat(64),
+        remote_surcharge_vnd: 0,
+        shipping_discount_vnd: 0,
+        shipping_fee_vnd: 30_000,
+      },
+      status: 201,
+    });
+  });
+  await page.route('**/v1/checkout/orders', async (route) => {
+    checkoutRequest = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        created_at: new Date().toISOString(),
+        id: orderId,
+        items: [],
+        order_number: 'ORD-E2E-ONLINE-1',
+        payable_vnd: payment.amount_vnd,
+        payment_attempt_id: paymentId,
+        payment_method: 'ONLINE',
+        payment_status: 'PENDING',
+        status: 'PENDING_PAYMENT',
+      },
+      status: 201,
+    });
+  });
+  await page.route(`**/v1/payments/${paymentId}`, async (route) => {
+    await route.fulfill({ contentType: 'application/json', json: payment, status: 200 });
+  });
+  await page.route(`**/v1/payments/${paymentId}/launch`, async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        expires_at: expiresAt,
+        kind: 'ZALO_CHECKOUT_CREATE_ORDER',
+        launch_token: launchToken,
+        payload: {
+          amount: payment.amount_vnd,
+          desc: 'ORD-E2E-ONLINE-1',
+          extradata: launchToken,
+          item: [{ amount: store.initialPrice, id: store.primarySku }],
+          mac: 'b'.repeat(64),
+          method: '{"id":"ZALOPAY_SANDBOX","isCustom":false}',
+        },
+        payment_id: paymentId,
+      },
+      status: 200,
+    });
+  });
+  await page.route(
+    `**/v1/orders/${orderId}/payments/${paymentId}/provider-order`,
+    async (route) => {
+      bindRequest = route.request().postDataJSON() as Record<string, unknown>;
+      bindIdempotencyKey = route.request().headers()['idempotency-key'] ?? '';
+      payment.provider_order_bound = true;
+      payment.status = 'PROVIDER_PENDING';
+      payment.version += 1;
+      await route.fulfill({ contentType: 'application/json', json: payment, status: 201 });
+    },
+  );
+  await page.route(`**/v1/payments/${paymentId}/query`, async (route) => {
+    payment.status = 'SUCCEEDED';
+    payment.version += 1;
+    await route.fulfill({ contentType: 'application/json', json: payment, status: 201 });
+  });
+  await page.route(`**/v1/orders/${orderId}/payments`, async (route) => {
+    retryIdempotencyKey = route.request().headers()['idempotency-key'] ?? '';
+    await route.fulfill({ contentType: 'application/json', json: retryAttempt, status: 201 });
+  });
+  await page.route(`**/v1/payments/${retryPaymentId}`, async (route) => {
+    await route.fulfill({ contentType: 'application/json', json: retryAttempt, status: 200 });
+  });
+
+  await page.goto(`${store.url}#/cart`);
+  await page.getByRole('link', { name: 'Tiếp tục thanh toán' }).click();
+  await expect(page.getByRole('heading', { name: 'Xác nhận đơn hàng' })).toBeVisible();
+  const onlineQuote = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes('/v1/checkout/quote') &&
+      response.request().postData()?.includes('"payment_method":"ONLINE"') === true,
+  );
+  await page.getByRole('button', { name: 'Thanh toán trực tuyến' }).click();
+  expect((await onlineQuote).status()).toBe(201);
+  await expect(page.locator('.checkout-total')).toContainText(
+    new Intl.NumberFormat('vi-VN').format(payment.amount_vnd),
+  );
+  await page.getByRole('button', { name: 'Đặt hàng và thanh toán' }).click();
+  await expect(page.getByRole('heading', { name: 'Sẵn sàng thanh toán' })).toBeVisible();
+  expect(checkoutRequest).toMatchObject({ payment_method: 'ONLINE', quote_hash: 'a'.repeat(64) });
+
+  const callsBeforeClick = await page.evaluate(
+    () =>
+      (
+        window as Window & {
+          __ZALO_SHOP_E2E_PAYMENT_CALLS__?: { payloads: unknown[] };
+        }
+      ).__ZALO_SHOP_E2E_PAYMENT_CALLS__?.payloads.length ?? -1,
+  );
+  expect(callsBeforeClick).toBe(0);
+  await page.getByRole('button', { name: 'Thanh toán với ZaloPay' }).click();
+  await expect(page.getByRole('heading', { name: 'Đang xác nhận thanh toán' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Thanh toán thành công' })).toBeVisible();
+  expect(bindRequest).toEqual({ launch_token: launchToken, provider_order_id: providerOrderId });
+  expect(bindIdempotencyKey.length).toBeGreaterThanOrEqual(16);
+  const sdkCalls = await page.evaluate(
+    () =>
+      (
+        window as Window & {
+          __ZALO_SHOP_E2E_PAYMENT_CALLS__?: {
+            checks: Array<{ orderId: string }>;
+            payloads: Array<Record<string, unknown>>;
+          };
+        }
+      ).__ZALO_SHOP_E2E_PAYMENT_CALLS__,
+  );
+  expect(sdkCalls?.payloads).toHaveLength(1);
+  expect(sdkCalls?.payloads[0]).toMatchObject({ amount: payment.amount_vnd, mac: 'b'.repeat(64) });
+  expect(sdkCalls?.checks).toEqual([{ orderId: providerOrderId }]);
+
+  await page.getByRole('button', { name: 'ZH', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '支付成功' })).toBeVisible();
+  await page.getByRole('button', { name: 'EN', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Payment successful' })).toBeVisible();
+  await page.getByRole('button', { name: 'VI', exact: true }).click();
+
+  payment.status = 'FAILED';
+  payment.version += 1;
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Thanh toán chưa thành công' })).toBeVisible();
+  await page.getByRole('button', { name: 'Tạo lần thanh toán mới' }).click();
+  await expect(page.getByRole('heading', { name: 'Đang chuẩn bị thanh toán' })).toBeVisible();
+  expect(retryIdempotencyKey.length).toBeGreaterThanOrEqual(16);
   await expectNoHorizontalOverflow(page);
   expect(browserErrors).toEqual([]);
 });

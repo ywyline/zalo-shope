@@ -947,11 +947,15 @@ components:
       allOf:
         - $ref: '#/components/schemas/OrderSummary'
         - type: object
-          required: [address, cancellation_reason, refunds, snapshots, transitions]
+          required:
+            [address, cancellation_reason, payment_attempt_id, refunds, snapshots, transitions]
           properties:
             address:
               oneOf: [{ $ref: '#/components/schemas/OrderAddress' }, { type: 'null' }]
             cancellation_reason: { oneOf: [{ type: string }, { type: 'null' }] }
+            payment_attempt_id:
+              description: Latest payment attempt for buyer recovery; null for COD/no attempt.
+              oneOf: [{ type: string, format: uuid }, { type: 'null' }]
             refunds:
               type: array
               items: { $ref: '#/components/schemas/MemberRefundSummary' }

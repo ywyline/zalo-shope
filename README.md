@@ -266,7 +266,15 @@ HTTP 默认只允许 loopback；staging 必须同时提供显式开关、HEAD �
 - 测试中显式启用的商城独立 sandbox 渠道可创建 ONLINE 订单。订单、库存预留、首个支付尝试和 `payment.create.requested.v1` outbox 在同一事务提交，订单响应不伪造供应商成功。
 - worker 在数据库事务外生成确定性测试 launch，再保存哈希和供应商幂等引用。主动查单与未来回调共用支付事实命令；匹配成功只消费一次库存并推进两段订单状态。
 - 单次失败不关闭订单；窗口内可创建幂等新尝试。取消和到期会终止活动尝试并释放预留，迟到成功进入人工复核，不复活订单。
-- 当前没有真实 ZaloPay/Checkout 凭据、SDK、回调或 sandbox 验收。开发环境默认 `PAYMENT_PROVIDER=disabled`，不得把 test provider 或测试 launch 作为生产集成。
+- M5.4 阶段没有真实 ZaloPay/Checkout 凭据、SDK、回调或 sandbox 验收；当前 SDK 买家体验见下节，但真实渠道结论仍未改变。开发环境默认 `PAYMENT_PROVIDER=disabled`，不得把 test provider 或测试 launch 作为生产集成。
+
+## P0-M5-002 买家端在线支付体验
+
+- 结算页现可按商城渠道能力选择 COD 或 ONLINE；支付方式、地址、优惠券或购物车变化都会废弃旧报价，服务端继续重算整数 VND 金额。
+- ONLINE 下单后进入 `/payments/{paymentId}`，只有明确用户点击才调用官方 `zmp-sdk` Checkout `createOrder`；provider order 随后绑定至本商城、本会员的订单和支付尝试。
+- `PaymentDone` 与 `checkTransaction` 仅作恢复提示，只有服务端回调/主动查单收敛后的 `SUCCEEDED` 可显示成功；失败尝试可幂等新建，订单详情保留刷新/重开恢复入口。
+- localhost 浏览器桥要求 `VITE_ZALO_TEST_BRIDGE=true`、本机 hostname 和显式注入。它已通过 Chromium/WebKit E2E，但不替代 Zalo Testing 真机、双商城 sandbox、真实回调、资金或对账验收。
+- 实施边界见 `docs/plans/p0-m5-002-buyer-online-payment-plan.md`，最终证据见 `docs/reports/p0-m5-002-buyer-online-payment-completion-report.md`。
 
 ## M5.5 Zalo Checkout 适配器与回调接缝
 

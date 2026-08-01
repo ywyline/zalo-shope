@@ -460,6 +460,9 @@ describe('M5.4 online payment core and test adapter', () => {
       eventVersion: 1,
       status: 'PENDING',
     });
+    const memberOrder = await api().get(`/v1/orders/${created.id}`).set(memberHeaders());
+    expect(memberOrder.status).toBe(200);
+    expect(memberOrder.body.payment_attempt_id).toBe(created.payment_attempt_id);
     expect(
       await withStoreTransaction(
         requiredRuntime(),
@@ -484,7 +487,11 @@ describe('M5.4 online payment core and test adapter', () => {
     const detail = await api()
       .get(`/v1/payments/${created.payment_attempt_id}`)
       .set(memberHeaders());
-    expect(detail.body).toMatchObject({ launch_ready: true, status: 'PROVIDER_PENDING' });
+    expect(detail.body).toMatchObject({
+      launch_ready: true,
+      provider_order_bound: true,
+      status: 'PROVIDER_PENDING',
+    });
     const launch = await api()
       .get(`/v1/payments/${created.payment_attempt_id}/launch`)
       .set(memberHeaders());
@@ -779,6 +786,13 @@ describe('M5.4 online payment core and test adapter', () => {
       .send({});
     expect(competing.status).toBe(409);
     expect(await requiredOwner().paymentAttempt.count({ where: { orderId: created.id } })).toBe(2);
+    const memberOrder = await api().get(`/v1/orders/${created.id}`).set(memberHeaders());
+    expect(memberOrder.status).toBe(200);
+    expect(memberOrder.body.payment_attempt_id).toBe(retry.body.id);
+    const otherMemberOrder = await api()
+      .get(`/v1/orders/${created.id}`)
+      .set(memberHeaders(secondMemberToken));
+    expect(otherMemberOrder.status).toBe(404);
   });
 
   it('does not revive a cancelled order when a success arrives late', async () => {

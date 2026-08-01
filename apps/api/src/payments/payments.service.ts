@@ -572,6 +572,7 @@ export class PaymentsService {
       launch_ready: Boolean(attempt.launchPayloadHash && attempt.launchNonceHash),
       order_id: attempt.orderId,
       payment_number: attempt.publicPaymentNumber,
+      provider_order_bound: Boolean(attempt.providerOrderId),
       status: attempt.status,
       transitions: attempt.transitions.map((transition) => ({
         created_at: transition.createdAt.toISOString(),

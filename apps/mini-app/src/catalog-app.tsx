@@ -32,6 +32,7 @@ import { SearchView } from './search-view';
 import { AddressView } from './address-view';
 import { CheckoutView } from './checkout-view';
 import { OrderDetailView, OrderResultView, OrdersView } from './orders-view';
+import { PaymentView } from './payment-view';
 
 type Loadable<T> = { data: T; status: 'ready' } | { status: 'error' } | { status: 'loading' };
 
@@ -875,6 +876,7 @@ function CatalogExperience({
           <Route element={<AddressView locale={locale} />} path="/addresses" />
           <Route element={<OrdersView locale={locale} />} path="/orders" />
           <Route element={<OrderDetailView locale={locale} />} path="/orders/:orderId" />
+          <Route element={<PaymentView locale={locale} />} path="/payments/:paymentId" />
           <Route element={<OrderResultView locale={locale} />} path="/order-result/:orderId" />
           <Route
             element={

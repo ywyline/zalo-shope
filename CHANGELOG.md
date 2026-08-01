@@ -106,6 +106,7 @@ This file records completed repository changes. Each entry uses `Date`, `Added`,
 
 - Added the approved P0-M5-002 plan and completion report; synchronized M4/M5 OpenAPI, README, Task Tree and three-language contracts.
 - Kept real Zalo Testing, sandbox, callback, funds and production rollout explicitly blocked or not run.
+- Git Recovery reconciled this completed task to the task-scoped commit `feat(P0-M5-002): buyer online payment runtime`; TypeScript, lint, unit, affected integration, build, format and two-device targeted E2E verification passed.
 
 ## 2026-08-01 - M6.3-B6 ONLINE After-Sale Refund Closeout (`0.1.0`)
 
