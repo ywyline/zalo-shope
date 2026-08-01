@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Zalo Shop M6 incremental API contract
-  version: 0.6.3-b4
+  version: 0.6.3-b5
   description: >-
     M6 incremental contract combined with the M1-M5 contracts. M6.3-A implements the after-sale
     settings GET/PUT routes, M6.3-B1 implements the member/admin after-sale list and detail GET
@@ -12,18 +12,19 @@ info:
     for member and administrator protected evidence reads, including migrations 44-48 and final
     commit-deadline revalidation. M6.3-B3 implements the three after-sale create/cancel commands.
     M6.3-B4 implements administrator review, one-time legacy/manual review resolution and the
-    return-expiration worker behind independent repository/local-test-only, default-disabled
-    capability gates. This does not
+    return-expiration worker. M6.3-B5 implements member return registration, audited trusted
+    return-logistics facts and reuse of the B1 inspection-pending read projection. These capabilities
+    remain behind independent repository/local-test-only, default-disabled gates. This does not
     establish production readiness: legal-hold/dead-letter management, external alerting,
     production TTL policy, IAM/KMS/versioning/Object
     Lock/lifecycle certification, bearer-URL risk acceptance, deployment and rollout remain
-    NOT_AUTHORIZED / NOT_RUN. Operations assigned to B5 through B7 remain contract-only.
+    NOT_AUTHORIZED / NOT_RUN. Operations assigned to B6 and B7 remain contract-only.
     Buyer store ownership comes from the authenticated member and X-Store-Code. Admin routes
     additionally require the matching store_id query parameter. D5 protected-read routes generate
     X-Correlation-Id on the server and do not accept a client correlation identifier; the generated
     value is propagated through authorization, audit, logs and error bodies.
 x-after-sale-b0-contract:
-  runtime_status: m6_3_a_b1_b2a_d3_d5_b3_and_b4_repository_local_test_implemented
+  runtime_status: m6_3_a_b1_b2a_d3_d5_b3_b4_and_b5_repository_local_test_implemented
   runtime_operations:
     implemented_m6_3_a: [getAfterSaleSettings, setAfterSalePolicyEnforcement]
     implemented_m6_3_b1:
@@ -47,6 +48,7 @@ x-after-sale-b0-contract:
     implemented_m6_3_b2b_d5: [getMemberAfterSaleEvidence, getAdminAfterSaleEvidence]
     implemented_m6_3_b3: [createAfterSale, cancelMemberAfterSale, createMerchantAfterSale]
     implemented_m6_3_b4: [reviewAfterSale, resolveAfterSaleManualReview]
+    implemented_m6_3_b5: [submitAfterSaleReturnShipment, recordAfterSaleReturnFact]
     contract_only_m6_3_b2_to_b7: all_after_sale_operations_not_listed_as_implemented_above
   protected_evidence_read:
     status: complete_repository_local_test_default_disabled
@@ -79,8 +81,8 @@ x-after-sale-b0-contract:
     runtime:
       member_read: implemented_m6_3_b1_m6_3_b2b_d3_and_d5
       admin_read: implemented_m6_3_b1_m6_3_b2a_and_m6_3_b2b_d5
-      member_write: implemented_m6_3_b2b_d3_and_b3
-      admin_write: implemented_m6_3_b2a_b3_and_b4
+      member_write: implemented_m6_3_b2b_d3_b3_and_b5
+      admin_write: implemented_m6_3_b2a_b3_b4_and_b5
     read_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
     write_limiter_unavailable_response: 503_fail_closed_without_retry_after_contract
   b3_commands:
@@ -105,6 +107,20 @@ x-after-sale-b0-contract:
     command_response: immutable_operation_acknowledgement_get_reads_current_aggregate
     expiration_actor: dedicated_SYSTEM_after_sale_transition_scope
     excluded_side_effects: refund_cod_return_logistics_inspection_inventory_exchange
+  b5_return_trust:
+    status: complete_repository_local_test_default_disabled
+    repository_gates: pass
+    migration_range: '52'
+    production_status: not_authorized_not_run_and_rejected_by_runtime_configuration
+    return_gate: AFTER_SALE_RETURN_COMMANDS_ENABLED_false
+    tracking_storage: keyed_hmac_and_mask_only_plaintext_forbidden
+    member_transition: SUBMITTED_and_START_RETURN_only
+    admin_authorization: direct_target_store_review_only_recent_mfa_cross_access_only_forbidden
+    admin_confirmation: RECORD_RETURN_LOGISTICS_FACT
+    trusted_statuses: [IN_TRANSIT, DELIVERED]
+    delivered_projection: INSPECTION_PENDING_not_inspection_completed
+    command_response: immutable_operation_acknowledgement_get_reads_current_aggregate
+    excluded_side_effects: provider_calls_inspection_inventory_refund_cod_exchange
   system_principal:
     scope: after-sale-transition
     events:
@@ -348,7 +364,7 @@ paths:
   /v1/after-sales/{afterSaleId}/return-shipment:
     post:
       operationId: submitAfterSaleReturnShipment
-      x-runtime-status: contract_only_m6_3_b2_to_b7
+      x-runtime-status: implemented_m6_3_b5_repository_local_test_default_disabled
       x-rate-limit-tier: member_write
       summary: Submit buyer-provided return tracking without treating it as provider truth
       description: >-
@@ -356,8 +372,10 @@ paths:
         SUBMITTED member-provided return shipment and appends only START_RETURN, moving the case to
         RETURN_PENDING before the exclusive return_deadline_at. The member command cannot append
         RETURN_SHIPPED or assert IN_TRANSIT/DELIVERED. Only later verified logistics or audited
-        administrator facts may append RETURN_SHIPPED/RETURN_RECEIVED. Idempotent replay creates no
-        duplicate record or transition.
+        administrator facts may append RETURN_SHIPPED/RETURN_RECEIVED. The tracking number is
+        persisted only as a keyed HMAC and a display mask; plaintext is not returned in the
+        acknowledgement, audit or operation result. Idempotent replay creates no duplicate record or
+        transition. Production configuration rejects this repository capability.
       security: [{ MemberBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/StoreCode' }
@@ -370,17 +388,23 @@ paths:
             schema: { $ref: '#/components/schemas/ReturnShipmentRequest' }
       responses:
         '200':
-          description: Return record submitted and case moved only to RETURN_PENDING
+          description: >-
+            Immutable acknowledgement after the case moves only to RETURN_PENDING; use the B1 GET
+            route for the masked return projection and current aggregate.
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AfterSale' }
+              schema: { $ref: '#/components/schemas/AfterSaleCommandAcknowledgement' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/after-sales/{afterSaleId}/evidence/{evidenceId}:
     get:
       operationId: getMemberAfterSaleEvidence
@@ -578,6 +602,54 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /v1/admin/after-sales/{afterSaleId}/return-shipment/fact:
+    post:
+      operationId: recordAfterSaleReturnFact
+      x-runtime-status: implemented_m6_3_b5_repository_local_test_default_disabled
+      x-rate-limit-tier: admin_write
+      summary: Record an audited trusted return-logistics fact
+      description: >-
+        Accepts only IN_TRANSIT or DELIVERED after a member has registered the return. IN_TRANSIT
+        appends RETURN_SHIPPED and moves the case to RETURN_IN_TRANSIT. DELIVERED appends
+        RETURN_RECEIVED and, when starting from RETURN_PENDING, atomically appends RETURN_SHIPPED
+        first; the resulting INSPECTION_PENDING projection means the parcel awaits inspection, not
+        that inspection, inventory recovery, refund or exchange fulfillment has completed. The
+        command requires direct target-store store.after-sales.review permission, recent MFA, the
+        RECORD_RETURN_LOGISTICS_FACT confirmation, a reason, aggregate and return-record expected
+        versions, and a store-scoped idempotency key. Cross-access-only authorization cannot replace
+        direct permission. No logistics provider is called, and production configuration rejects this
+        repository capability.
+      security: [{ AdminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/StoreCode' }
+        - { $ref: '#/components/parameters/StoreIdQuery' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/AfterSaleId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AfterSaleReturnFactRequest' }
+      responses:
+        '200':
+          description: >-
+            Immutable acknowledgement of the recorded logistics fact; use the B1 GET route for the
+            masked return projection, inspection-pending queue and current aggregate.
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+            Idempotency-Replayed: { schema: { type: boolean } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AfterSaleCommandAcknowledgement' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/AfterSaleWriteLimiterUnavailable' }
   /v1/admin/after-sales/{afterSaleId}/refund:
     post:
       operationId: requestAfterSaleRefund
@@ -1831,6 +1903,17 @@ components:
         carrier_name: { type: string, minLength: 2, maxLength: 160 }
         expected_version: { type: integer, minimum: 1 }
         tracking_number: { type: string, minLength: 2, maxLength: 160 }
+    AfterSaleReturnFactRequest:
+      type: object
+      additionalProperties: false
+      required:
+        [confirmation_code, expected_return_shipment_version, expected_version, reason, status]
+      properties:
+        confirmation_code: { type: string, const: RECORD_RETURN_LOGISTICS_FACT }
+        expected_return_shipment_version: { type: integer, minimum: 1 }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 10, maxLength: 500 }
+        status: { type: string, enum: [IN_TRANSIT, DELIVERED] }
     AfterSaleApprovedItemInput:
       type: object
       additionalProperties: false

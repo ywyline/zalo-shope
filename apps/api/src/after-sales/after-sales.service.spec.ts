@@ -16,8 +16,10 @@ const commandMocks = vi.hoisted(() => ({
   cancel: vi.fn(),
   createMember: vi.fn(),
   createMerchant: vi.fn(),
+  recordReturnFact: vi.fn(),
   resolveReview: vi.fn(),
   review: vi.fn(),
+  submitReturn: vi.fn(),
   withStoreTransaction: vi.fn(),
 }));
 
@@ -28,8 +30,10 @@ vi.mock('@zalo-shop/database', async () => {
     cancelMemberAfterSaleCommand: commandMocks.cancel,
     createMemberAfterSaleCommand: commandMocks.createMember,
     createMerchantRefundAfterSaleCommand: commandMocks.createMerchant,
+    recordAfterSaleReturnFact: commandMocks.recordReturnFact,
     resolveAfterSaleReviewCommand: commandMocks.resolveReview,
     reviewAfterSaleCommand: commandMocks.review,
+    submitMemberAfterSaleReturn: commandMocks.submitReturn,
     withStoreTransaction: commandMocks.withStoreTransaction,
   };
 });
@@ -53,7 +57,15 @@ function digest(value: string): string {
 }
 
 function acknowledgement(
-  status: 'APPROVED' | 'CANCELLED' | 'PENDING_REVIEW' | 'REJECTED' | 'REVIEW_REQUIRED',
+  status:
+    | 'APPROVED'
+    | 'CANCELLED'
+    | 'INSPECTION_PENDING'
+    | 'PENDING_REVIEW'
+    | 'REJECTED'
+    | 'RETURN_IN_TRANSIT'
+    | 'RETURN_PENDING'
+    | 'REVIEW_REQUIRED',
   version: number,
 ) {
   return {
@@ -65,7 +77,15 @@ function acknowledgement(
 }
 
 function commandResult(
-  status: 'APPROVED' | 'CANCELLED' | 'PENDING_REVIEW' | 'REJECTED' | 'REVIEW_REQUIRED',
+  status:
+    | 'APPROVED'
+    | 'CANCELLED'
+    | 'INSPECTION_PENDING'
+    | 'PENDING_REVIEW'
+    | 'REJECTED'
+    | 'RETURN_IN_TRANSIT'
+    | 'RETURN_PENDING'
+    | 'REVIEW_REQUIRED',
   version: number,
   replayed = false,
 ) {
@@ -83,6 +103,7 @@ function enabledConfig(): RuntimeConfig {
   return {
     AFTER_SALE_COMMANDS_ENABLED: true,
     AFTER_SALE_REVIEW_COMMANDS_ENABLED: true,
+    AFTER_SALE_RETURN_COMMANDS_ENABLED: true,
     AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: true,
     AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: true,
     AFTER_SALE_EVIDENCE_ORDINARY_ACCESS_TTL_SECONDS: 30 * 24 * 60 * 60,
@@ -92,6 +113,7 @@ function enabledConfig(): RuntimeConfig {
     EVIDENCE_STORAGE_PROVIDER: 's3',
     NODE_ENV: 'test',
     PII_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+    PII_HASH_KEY: Buffer.alloc(32, 8).toString('base64'),
   } as RuntimeConfig;
 }
 
@@ -99,6 +121,7 @@ function commandOnlyConfig(): RuntimeConfig {
   return {
     AFTER_SALE_COMMANDS_ENABLED: true,
     AFTER_SALE_REVIEW_COMMANDS_ENABLED: true,
+    AFTER_SALE_RETURN_COMMANDS_ENABLED: true,
     AFTER_SALE_EVIDENCE_DELETION_WORKER_ENABLED: false,
     AFTER_SALE_EVIDENCE_MEMBER_UPLOADS_ENABLED: false,
     AFTER_SALE_EVIDENCE_PROTECTED_READS_ENABLED: false,
@@ -106,6 +129,7 @@ function commandOnlyConfig(): RuntimeConfig {
     EVIDENCE_STORAGE_PROVIDER: 'disabled',
     NODE_ENV: 'test',
     PII_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+    PII_HASH_KEY: Buffer.alloc(32, 8).toString('base64'),
   } as RuntimeConfig;
 }
 
@@ -158,6 +182,8 @@ describe('AfterSalesService B3 commands', () => {
     commandMocks.createMerchant.mockResolvedValue(commandResult('PENDING_REVIEW', 1));
     commandMocks.resolveReview.mockResolvedValue(commandResult('APPROVED', 3));
     commandMocks.review.mockResolvedValue(commandResult('APPROVED', 2));
+    commandMocks.submitReturn.mockResolvedValue(commandResult('RETURN_PENDING', 3));
+    commandMocks.recordReturnFact.mockResolvedValue(commandResult('RETURN_IN_TRANSIT', 4));
   });
 
   it('creates a member case with stable detail digest, encrypted detail and all capabilities', async () => {
@@ -570,5 +596,123 @@ describe('AfterSalesService B3 commands', () => {
       }),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(commandMocks.review).not.toHaveBeenCalled();
+  });
+
+  it('submits a member return with the independent switch and server HMAC key', async () => {
+    const { consume, service } = harness(commandOnlyConfig());
+    const body = {
+      carrier_name: 'GHN',
+      expected_version: 2,
+      tracking_number: 'GHN-RETURN-000012345678',
+    };
+    await expect(
+      service.memberSubmitReturn({
+        afterSaleId: AFTER_SALE_ID,
+        authorization: 'Bearer member-token',
+        body,
+        correlationId: 'member-return-correlation',
+        idempotencyKey: 'member-return-idempotency-key',
+        sourceIp: '127.0.0.1',
+        storeCode: 'beauty-local',
+      }),
+    ).resolves.toEqual({ body: acknowledgement('RETURN_PENDING', 3), replayed: false });
+
+    expect(consume).toHaveBeenCalledWith({
+      access: 'WRITE',
+      actorId: MEMBER_ID,
+      actorType: 'MEMBER',
+      storeId: STORE_ID,
+    });
+    expect(commandMocks.submitReturn).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ actor: { id: MEMBER_ID, type: 'member' } }),
+      expect.objectContaining({
+        afterSaleId: AFTER_SALE_ID,
+        body,
+        trackingHashKey: Buffer.alloc(32, 8).toString('base64'),
+      }),
+    );
+  });
+
+  it('requires direct review authorization before recording a trusted return fact', async () => {
+    const { authorizeSensitive, consume, service } = harness(commandOnlyConfig());
+    const body = {
+      confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT' as const,
+      expected_return_shipment_version: 1,
+      expected_version: 3,
+      reason: 'Carrier portal confirms the return is now in transit.',
+      status: 'IN_TRANSIT' as const,
+    };
+    await expect(
+      service.adminRecordReturnFact({
+        afterSaleId: AFTER_SALE_ID,
+        body,
+        headers: {
+          accessToken: 'admin-token',
+          correlationId: 'admin-return-fact-correlation',
+          sourceIp: '127.0.0.1',
+          storeCode: 'beauty-local',
+        },
+        idempotencyKey: 'admin-return-fact-idempotency-key',
+        query: { store_id: STORE_ID },
+      }),
+    ).resolves.toEqual({ body: acknowledgement('RETURN_IN_TRANSIT', 4), replayed: false });
+
+    expect(authorizeSensitive).toHaveBeenCalledWith(
+      expect.anything(),
+      STORE_ID,
+      'store.after-sales.review',
+    );
+    expect(consume).toHaveBeenCalledWith({
+      access: 'WRITE',
+      actorId: ADMIN_ID,
+      actorType: 'ADMIN',
+      storeId: STORE_ID,
+    });
+    expect(commandMocks.recordReturnFact).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ adminAuthorizationScope: 'STORE' }),
+      expect.objectContaining({ afterSaleId: AFTER_SALE_ID, body, sourceIp: '127.0.0.1' }),
+    );
+  });
+
+  it('fails closed before return primitives when the B5 switch is disabled or production', async () => {
+    const disabled = commandOnlyConfig();
+    disabled.AFTER_SALE_RETURN_COMMANDS_ENABLED = false;
+    await expect(
+      harness(disabled).service.memberSubmitReturn({
+        afterSaleId: AFTER_SALE_ID,
+        authorization: 'Bearer member-token',
+        body: { carrier_name: 'GHN', expected_version: 2, tracking_number: 'GHN-RETURN-1' },
+        correlationId: 'disabled-member-return',
+        idempotencyKey: 'disabled-member-return-key',
+        sourceIp: '127.0.0.1',
+        storeCode: 'beauty-local',
+      }),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    const production = commandOnlyConfig();
+    production.NODE_ENV = 'production';
+    await expect(
+      harness(production).service.adminRecordReturnFact({
+        afterSaleId: AFTER_SALE_ID,
+        body: {
+          confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT',
+          expected_return_shipment_version: 1,
+          expected_version: 3,
+          reason: 'Carrier portal confirms the return is now in transit.',
+          status: 'IN_TRANSIT',
+        },
+        headers: {
+          accessToken: 'admin-token',
+          correlationId: 'production-return-fact',
+          storeCode: 'beauty-local',
+        },
+        idempotencyKey: 'production-return-fact-key',
+        query: { store_id: STORE_ID },
+      }),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(commandMocks.submitReturn).not.toHaveBeenCalled();
+    expect(commandMocks.recordReturnFact).not.toHaveBeenCalled();
   });
 });

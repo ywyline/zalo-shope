@@ -39,6 +39,7 @@ import {
   transitionAfterSaleReturnExpired,
   assertAfterSaleReturnSubmissionAllowed,
   transitionAfterSaleReturnSubmitted,
+  transitionAfterSaleTrustedReturnFact,
   transitionExchangeToRefund,
 } from './after-sales';
 
@@ -131,6 +132,21 @@ describe('M6 after-sale state machine', () => {
         returnDeadlineEpochMs: 1_000,
       }),
     ).toEqual({ events: ['START_RETURN'], status: 'RETURN_PENDING' });
+    expect(
+      transitionAfterSaleTrustedReturnFact('RETURN_REFUND', 'RETURN_PENDING', 'IN_TRANSIT'),
+    ).toEqual({ events: ['RETURN_SHIPPED'], status: 'RETURN_IN_TRANSIT' });
+    expect(
+      transitionAfterSaleTrustedReturnFact('RETURN_REFUND', 'RETURN_PENDING', 'DELIVERED'),
+    ).toEqual({
+      events: ['RETURN_SHIPPED', 'RETURN_RECEIVED'],
+      status: 'INSPECTION_PENDING',
+    });
+    expect(
+      transitionAfterSaleTrustedReturnFact('EXCHANGE', 'RETURN_IN_TRANSIT', 'DELIVERED'),
+    ).toEqual({ events: ['RETURN_RECEIVED'], status: 'INSPECTION_PENDING' });
+    expect(() =>
+      transitionAfterSaleTrustedReturnFact('REFUND_ONLY', 'APPROVED', 'IN_TRANSIT'),
+    ).toThrow('AFTER_SALE_STATE_CONFLICT');
     expect(transitionAfterSaleOnlineRefundRequested('REFUND_ONLY', 'APPROVED')).toEqual({
       events: ['QUEUE_REFUND', 'REFUND_REQUESTED'],
       status: 'REFUND_PROCESSING',

@@ -123,6 +123,7 @@ export * from './after-sale-policy-management-primitives';
 export * from './after-sale-evidence-primitives';
 export * from './after-sale-command-primitives';
 export * from './after-sale-review-primitives';
+export * from './after-sale-return-primitives';
 export * from './order-primitives';
 export * from './payment-primitives';
 export * from './payment-callback-primitives';

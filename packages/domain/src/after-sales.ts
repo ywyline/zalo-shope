@@ -375,6 +375,30 @@ export function transitionAfterSaleReturnSubmitted(
   };
 }
 
+export function transitionAfterSaleTrustedReturnFact(
+  type: AfterSaleType,
+  current: AfterSaleStatus,
+  fact: 'IN_TRANSIT' | 'DELIVERED',
+): AfterSaleCommandTransition {
+  if (fact === 'IN_TRANSIT') {
+    return {
+      events: ['RETURN_SHIPPED'],
+      status: transitionAfterSaleUnchecked(type, current, 'RETURN_SHIPPED'),
+    };
+  }
+  if (current === 'RETURN_PENDING') {
+    const inTransit = transitionAfterSaleUnchecked(type, current, 'RETURN_SHIPPED');
+    return {
+      events: ['RETURN_SHIPPED', 'RETURN_RECEIVED'],
+      status: transitionAfterSaleUnchecked(type, inTransit, 'RETURN_RECEIVED'),
+    };
+  }
+  return {
+    events: ['RETURN_RECEIVED'],
+    status: transitionAfterSaleUnchecked(type, current, 'RETURN_RECEIVED'),
+  };
+}
+
 export function transitionAfterSaleOnlineRefundRequested(
   type: AfterSaleType,
   current: AfterSaleStatus,

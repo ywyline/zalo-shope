@@ -491,6 +491,16 @@ export const afterSaleReturnShipmentRequestSchema = z
   })
   .strict();
 
+export const afterSaleReturnFactRequestSchema = z
+  .object({
+    confirmation_code: z.literal('RECORD_RETURN_LOGISTICS_FACT'),
+    expected_return_shipment_version: z.number().int().positive(),
+    expected_version: z.number().int().positive(),
+    reason: z.string().trim().min(10).max(500),
+    status: z.enum(['IN_TRANSIT', 'DELIVERED']),
+  })
+  .strict();
+
 const afterSaleApprovedItemSchema = z
   .object({
     approved_quantity: z.number().int().min(0).max(1_000),
@@ -838,6 +848,8 @@ export const afterSaleSettingsEnforcementSchema = z
 export type AfterSaleCreateRequest = z.infer<typeof afterSaleCreateRequestSchema>;
 export type MerchantAfterSaleCreateRequest = z.infer<typeof merchantAfterSaleCreateRequestSchema>;
 export type AfterSaleCancelRequest = z.infer<typeof afterSaleCancelRequestSchema>;
+export type AfterSaleReturnShipmentRequest = z.infer<typeof afterSaleReturnShipmentRequestSchema>;
+export type AfterSaleReturnFactRequest = z.infer<typeof afterSaleReturnFactRequestSchema>;
 export type AfterSaleReviewRequest = z.infer<typeof afterSaleReviewRequestSchema>;
 export type AfterSaleReviewResolveRequest = z.infer<typeof afterSaleReviewResolveRequestSchema>;
 export type AfterSaleCommandAcknowledgementResponse = z.infer<

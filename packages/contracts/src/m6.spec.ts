@@ -30,6 +30,8 @@ import {
   afterSalePolicyVersionPageResponseSchema,
   afterSaleReviewRequestSchema,
   afterSaleReviewResolveRequestSchema,
+  afterSaleReturnFactRequestSchema,
+  afterSaleReturnShipmentRequestSchema,
   afterSaleSettingsEnforcementSchema,
   afterSaleStoreCodeHeaderSchema,
   afterSaleSettlementNumberParamsSchema,
@@ -283,6 +285,43 @@ describe('M6 strict after-sale DTOs', () => {
         expected_version: 2,
         items: [{ approved_quantity: 0, order_item_id: orderItemId }],
         reason: 'Rejected after checking immutable order and policy facts',
+      }),
+    ).toThrow();
+  });
+
+  it('separates untrusted member return tracking from audited logistics facts', () => {
+    expect(
+      afterSaleReturnShipmentRequestSchema.parse({
+        carrier_name: 'GHN',
+        expected_version: 2,
+        tracking_number: 'GHN-RETURN-0001',
+      }),
+    ).toMatchObject({ carrier_name: 'GHN', expected_version: 2 });
+    expect(
+      afterSaleReturnFactRequestSchema.parse({
+        confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT',
+        expected_return_shipment_version: 1,
+        expected_version: 3,
+        reason: 'Verified the carrier tracking fact in the audited operations console.',
+        status: 'DELIVERED',
+      }),
+    ).toMatchObject({ status: 'DELIVERED' });
+    expect(() =>
+      afterSaleReturnFactRequestSchema.parse({
+        confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT',
+        expected_return_shipment_version: 1,
+        expected_version: 3,
+        reason: 'Verified the carrier tracking fact in the audited operations console.',
+        status: 'UNKNOWN',
+      }),
+    ).toThrow();
+    expect(() =>
+      afterSaleReturnFactRequestSchema.parse({
+        confirmation_code: 'TRUST_BUYER_INPUT',
+        expected_return_shipment_version: 1,
+        expected_version: 3,
+        reason: 'Buyer input cannot be promoted without an audited trusted verification.',
+        status: 'IN_TRANSIT',
       }),
     ).toThrow();
   });

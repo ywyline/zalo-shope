@@ -27,6 +27,8 @@ import {
   afterSaleIdempotencyKeySchema,
   afterSaleListQuerySchema,
   afterSaleMemberReadQuerySchema,
+  afterSaleReturnFactRequestSchema,
+  afterSaleReturnShipmentRequestSchema,
   afterSaleReviewRequestSchema,
   afterSaleReviewResolveRequestSchema,
   afterSaleStoreCodeHeaderSchema,
@@ -198,6 +200,35 @@ export class AfterSalesController {
     response.setHeader('Idempotency-Replayed', String(execution.replayed));
     return execution.body;
   }
+
+  @Post(':afterSaleId/return-shipment')
+  @HttpCode(HttpStatus.OK)
+  public async submitReturnShipment(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Param() params: unknown,
+    @Body() body: unknown,
+    @Query() query: unknown,
+    @Req() request: HttpRequest,
+    @Res({ passthrough: true }) response: HttpResponse,
+  ) {
+    const requestCorrelationId = resolveCorrelationId();
+    request.id = requestCorrelationId;
+    setReadHeaders(response, requestCorrelationId);
+    parse(afterSaleMemberReadQuerySchema, query);
+    const execution = await this.afterSales.memberSubmitReturn({
+      afterSaleId: parse(afterSaleIdParamsSchema, params).afterSaleId,
+      authorization,
+      body: parse(afterSaleReturnShipmentRequestSchema, body),
+      correlationId: requestCorrelationId,
+      idempotencyKey: parse(afterSaleIdempotencyKeySchema, idempotencyKey),
+      sourceIp: sourceIp(request.ip),
+      storeCode: memberStoreCode(storeCode),
+    });
+    response.setHeader('Idempotency-Replayed', String(execution.replayed));
+    return execution.body;
+  }
 }
 
 @Controller('v1/admin/orders')
@@ -294,6 +325,39 @@ export class AfterSalesAdminController {
     const execution = await this.afterSales.adminResolveReview({
       afterSaleId: parse(afterSaleIdParamsSchema, params).afterSaleId,
       body: parse(afterSaleReviewResolveRequestSchema, body),
+      headers: adminHeaders({
+        accessReason,
+        authorization,
+        correlationId: requestCorrelationId,
+        sourceIp: sourceIp(request.ip),
+        storeCode,
+      }),
+      idempotencyKey: parse(afterSaleIdempotencyKeySchema, idempotencyKey),
+      query: parse(afterSaleAdminStoreQuerySchema, query),
+    });
+    response.setHeader('Idempotency-Replayed', String(execution.replayed));
+    return execution.body;
+  }
+
+  @Post(':afterSaleId/return-shipment/fact')
+  @HttpCode(HttpStatus.OK)
+  public async recordReturnFact(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-store-code') storeCode: string | undefined,
+    @Headers('x-access-reason') accessReason: string | undefined,
+    @Param() params: unknown,
+    @Body() body: unknown,
+    @Query() query: unknown,
+    @Req() request: HttpRequest,
+    @Res({ passthrough: true }) response: HttpResponse,
+  ) {
+    const requestCorrelationId = resolveCorrelationId();
+    request.id = requestCorrelationId;
+    setReadHeaders(response, requestCorrelationId);
+    const execution = await this.afterSales.adminRecordReturnFact({
+      afterSaleId: parse(afterSaleIdParamsSchema, params).afterSaleId,
+      body: parse(afterSaleReturnFactRequestSchema, body),
       headers: adminHeaders({
         accessReason,
         authorization,

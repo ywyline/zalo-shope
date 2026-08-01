@@ -2660,7 +2660,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
     });
   });
 
-  it('keeps member return facts submitted-only and share facts closed until their runtimes exist', async () => {
+  it('keeps return facts behind audited commands and share facts closed until their runtimes exist', async () => {
     const sharePrivileges = await owner.$queryRawUnsafe<
       Array<{ can_insert: boolean; table_name: string }>
     >(`
@@ -2704,36 +2704,32 @@ describe('M6.2 after-sale, member and share database foundation', () => {
             FROM after_sales
             WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`,
         ).toEqual([{ return_window_open: true, status: 'APPROVED' }]);
-        const returnId = randomUUID();
+        const attemptedReturnId = randomUUID();
         await expectDatabaseFailure(
           transaction,
           () => transaction.$executeRaw`INSERT INTO after_sale_return_shipments
             (id, store_id, after_sale_id, order_id, member_id, carrier_name,
               tracking_number_digest, tracking_number_masked, status, submitted_by,
               received_at, updated_at)
-            VALUES (${returnId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
+            VALUES (${attemptedReturnId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
               ${fixture.orderId}::uuid, ${fixture.memberId}::uuid, 'Member carrier',
-              ${digest(`tracking-${returnId}`)}, '***1234', 'DELIVERED',
+              ${digest(`tracking-${attemptedReturnId}`)}, '***1234', 'DELIVERED',
               ${fixture.memberId}::uuid, now(), now())`,
           '42501',
         );
-        await transaction.$executeRaw`INSERT INTO after_sale_return_shipments
-          (id, store_id, after_sale_id, order_id, member_id, carrier_name,
-            tracking_number_digest, tracking_number_masked, submitted_by, updated_at)
-          VALUES (${returnId}::uuid, ${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
-            ${fixture.orderId}::uuid, ${fixture.memberId}::uuid, 'Member carrier',
-            ${digest(`tracking-${returnId}`)}, '***1234', ${fixture.memberId}::uuid, now())`;
-        await transaction.$executeRaw`INSERT INTO after_sale_transitions
-          (store_id, after_sale_id, from_status, to_status, event, actor_type,
-            actor_id, correlation_id)
-          VALUES (${BEAUTY_STORE_ID}::uuid, ${afterSaleId}::uuid,
-            'APPROVED', 'RETURN_PENDING', 'START_RETURN', 'MEMBER',
-            ${fixture.memberId}::uuid,
-            pg_catalog.current_setting('app.correlation_id', true))`;
-        expect(
-          await transaction.$queryRaw`SELECT status, version FROM after_sales
-            WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${afterSaleId}::uuid`,
-        ).toEqual([{ status: 'RETURN_PENDING', version: 3 }]);
+        const submittedReturnId = randomUUID();
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`INSERT INTO after_sale_return_shipments
+            (id, store_id, after_sale_id, order_id, member_id, carrier_name,
+              tracking_number_digest, tracking_number_masked, status, submitted_by,
+              updated_at)
+            VALUES (${submittedReturnId}::uuid, ${BEAUTY_STORE_ID}::uuid,
+              ${afterSaleId}::uuid, ${fixture.orderId}::uuid, ${fixture.memberId}::uuid,
+              'Member carrier', ${digest(`tracking-${submittedReturnId}`)}, '***4321',
+              'SUBMITTED', ${fixture.memberId}::uuid, now())`,
+          '42501',
+        );
         await expectDatabaseFailure(
           transaction,
           () => transaction.$executeRaw`INSERT INTO after_sale_transitions
@@ -2745,56 +2741,27 @@ describe('M6.2 after-sale, member and share database foundation', () => {
               pg_catalog.current_setting('app.correlation_id', true))`,
           '42501',
         );
-        await expect(
-          transaction.$executeRaw`UPDATE after_sale_return_shipments
+        await expectDatabaseFailure(
+          transaction,
+          () => transaction.$executeRaw`UPDATE after_sale_return_shipments
             SET status = 'DELIVERED', received_at = now(), version = version + 1,
               updated_at = now()
-            WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${returnId}::uuid`,
-        ).resolves.toBe(0);
-        expect(
-          await transaction.$queryRaw`SELECT status FROM after_sale_return_shipments
-            WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${returnId}::uuid`,
-        ).toEqual([{ status: 'SUBMITTED' }]);
+            WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${submittedReturnId}::uuid`,
+          '42501',
+        );
 
         await setContext(transaction, {
           actorId: fixture.adminId,
           actorType: 'admin',
           storeId: BEAUTY_STORE_ID,
         });
-        await transaction.$executeRaw`UPDATE after_sale_return_shipments
-          SET status = 'DELIVERED', received_at = now(), version = version + 1,
-            updated_at = now()
-          WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${returnId}::uuid`;
         await expectDatabaseFailure(
           transaction,
           () => transaction.$executeRaw`UPDATE after_sale_return_shipments
-            SET status = 'SUBMITTED', received_at = NULL, version = version + 1,
+            SET status = 'DELIVERED', received_at = now(), version = version + 1,
               updated_at = now()
-            WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${returnId}::uuid`,
-          '23514',
-        );
-        expect(
-          await transaction.$queryRaw`SELECT status FROM after_sale_return_shipments
-            WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${returnId}::uuid`,
-        ).toEqual([{ status: 'DELIVERED' }]);
-        await appendAfterSaleTransition(transaction, {
-          actorId: fixture.adminId,
-          afterSaleId,
-          event: 'REQUIRE_REVIEW',
-          fromStatus: 'RETURN_PENDING',
-          toStatus: 'REVIEW_REQUIRED',
-        });
-        await expectDatabaseFailure(
-          transaction,
-          () =>
-            appendAfterSaleTransition(transaction, {
-              actorId: fixture.adminId,
-              afterSaleId,
-              event: 'REJECT_REVIEW',
-              fromStatus: 'REVIEW_REQUIRED',
-              toStatus: 'REJECTED',
-            }),
-          '23514',
+            WHERE store_id = ${BEAUTY_STORE_ID}::uuid AND id = ${submittedReturnId}::uuid`,
+          '42501',
         );
 
         const rejectedCaseId = randomUUID();
@@ -2839,7 +2806,7 @@ describe('M6.2 after-sale, member and share database foundation', () => {
               ${fixture.memberId}::uuid, 'Member carrier',
               ${digest(`tracking-${rejectedCaseId}`)}, '***5678',
               ${fixture.memberId}::uuid, now())`,
-          '23514',
+          '42501',
         );
       });
     });
@@ -3125,7 +3092,6 @@ describe('M6.2 after-sale, member and share database foundation', () => {
         ('after_sale_operations', 'idempotency_key_hash', 'status'),
         ('after_sale_evidence_files', 'checksum_sha256', 'status'),
         ('after_sale_settlements', 'amount_vnd', 'status'),
-        ('after_sale_return_shipments', 'tracking_number_masked', 'status'),
         ('exchange_fulfillments', 'after_sale_item_id', 'status'),
         ('member_product_views', 'member_id', 'last_viewed_at')
       ) AS expected(table_name, identity_column, mutable_column)
@@ -3137,6 +3103,20 @@ describe('M6.2 after-sale, member and share database foundation', () => {
           !broad_update && !identity_update && mutable_update,
       ),
     ).toBe(true);
+
+    const returnShipmentPrivileges = await owner.$queryRaw<
+      Array<{ can_update_table: boolean; can_update_status: boolean }>
+    >`
+      SELECT
+        has_table_privilege('zalo_shop_runtime', 'after_sale_return_shipments', 'UPDATE')
+          AS can_update_table,
+        has_column_privilege(
+          'zalo_shop_runtime', 'after_sale_return_shipments', 'status', 'UPDATE'
+        ) AS can_update_status
+    `;
+    expect(returnShipmentPrivileges).toEqual([
+      { can_update_table: false, can_update_status: false },
+    ]);
 
     const privacyHeaderPrivileges = await owner.$queryRaw<
       Array<{ can_update_status: boolean; can_update_table: boolean }>

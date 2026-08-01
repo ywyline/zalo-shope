@@ -5,8 +5,8 @@
 > local/test scanner worker validation、B2b-D3 repository implementation + local/test member
 > evidence HTTP validation 与 B2b-D4 repository implementation + local/test deletion worker validation
 > 以及 B2b-D5 default-disabled repository implementation + local/test protected-read validation 已完成；
-> B3 与 B4 default-disabled repository implementation + local/test validation 也已 `COMPLETE`。
-> B2/B2b、B5-B7、M6.3 与 UI 未完成；生产策略、TTL、对象存储、真实供应商、部署和 rollout 为
+> B3、B4 与 B5 default-disabled repository implementation + local/test validation 也已 `COMPLETE`。
+> B2/B2b、B6-B7、M6.3 与 UI 未完成；生产策略、TTL、对象存储、真实供应商、部署和 rollout 为
 > `NOT_AUTHORIZED / NOT_RUN` 并保持失败关闭
 >
 > 日期：2026-07-31
@@ -690,8 +690,8 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   `GET/PUT /v1/admin/after-sale-policies/{policyCode}`、
   `GET /v1/admin/after-sale-policies/{policyCode}/versions`、
   `GET /v1/admin/after-sale-policies/{policyCode}/versions/{versionNumber}`、`POST .../publish` 和 `POST .../disable`。
-  B2b 其余能力和 B5-B7 路由仍为 contract-only 或失败关闭；B3 三条路由和 B4 两条管理员审核路由已在
-  repository/local-test 默认关闭条件下实现，当前边界见第 17-18 节。
+  B2b 其余能力和 B6-B7 路由仍为 contract-only 或失败关闭；B3 三条路由、B4 两条管理员审核路由和
+  B5 两条返件命令已在 repository/local-test 默认关闭条件下实现，当前边界见第 17-19 节。
 - head 列表固定 `(updated_at DESC,id DESC)`，version 列表固定 `(published_at DESC,id DESC)`。两者先读 `limit + 1` 个微秒 page key，
   再对白名单 ID 投影；游标绑定管理员、商城、资源、筛选及 policy code，不能跨资源/跨 policy 重放。
 - 草稿创建仅允许 `expected_version=0`；更新、发布和停用要求精确正版本。写命令的幂等 key 只保存 SHA-256，范围为
@@ -939,3 +939,29 @@ payload hash。越南语必有，中英缺失显式回退越南语。长期图�
   既有 B0 guard 在返件、settlement、验收、库存或换货事实存在时拒绝到期。
 - 两段 `down.sql` 仅用于 local/test 无 B4 operation/review/expiration audit 事实的环境；存在事实以
   `55000` 停止。B4 不创建退款、COD、返件物流、验收、库存恢复或换货履约事实。
+
+## 19. M6.3-B5 返件登记、可信物流事实与待验收读取边界
+
+- 第 52 段 `20260731150000_m63_b5_after_sale_return_trust` 不增加业务表、列、枚举或 STORE 权限 code；
+  它在既有 `after_sale_return_shipments`、`after_sale_operations`、`after_sale_transitions` 与
+  `audit_logs` 上增加两项窄 security-definer 命令、operation link/completion 与 deferred 原子 guard，
+  并收紧返件/transition 直接写入口。通用管理员 transition guard 保留 B3 `SUBMIT` 例外，同时只把
+  `RETURN_SHIPPED/RETURN_RECEIVED` 交给 B5 受审入口。
+- 会员 `POST /v1/after-sales/{afterSaleId}/return-shipment` 只在排他
+  `return_deadline_at` 前，为本人已批准的 `RETURN_REFUND/EXCHANGE` 原子创建唯一 `SUBMITTED` 返件，
+  追加唯一 `START_RETURN` 并推进到 `RETURN_PENDING`。运单号按 trim 后原值计算 keyed HMAC，只保存摘要
+  与首尾掩码；明文不进入数据库、operation result、audit、响应或错误。
+- 管理员 `POST /v1/admin/after-sales/{afterSaleId}/return-shipment/fact` 只接受
+  `IN_TRANSIT/DELIVERED`。`IN_TRANSIT` 追加 `RETURN_SHIPPED -> RETURN_IN_TRANSIT`；直接送达在同一事务
+  按稳定微秒顺序追加 `RETURN_SHIPPED`、`RETURN_RECEIVED`，在途送达只追加后者，最终投影为
+  `INSPECTION_PENDING`。该状态仅表示待验收，不创建 inspection、库存、退款/COD 或换货事实。
+- 两条命令使用商城/主体/path/version 绑定的 request hash、商城范围幂等键、aggregate/返件双 expected
+  version、固定 advisory/行锁序与最多三次 Serializable 尝试；明确 version 冲突不重试。operation、
+  一条或两条 transition 与 allowlist audit 必须同事务提交，直接送达时间线按 `(created_at,id)` 稳定。
+- 最终数据库函数在全部可能等待的锁之后复验 ACTIVE 商城、当前 member/admin 与 session/token；管理员
+  额外复验近期 MFA 和目标商城直接 `store.after-sales.review`。cross-access-only 不能替代直接权限。
+  B1 详情与 `status=INSPECTION_PENDING` 管理员列表复用既有严格投影，只暴露承运商、掩码和可信状态。
+- `AFTER_SALE_RETURN_COMMANDS_ENABLED` 默认 `false` 且 production 配置/服务层拒绝启用。B5
+  `down.sql` 仅允许没有 B5 operation、可信返件状态、transition 或 audit 的 local/test；存在事实以
+  SQLSTATE `55000` fail-fast。B5 不调用真实物流商，不实现验收、库存恢复、退款/COD、换货、UI、部署
+  或 rollout；这些范围仍为 `NOT_AUTHORIZED / NOT_RUN`。

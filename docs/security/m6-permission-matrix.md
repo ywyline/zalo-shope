@@ -7,8 +7,8 @@
 > local/test deletion worker validation、B2b-D5 default-disabled repository implementation +
 > local/test protected-read validation `COMPLETE`，适用 repository/local-test 门禁 `PASS`；
 > B3 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且适用门禁
-> `PASS`；B4 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且
-> 适用门禁 `PASS`；B2/B2b、B5-B7、M6.3、UI 与生产启用仍未完成。生产策略、TTL、对象存储、真实供应商、部署和 rollout 均为
+> `PASS`；B4 与 B5 default-disabled repository implementation + local/test validation 也已 `COMPLETE` 且
+> 适用门禁 `PASS`；B2/B2b、B6-B7、M6.3、UI 与生产启用仍未完成。生产策略、TTL、对象存储、真实供应商、部署和 rollout 均为
 > `NOT_AUTHORIZED / NOT_RUN` 并保持失败关闭
 >
 > 日期：2026-07-31
@@ -35,9 +35,11 @@ B3 repository/local-test 门禁已通过；其他售后写入、会员、分享 
 B4 随后复用同一目标商城直接 `store.after-sales.review`、近期 MFA 与 ADMIN WRITE 限流，实现默认关闭的
 初审和 manual/legacy review 解决；商家主动退款要求不同管理员复核。独立 SYSTEM 到期 worker 不增加
 STORE 权限或生产角色授权，只能使用固定 `after-sale-transition` scope 追加 `RETURN_EXPIRED`。
+B5 再复用会员 owner scope 与目标商城直接 review 权限，开放默认关闭的会员返件登记和管理员可信
+`IN_TRANSIT/DELIVERED` 事实；它不新增权限 code 或生产角色授权。
 本矩阵中除明确标为 M6.3-A、B1、B2a、D0 数据层、D1 local/test storage、D2 local/test 内部扫描、
-D3 local/test 会员 HTTP、D4 local/test 内部删除 worker、D5 local/test 保护读取、B3 默认关闭写命令或
-B4 默认关闭审核/到期的动作外，其余动作行是 B0 已冻结、等待完整 B2b/B5-B7 或后续里程碑另行授权
+D3 local/test 会员 HTTP、D4 local/test 内部删除 worker、D5 local/test 保护读取、B3 默认关闭写命令、
+B4 默认关闭审核/到期或 B5 默认关闭返件可信事实的动作外，其余动作行是 B0 已冻结、等待完整 B2b/B6-B7 或后续里程碑另行授权
 实施的契约，不代表按钮、
 API、worker 或生产角色授权已经交付。
 B0 不新增 STORE 权限 code；其 SYSTEM principal 是独立的内部 transaction actor，不是可授予管理员
@@ -111,7 +113,7 @@ callback body 或供应商响应选择。只有 `ORDER_OUTBOUND` 可以推进原
 | 创建/取消售后      | 当前商城认证会员本人     | B3 default-disabled repository/local-test `COMPLETE`；同 policy/version/hash、权威交付/支付、服务端金额、expected version 与幂等    |
 | 预上传/确认/查状态 | 当前商城认证会员本人     | D3 已实现且默认关闭；store+owner RLS、真实 bytes 校验、scan 排队、读写限流、安全状态投影                                            |
 | 读取凭证正文       | 当前会员、当前售后单     | D5 default-disabled repository/local-test `COMPLETE`；owner RLS、已 claim READY ORIGINAL、授权期限/提交截止重验、READ 限流/失败关闭 |
-| 提交返件信息       | 当前会员、已批准返件     | B5 契约；只写 SUBMITTED 并追加 START_RETURN 到 RETURN_PENDING；当前未授权、不能标记运输中                                           |
+| 提交返件信息       | 当前会员、已批准返件     | B5 default-disabled repository/local-test `COMPLETE`；只写 SUBMITTED 并追加 START_RETURN 到 RETURN_PENDING；不能标记运输中          |
 | 收藏               | 当前会员、当前商城商品   | PUT/DELETE 幂等；下架商品只返回受限摘要                                                                                             |
 | 浏览历史           | 当前会员、当前商城商品   | 最多 100；可单删/清空；匿名不写入                                                                                                   |
 | 会员中心           | 当前会员                 | 复用本人资料、地址、券和订单事实，不返回管理字段                                                                                    |
@@ -529,3 +531,23 @@ settings controller/service 将 `X-Access-Reason` 原样交给既有 `AdminServi
   不能执行管理员审核、复核、退款、返件或库存事件；每个商城单独建立事务，跨商城数据不混入上下文。
 - 审核/复核只返回原 operation 的不可变 acknowledgement。完整当前聚合继续由 B1 GET 权限边界读取；
   审核权限不隐含 evidence protected read、退款、COD、物流、验收、库存或换货权限。
+
+## 18. B5 返件登记与可信物流事实授权边界
+
+- 会员返件登记从 Bearer/session 和 `X-Store-Code` 解析当前商城与 member；数据库再次绑定
+  `store_id/member_id/after_sale_id` 并应用 FORCE RLS。已知其他会员或其他商城 case 统一不枚举；命令
+  只允许本人在排他截止点前创建唯一 `SUBMITTED`，不能提交可信物流状态。
+- 管理员可信事实要求 Header/query 商城一致、目标商城直接 `store.after-sales.review`、近期 MFA、有效
+  session/token、`RECORD_RETURN_LOGISTICS_FACT` 确认词、至少 10 字符 reason、aggregate/返件双 expected
+  version 与 ADMIN WRITE 限流。`platform.stores.cross_access` 与 `X-Access-Reason` 均不能替代直接权限。
+- 权限、session、商城 ACTIVE 与 MFA 在应用授权后还会在全部锁等待结束、最终提交前由数据库重验；撤销
+  直接角色、MFA 过期、跨商城或 actor 漂移都必须原子失败，不能留下 operation、transition 或 audit。
+- B5 复用既有 `store.after-sales.review`，不新增 permission code，也不向生产角色扩权。管理员只可记录
+  `IN_TRANSIT/DELIVERED` 物流事实；`INSPECTION_PENDING` 是 B1 待读取投影，不授予
+  `store.after-sales.inspect`，更不代表验收或库存恢复。
+- 运单明文是敏感输入：应用仅把 keyed HMAC 摘要与掩码传入持久化函数；公开响应、错误、operation
+  result、audit before/after、日志和测试快照不得出现原值。管理员事实 reason 只进入受限审计/摘要链路，
+  不进入公开 acknowledgement。
+- `AFTER_SALE_RETURN_COMMANDS_ENABLED=false` 是独立默认关闭门禁，production 配置与 service 双重拒绝
+  启用。真实物流 provider、验收、库存恢复、退款/COD、换货履约、UI、部署与 rollout 均为
+  `NOT_AUTHORIZED / NOT_RUN`。

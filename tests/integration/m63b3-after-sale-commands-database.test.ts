@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 
@@ -20,7 +20,9 @@ import {
   expireDueAfterSales,
   initializeAfterSaleEvidenceUpload,
   resolveAfterSaleReviewCommand,
+  recordAfterSaleReturnFact,
   reviewAfterSaleCommand,
+  submitMemberAfterSaleReturn,
   type Prisma,
   PrismaClient,
   withAfterSaleSystemTransaction,
@@ -685,6 +687,31 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
       sourceIp: '127.0.0.1',
       type: options.type ?? 'REFUND_ONLY',
     };
+  }
+
+  async function createApprovedReturnCase(tag: string): Promise<{
+    afterSaleId: string;
+    order: OrderFixture;
+    version: number;
+  }> {
+    const order = await createOrder({ quantity: 1, tag });
+    const created = await createMemberAfterSaleCommand(
+      requiredRuntime(),
+      memberContext(),
+      memberCreateInput(order, tag, 1, { type: 'RETURN_REFUND' }),
+    );
+    const approved = await reviewAfterSaleCommand(requiredRuntime(), adminContext(), {
+      afterSaleId: created.afterSaleId,
+      body: {
+        confirmation_code: 'APPROVE_AFTER_SALE',
+        decision: 'APPROVE',
+        expected_version: created.version,
+        items: [{ approved_quantity: 1, order_item_id: order.itemId }],
+        reason: 'Approve the return after completing the required administrator review.',
+      },
+      idempotencyKey: `m63b5-${tag}-approve-${suffix}`,
+    });
+    return { afterSaleId: created.afterSaleId, order, version: approved.version };
   }
 
   beforeAll(async () => {
@@ -2805,5 +2832,397 @@ describe.sequential('M6.3-B3 after-sale command database boundary', () => {
         100,
       ),
     ).resolves.toEqual({ expired: 0, scanned: 0, skipped: 0 });
+  });
+
+  it('submits one masked member return with immutable replay and strict owner/store scope', async () => {
+    const approved = await createApprovedReturnCase('b5-member-submit');
+    const trackingNumber = `GHN-RETURN-${suffix}-123456`;
+    const idempotencyKey = `m63b5-member-submit-${suffix}`;
+    const body = {
+      carrier_name: 'GHN',
+      expected_version: approved.version,
+      tracking_number: trackingNumber,
+    };
+    const input = {
+      afterSaleId: approved.afterSaleId,
+      body,
+      idempotencyKey,
+      sourceIp: '127.0.0.1',
+      trackingHashKey: process.env.PII_HASH_KEY!,
+    };
+    const submitted = await submitMemberAfterSaleReturn(requiredRuntime(), memberContext(), input);
+    expect(submitted).toMatchObject({
+      replayed: false,
+      returnShipmentStatus: 'SUBMITTED',
+      returnShipmentVersion: 1,
+      status: 'RETURN_PENDING',
+      version: approved.version + 1,
+    });
+    await expect(
+      submitMemberAfterSaleReturn(requiredRuntime(), memberContext(), input),
+    ).resolves.toEqual({ ...submitted, replayed: true });
+    await expectCommandFailure(
+      () =>
+        submitMemberAfterSaleReturn(requiredRuntime(), memberContext(), {
+          ...input,
+          body: { ...body, tracking_number: `${trackingNumber}-DIFFERENT` },
+        }),
+      'AFTER_SALE_IDEMPOTENCY_CONFLICT',
+    );
+    await expectCommandFailure(
+      () =>
+        submitMemberAfterSaleReturn(requiredRuntime(), memberContext(fixture.otherMemberId), {
+          ...input,
+          idempotencyKey: `m63b5-other-member-${suffix}`,
+        }),
+      'AFTER_SALE_NOT_FOUND',
+    );
+    await expectCommandFailure(
+      () =>
+        submitMemberAfterSaleReturn(
+          requiredRuntime(),
+          context({
+            actorId: fixture.fashionMemberId,
+            actorType: 'member',
+            store: 'fashion',
+          }),
+          { ...input, idempotencyKey: `m63b5-other-store-${suffix}` },
+        ),
+      'AFTER_SALE_NOT_FOUND',
+    );
+
+    const shipment = await requiredOwner().afterSaleReturnShipment.findUniqueOrThrow({
+      where: {
+        storeId_afterSaleId: { afterSaleId: approved.afterSaleId, storeId: BEAUTY_STORE_ID },
+      },
+    });
+    expect(shipment).toMatchObject({
+      carrierName: 'GHN',
+      memberId: fixture.memberId,
+      status: 'SUBMITTED',
+      submittedBy: fixture.memberId,
+      trackingNumberDigest: createHmac('sha256', process.env.PII_HASH_KEY!)
+        .update(trackingNumber)
+        .digest('hex'),
+    });
+    expect(shipment.trackingNumberMasked).not.toBe(trackingNumber);
+    expect(JSON.stringify(shipment)).not.toContain(trackingNumber);
+
+    const [operations, transitions, audits] = await Promise.all([
+      requiredOwner().afterSaleOperation.findMany({
+        where: { afterSaleId: approved.afterSaleId, operation: 'MEMBER_SUBMIT_RETURN' },
+      }),
+      requiredOwner().afterSaleTransition.findMany({
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        where: { afterSaleId: approved.afterSaleId },
+      }),
+      requiredOwner().auditLog.findMany({
+        where: { action: 'after-sale.return.submitted', targetId: approved.afterSaleId },
+      }),
+    ]);
+    expect(operations).toHaveLength(1);
+    expect(operations[0]).toMatchObject({ attemptCount: 1, status: 'COMPLETED', version: 2 });
+    expect(transitions.map(({ event }) => event)).toEqual(['SUBMIT', 'APPROVE', 'START_RETURN']);
+    expect(audits).toHaveLength(1);
+    expect(JSON.stringify({ audits, operations, transitions })).not.toContain(trackingNumber);
+  });
+
+  it('enforces the exclusive return deadline and serializes expiration with submission', async () => {
+    const approved = await createApprovedReturnCase('b5-deadline-race');
+    await requiredOwner().$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.afterSale.update({
+        data: { returnDeadlineAt: new Date(Date.now() - 1) },
+        where: { id: approved.afterSaleId },
+      });
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    const systemContext = createAfterSaleSystemContext({
+      actorId: '00000000-0000-4000-8000-000000000007',
+      correlationId: `m63b5-deadline-race-${suffix}`,
+      storeId: BEAUTY_STORE_ID,
+    });
+    const [submission, expiration] = await Promise.allSettled([
+      submitMemberAfterSaleReturn(requiredRuntime(), memberContext(), {
+        afterSaleId: approved.afterSaleId,
+        body: {
+          carrier_name: 'GHN',
+          expected_version: approved.version,
+          tracking_number: `GHN-DEADLINE-${suffix}`,
+        },
+        idempotencyKey: `m63b5-deadline-submit-${suffix}`,
+        trackingHashKey: process.env.PII_HASH_KEY!,
+      }),
+      expireDueAfterSales(requiredRuntime(), systemContext, 100),
+    ]);
+    expect(submission.status).toBe('rejected');
+    expect((submission as PromiseRejectedResult).reason).toMatchObject({
+      code: 'AFTER_SALE_RETURN_WINDOW_CLOSED',
+    });
+    expect(expiration).toMatchObject({ status: 'fulfilled', value: { expired: 1 } });
+    expect(
+      await requiredOwner().afterSale.findUniqueOrThrow({
+        select: { status: true },
+        where: { id: approved.afterSaleId },
+      }),
+    ).toEqual({ status: 'REJECTED' });
+    expect(
+      await requiredOwner().afterSaleReturnShipment.count({
+        where: { afterSaleId: approved.afterSaleId },
+      }),
+    ).toBe(0);
+  });
+
+  it('records trusted in-transit and delivered facts after submission with dual versions', async () => {
+    const approved = await createApprovedReturnCase('b5-trusted-facts');
+    const submitted = await submitMemberAfterSaleReturn(requiredRuntime(), memberContext(), {
+      afterSaleId: approved.afterSaleId,
+      body: {
+        carrier_name: 'GHTK',
+        expected_version: approved.version,
+        tracking_number: `GHTK-RETURN-${suffix}-987654`,
+      },
+      idempotencyKey: `m63b5-facts-submit-${suffix}`,
+      trackingHashKey: process.env.PII_HASH_KEY!,
+    });
+    await requiredOwner().$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.afterSale.update({
+        data: { returnDeadlineAt: new Date(Date.now() - 60_000) },
+        where: { id: approved.afterSaleId },
+      });
+      await transaction.$executeRaw`SET LOCAL session_replication_role = origin`;
+    });
+    const inTransitBody = {
+      confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT' as const,
+      expected_return_shipment_version: submitted.returnShipmentVersion,
+      expected_version: submitted.version,
+      reason: 'Carrier portal confirms the returned parcel is in transit.',
+      status: 'IN_TRANSIT' as const,
+    };
+    const inTransitInput = {
+      afterSaleId: approved.afterSaleId,
+      body: inTransitBody,
+      idempotencyKey: `m63b5-facts-transit-${suffix}`,
+      sourceIp: '127.0.0.1',
+    };
+    const inTransit = await recordAfterSaleReturnFact(
+      requiredRuntime(),
+      adminContext(),
+      inTransitInput,
+    );
+    expect(inTransit).toMatchObject({
+      replayed: false,
+      returnShipmentStatus: 'IN_TRANSIT',
+      returnShipmentVersion: submitted.returnShipmentVersion + 1,
+      status: 'RETURN_IN_TRANSIT',
+      version: submitted.version + 1,
+    });
+    await expect(
+      recordAfterSaleReturnFact(requiredRuntime(), adminContext(), inTransitInput),
+    ).resolves.toEqual({ ...inTransit, replayed: true });
+    await expectCommandFailure(
+      () =>
+        recordAfterSaleReturnFact(requiredRuntime(), adminContext(), {
+          ...inTransitInput,
+          body: {
+            ...inTransitBody,
+            reason: 'A changed reason cannot replay the trusted fact key.',
+          },
+        }),
+      'AFTER_SALE_IDEMPOTENCY_CONFLICT',
+    );
+    await expectCommandFailure(
+      () =>
+        recordAfterSaleReturnFact(requiredRuntime(), adminContext(), {
+          afterSaleId: approved.afterSaleId,
+          body: {
+            ...inTransitBody,
+            expected_return_shipment_version: inTransit.returnShipmentVersion,
+            expected_version: inTransit.version - 1,
+            status: 'DELIVERED',
+          },
+          idempotencyKey: `m63b5-stale-aggregate-${suffix}`,
+        }),
+      'AFTER_SALE_VERSION_CONFLICT',
+    );
+    await expectCommandFailure(
+      () =>
+        recordAfterSaleReturnFact(requiredRuntime(), adminContext(), {
+          afterSaleId: approved.afterSaleId,
+          body: {
+            ...inTransitBody,
+            expected_return_shipment_version: inTransit.returnShipmentVersion - 1,
+            expected_version: inTransit.version,
+            status: 'DELIVERED',
+          },
+          idempotencyKey: `m63b5-stale-shipment-${suffix}`,
+        }),
+      'AFTER_SALE_VERSION_CONFLICT',
+    );
+    const delivered = await recordAfterSaleReturnFact(requiredRuntime(), adminContext(), {
+      afterSaleId: approved.afterSaleId,
+      body: {
+        confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT',
+        expected_return_shipment_version: inTransit.returnShipmentVersion,
+        expected_version: inTransit.version,
+        reason: 'Carrier portal confirms delivery to the return warehouse.',
+        status: 'DELIVERED',
+      },
+      idempotencyKey: `m63b5-facts-delivered-${suffix}`,
+    });
+    expect(delivered).toMatchObject({
+      returnShipmentStatus: 'DELIVERED',
+      returnShipmentVersion: inTransit.returnShipmentVersion + 1,
+      status: 'INSPECTION_PENDING',
+      version: inTransit.version + 1,
+    });
+    const persisted = await requiredOwner().afterSale.findUniqueOrThrow({
+      include: {
+        returnShipments: true,
+        transitions: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+      },
+      where: { id: approved.afterSaleId },
+    });
+    expect(persisted.returnShipments[0]).toMatchObject({
+      receivedAt: expect.any(Date),
+      status: 'DELIVERED',
+      version: delivered.returnShipmentVersion,
+    });
+    expect(persisted.transitions.map(({ event }) => event)).toEqual([
+      'SUBMIT',
+      'APPROVE',
+      'START_RETURN',
+      'RETURN_SHIPPED',
+      'RETURN_RECEIVED',
+    ]);
+  });
+
+  it('supports direct trusted delivery but rejects stale MFA, cross-access and direct writes', async () => {
+    const stale = await createApprovedReturnCase('b5-stale-mfa');
+    const staleSubmitted = await submitMemberAfterSaleReturn(requiredRuntime(), memberContext(), {
+      afterSaleId: stale.afterSaleId,
+      body: {
+        carrier_name: 'GHN',
+        expected_version: stale.version,
+        tracking_number: `GHN-STALE-MFA-${suffix}`,
+      },
+      idempotencyKey: `m63b5-stale-mfa-submit-${suffix}`,
+      trackingHashKey: process.env.PII_HASH_KEY!,
+    });
+    await requiredOwner().adminSession.update({
+      data: { mfaVerifiedAt: new Date(Date.now() - 11 * 60 * 1_000) },
+      where: { id: fixture.adminSessionId },
+    });
+    try {
+      await expectCommandFailure(
+        () =>
+          recordAfterSaleReturnFact(requiredRuntime(), adminContext(), {
+            afterSaleId: stale.afterSaleId,
+            body: {
+              confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT',
+              expected_return_shipment_version: staleSubmitted.returnShipmentVersion,
+              expected_version: staleSubmitted.version,
+              reason: 'Stale MFA cannot record a trusted return delivery fact.',
+              status: 'DELIVERED',
+            },
+            idempotencyKey: `m63b5-stale-mfa-fact-${suffix}`,
+          }),
+        'AFTER_SALE_AUTHORIZATION_DENIED',
+      );
+    } finally {
+      await requiredOwner().adminSession.update({
+        data: { mfaVerifiedAt: new Date() },
+        where: { id: fixture.adminSessionId },
+      });
+    }
+    await expectCommandFailure(
+      () =>
+        recordAfterSaleReturnFact(
+          requiredRuntime(),
+          crossStoreAdminContext(`m63b5-cross-access-${suffix}`),
+          {
+            afterSaleId: stale.afterSaleId,
+            body: {
+              confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT',
+              expected_return_shipment_version: staleSubmitted.returnShipmentVersion,
+              expected_version: staleSubmitted.version,
+              reason: 'Cross access alone cannot record a trusted delivery fact.',
+              status: 'DELIVERED',
+            },
+            idempotencyKey: `m63b5-cross-access-fact-${suffix}`,
+          },
+        ),
+      'AFTER_SALE_AUTHORIZATION_DENIED',
+    );
+
+    const direct = await createApprovedReturnCase('b5-direct-delivery');
+    const directSubmitted = await submitMemberAfterSaleReturn(requiredRuntime(), memberContext(), {
+      afterSaleId: direct.afterSaleId,
+      body: {
+        carrier_name: 'VNPost',
+        expected_version: direct.version,
+        tracking_number: `VNPOST-DIRECT-${suffix}`,
+      },
+      idempotencyKey: `m63b5-direct-submit-${suffix}`,
+      trackingHashKey: process.env.PII_HASH_KEY!,
+    });
+    const delivered = await recordAfterSaleReturnFact(requiredRuntime(), adminContext(), {
+      afterSaleId: direct.afterSaleId,
+      body: {
+        confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT',
+        expected_return_shipment_version: directSubmitted.returnShipmentVersion,
+        expected_version: directSubmitted.version,
+        reason: 'Carrier portal directly confirms delivery to the return warehouse.',
+        status: 'DELIVERED',
+      },
+      idempotencyKey: `m63b5-direct-delivered-${suffix}`,
+    });
+    expect(delivered).toMatchObject({
+      returnShipmentStatus: 'DELIVERED',
+      returnShipmentVersion: directSubmitted.returnShipmentVersion + 1,
+      status: 'INSPECTION_PENDING',
+      version: directSubmitted.version + 2,
+    });
+    const events = await requiredOwner().afterSaleTransition.findMany({
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: { event: true },
+      where: { operationId: delivered.operationId },
+    });
+    expect(events).toEqual([{ event: 'RETURN_SHIPPED' }, { event: 'RETURN_RECEIVED' }]);
+
+    await expectSqlState(
+      () =>
+        withStoreTransaction(
+          requiredRuntime(),
+          memberContext(),
+          (transaction) =>
+            transaction.$executeRaw`
+            INSERT INTO after_sale_return_shipments
+              (store_id, after_sale_id, order_id, member_id, carrier_name,
+                tracking_number_digest, tracking_number_masked, submitted_by)
+            VALUES (${BEAUTY_STORE_ID}::uuid, ${direct.afterSaleId}::uuid,
+              ${direct.order.id}::uuid, ${fixture.memberId}::uuid, 'GHN', ${'a'.repeat(64)},
+              'GH******01', ${fixture.memberId}::uuid)
+          `,
+        ),
+      '42501',
+    );
+    await expectSqlState(
+      () =>
+        withStoreTransaction(
+          requiredRuntime(),
+          memberContext(),
+          (transaction) =>
+            transaction.$executeRaw`
+            INSERT INTO after_sale_operations
+              (store_id, after_sale_id, operation, idempotency_key_hash, request_hash)
+            VALUES (${BEAUTY_STORE_ID}::uuid, ${stale.afterSaleId}::uuid,
+              'MEMBER_SUBMIT_RETURN', ${digest(`m63b5-partial-op-${suffix}`)},
+              ${digest(`m63b5-partial-request-${suffix}`)})
+          `,
+        ),
+      '42501',
+    );
   });
 });

@@ -69,6 +69,8 @@ const B4_MIGRATIONS = [
   '20260731131000_m63_b4_atomicity_name_fix',
 ] as const;
 
+const B5_MIGRATION_NAME = '20260731150000_m63_b5_after_sale_return_trust' as const;
+
 const M6_MIGRATIONS = [
   '20260727110000_m62_after_sales_member_share_foundation',
   '20260727111000_m62_permission_catalog',
@@ -92,6 +94,7 @@ const M6_MIGRATIONS = [
   ...D5_MIGRATIONS,
   B3_MIGRATION_NAME,
   ...B4_MIGRATIONS,
+  B5_MIGRATION_NAME,
 ] as const;
 
 type MigrationRecord = {
@@ -1337,6 +1340,243 @@ async function assertM63B4DownBoundary(client: PrismaClientType): Promise<void> 
   }
 }
 
+type B5FunctionCatalogRecord = B3FunctionCatalogRecord & { definition: string };
+
+async function assertM63B5ReturnBoundary(client: PrismaClientType): Promise<string> {
+  const functionRows = await client.$queryRaw<B5FunctionCatalogRecord[]>`
+    SELECT
+      function_definition.proname AS function_name,
+      pg_catalog.oidvectortypes(function_definition.proargtypes) AS identity_arguments,
+      pg_catalog.pg_get_functiondef(function_definition.oid) AS definition,
+      EXISTS (
+        SELECT 1 FROM pg_catalog.aclexplode(
+          COALESCE(function_definition.proacl,
+            pg_catalog.acldefault('f', function_definition.proowner))
+        ) AS privilege
+        WHERE privilege.grantee = 0 AND privilege.privilege_type = 'EXECUTE'
+      ) AS public_can_execute,
+      pg_catalog.has_function_privilege(
+        'zalo_shop_runtime', function_definition.oid, 'EXECUTE'
+      ) AS runtime_can_execute,
+      function_definition.prosecdef AS security_definer,
+      'search_path=pg_catalog, public, pg_temp' = ANY(function_definition.proconfig)
+        AS safe_search_path,
+      'row_security=on' = ANY(function_definition.proconfig) AS row_security_on
+    FROM pg_catalog.pg_proc AS function_definition
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = function_definition.pronamespace
+    WHERE namespace.nspname = 'app_security'
+      AND function_definition.proname IN (
+        'validate_m63_b5_admin_return_transition',
+        'validate_m63_b5_operation_completion',
+        'validate_m63_b5_command_atomicity',
+        'submit_m63_b5_member_return',
+        'record_m63_b5_return_fact'
+      )
+    ORDER BY function_definition.proname, identity_arguments
+  `;
+  const expectedFunctions = new Map<
+    string,
+    { runtimeCanExecute: boolean; securityDefiner: boolean }
+  >([
+    [
+      'validate_m63_b5_admin_return_transition()',
+      { runtimeCanExecute: false, securityDefiner: true },
+    ],
+    [
+      'validate_m63_b5_operation_completion()',
+      { runtimeCanExecute: false, securityDefiner: false },
+    ],
+    ['validate_m63_b5_command_atomicity()', { runtimeCanExecute: false, securityDefiner: true }],
+    [
+      'submit_m63_b5_member_return(uuid, uuid, text, text, integer, text, text, text, inet)',
+      { runtimeCanExecute: true, securityDefiner: true },
+    ],
+    [
+      'record_m63_b5_return_fact(uuid, uuid, text, text, integer, integer, text, text, inet)',
+      { runtimeCanExecute: true, securityDefiner: true },
+    ],
+  ]);
+  if (functionRows.length !== expectedFunctions.size) {
+    fail(`M6.3-B5 function catalog is incomplete: ${JSON.stringify(functionRows)}`);
+  }
+  for (const row of functionRows) {
+    const expected = expectedFunctions.get(`${row.function_name}(${row.identity_arguments})`);
+    if (
+      !expected ||
+      row.public_can_execute ||
+      row.runtime_can_execute !== expected.runtimeCanExecute ||
+      row.security_definer !== expected.securityDefiner ||
+      !row.safe_search_path ||
+      row.row_security_on
+    ) {
+      fail(`M6.3-B5 function grants or configuration differ: ${JSON.stringify(row)}`);
+    }
+  }
+  const factFunction = functionRows.find(
+    (row) => row.function_name === 'record_m63_b5_return_fact',
+  );
+  if (!factFunction?.definition.includes('transition_created_at')) {
+    fail('M6.3-B5 direct delivery transition timestamps are not strictly ordered');
+  }
+
+  const triggerRows = await client.$queryRaw<B3TriggerCatalogRecord[]>`
+    SELECT
+      relation.relname AS table_name,
+      trigger_definition.tgname AS trigger_name,
+      function_definition.proname AS function_name,
+      pg_catalog.oidvectortypes(function_definition.proargtypes)
+        AS function_identity_arguments,
+      trigger_definition.tgconstraint <> 0 AS is_constraint,
+      trigger_definition.tgdeferrable AS is_deferrable,
+      trigger_definition.tginitdeferred AS is_initially_deferred,
+      trigger_definition.tgenabled = 'O' AS is_enabled
+    FROM pg_catalog.pg_trigger AS trigger_definition
+    JOIN pg_catalog.pg_class AS relation ON relation.oid = trigger_definition.tgrelid
+    JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_catalog.pg_proc AS function_definition ON function_definition.oid = trigger_definition.tgfoid
+    WHERE NOT trigger_definition.tgisinternal
+      AND namespace.nspname = 'public'
+      AND trigger_definition.tgname IN (
+        'after_sale_operations_b5_completion_guard',
+        'after_sale_operations_b5_atomic_guard',
+        'after_sale_transitions_b5_atomic_guard',
+        'after_sale_transitions_b5_return_state_guard'
+      )
+    ORDER BY relation.relname, trigger_definition.tgname
+  `;
+  const expectedTriggers = new Map<string, { functionName: string; isConstraint: boolean }>([
+    [
+      'after_sale_operations:after_sale_operations_b5_completion_guard',
+      { functionName: 'validate_m63_b5_operation_completion', isConstraint: false },
+    ],
+    [
+      'after_sale_operations:after_sale_operations_b5_atomic_guard',
+      { functionName: 'validate_m63_b5_command_atomicity', isConstraint: true },
+    ],
+    [
+      'after_sale_transitions:after_sale_transitions_b5_atomic_guard',
+      { functionName: 'validate_m63_b5_command_atomicity', isConstraint: true },
+    ],
+    [
+      'after_sale_transitions:after_sale_transitions_b5_return_state_guard',
+      { functionName: 'validate_m63_b5_admin_return_transition', isConstraint: false },
+    ],
+  ]);
+  if (triggerRows.length !== expectedTriggers.size) {
+    fail(`M6.3-B5 trigger catalog is incomplete: ${JSON.stringify(triggerRows)}`);
+  }
+  for (const row of triggerRows) {
+    const expected = expectedTriggers.get(`${row.table_name}:${row.trigger_name}`);
+    if (
+      !expected ||
+      row.function_name !== expected.functionName ||
+      row.function_identity_arguments !== '' ||
+      row.is_constraint !== expected.isConstraint ||
+      (expected.isConstraint && (!row.is_deferrable || !row.is_initially_deferred)) ||
+      !row.is_enabled
+    ) {
+      fail(`M6.3-B5 trigger shape differs: ${JSON.stringify(row)}`);
+    }
+  }
+
+  const [privileges] = await client.$queryRaw<
+    Array<{ return_insert: boolean; return_update: boolean; state_guard_definition: string }>
+  >`
+    SELECT
+      pg_catalog.has_table_privilege(
+        'zalo_shop_runtime', 'public.after_sale_return_shipments', 'INSERT'
+      ) AS return_insert,
+      pg_catalog.has_column_privilege(
+        'zalo_shop_runtime', 'public.after_sale_return_shipments', 'status', 'UPDATE'
+      ) AND pg_catalog.has_column_privilege(
+        'zalo_shop_runtime', 'public.after_sale_return_shipments', 'received_at', 'UPDATE'
+      ) AND pg_catalog.has_column_privilege(
+        'zalo_shop_runtime', 'public.after_sale_return_shipments', 'version', 'UPDATE'
+      ) AND pg_catalog.has_column_privilege(
+        'zalo_shop_runtime', 'public.after_sale_return_shipments', 'updated_at', 'UPDATE'
+      ) AS return_update,
+      pg_catalog.pg_get_triggerdef(trigger_definition.oid) AS state_guard_definition
+    FROM pg_catalog.pg_trigger AS trigger_definition
+    JOIN pg_catalog.pg_class AS relation ON relation.oid = trigger_definition.tgrelid
+    JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND relation.relname = 'after_sale_transitions'
+      AND trigger_definition.tgname = 'after_sale_transitions_state_guard'
+  `;
+  if (
+    privileges?.return_insert ||
+    privileges?.return_update ||
+    !privileges?.state_guard_definition.includes("'SUBMIT'")
+  ) {
+    fail(`M6.3-B5 runtime privileges or generic state guard differ: ${JSON.stringify(privileges)}`);
+  }
+  const [operationLink] = await client.$queryRaw<Array<{ definition: string }>>`
+    SELECT pg_catalog.pg_get_functiondef(function_definition.oid) AS definition
+    FROM pg_catalog.pg_proc AS function_definition
+    JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = function_definition.pronamespace
+    WHERE namespace.nspname = 'app_security'
+      AND function_definition.proname = 'validate_m63_b3_operation_link'
+      AND function_definition.proargtypes = ''::oidvector
+  `;
+  if (
+    !operationLink?.definition.includes('START_RETURN') ||
+    !operationLink.definition.includes('ADMIN_RECORD_RETURN_FACT')
+  ) {
+    fail('M6.3-B5 operation-link catalog does not include return commands');
+  }
+  return createHash('sha256')
+    .update(JSON.stringify({ functionRows, triggerRows, privileges, operationLink }))
+    .digest('hex');
+}
+
+async function assertM63B5DownBoundary(client: PrismaClientType): Promise<void> {
+  const [catalogState] = await client.$queryRaw<
+    Array<{
+      b5_functions: bigint;
+      b5_triggers: bigint;
+      return_insert: boolean;
+      return_update: boolean;
+    }>
+  >`
+    SELECT
+      (SELECT count(*) FROM pg_catalog.pg_proc function_definition
+       JOIN pg_catalog.pg_namespace namespace ON namespace.oid = function_definition.pronamespace
+       WHERE namespace.nspname = 'app_security'
+         AND function_definition.proname LIKE '%m63_b5%') AS b5_functions,
+      (SELECT count(*) FROM pg_catalog.pg_trigger trigger_definition
+       WHERE NOT trigger_definition.tgisinternal
+         AND trigger_definition.tgname LIKE '%b5%') AS b5_triggers,
+      pg_catalog.has_table_privilege(
+        'zalo_shop_runtime', 'public.after_sale_return_shipments', 'INSERT'
+      ) AS return_insert,
+      pg_catalog.has_column_privilege(
+        'zalo_shop_runtime', 'public.after_sale_return_shipments', 'status', 'UPDATE'
+      ) AND pg_catalog.has_column_privilege(
+        'zalo_shop_runtime', 'public.after_sale_return_shipments', 'received_at', 'UPDATE'
+      ) AND pg_catalog.has_column_privilege(
+        'zalo_shop_runtime', 'public.after_sale_return_shipments', 'version', 'UPDATE'
+      ) AND pg_catalog.has_column_privilege(
+        'zalo_shop_runtime', 'public.after_sale_return_shipments', 'updated_at', 'UPDATE'
+      ) AS return_update
+  `;
+  if (
+    catalogState?.b5_functions !== 0n ||
+    catalogState.b5_triggers !== 0n ||
+    !catalogState.return_insert ||
+    !catalogState.return_update
+  ) {
+    fail(
+      `M6.3-B5 down.sql did not restore the pre-B5 catalog: ${JSON.stringify({
+        b5_functions: String(catalogState?.b5_functions),
+        b5_triggers: String(catalogState?.b5_triggers),
+        return_insert: catalogState?.return_insert,
+        return_update: catalogState?.return_update,
+      })}`,
+    );
+  }
+}
+
 type B3HistoricalPolicyFixtureIds = Readonly<{
   afterSaleId: string;
   orderItemId: string;
@@ -2317,8 +2557,8 @@ async function run(): Promise<void> {
   if (M2_MIGRATIONS.some((migrationName, index) => allMigrationNames[index] !== migrationName)) {
     fail('the tracked migration prefix no longer matches the approved M2 boundary');
   }
-  if (allMigrationNames.at(-1) !== B4_MIGRATIONS.at(-1)) {
-    fail('the approved M6.3-B4 forward fix must be the current migration tail');
+  if (allMigrationNames.at(-1) !== B5_MIGRATION_NAME) {
+    fail('the approved M6.3-B5 return-trust migration must be the current migration tail');
   }
   const m5BoundaryIndex = allMigrationNames.indexOf(M5_MIGRATIONS.at(-1) ?? '');
   if (m5BoundaryIndex < 0) fail('the approved M5 boundary migration was not found');
@@ -2340,9 +2580,10 @@ async function run(): Promise<void> {
   if (
     b3MigrationIndex < 0 ||
     allMigrationNames[b3MigrationIndex + 1] !== B4_MIGRATIONS[0] ||
-    allMigrationNames[b3MigrationIndex + 2] !== B4_MIGRATIONS[1]
+    allMigrationNames[b3MigrationIndex + 2] !== B4_MIGRATIONS[1] ||
+    allMigrationNames[b3MigrationIndex + 3] !== B5_MIGRATION_NAME
   ) {
-    fail('the approved M6.3-B3 to B4 migration boundary was not found');
+    fail('the approved M6.3-B3 to B5 migration boundary was not found');
   }
 
   const adminDatabaseUrl = new URL(ownerDatabaseUrl);
@@ -2549,11 +2790,13 @@ async function run(): Promise<void> {
     const b3MigrationPath = join(MIGRATIONS_ROOT, B3_MIGRATION_NAME, 'migration.sql');
     const b3DownPath = join(MIGRATIONS_ROOT, B3_MIGRATION_NAME, 'down.sql');
     const b4DownPath = join(MIGRATIONS_ROOT, B4_MIGRATIONS[0], 'down.sql');
-    const [d0MigrationSql, d0DownSql, b3DownSql, b4DownSql] = await Promise.all([
+    const b5DownPath = join(MIGRATIONS_ROOT, B5_MIGRATION_NAME, 'down.sql');
+    const [d0MigrationSql, d0DownSql, b3DownSql, b4DownSql, b5DownSql] = await Promise.all([
       readFile(d0MigrationPath, 'utf8'),
       readFile(d0DownPath, 'utf8'),
       readFile(b3DownPath, 'utf8'),
       readFile(b4DownPath, 'utf8'),
+      readFile(b5DownPath, 'utf8'),
     ]);
     const d0ForwardGuardStart = d0MigrationSql.indexOf('DO $$');
     const d0ForwardGuardEnd = d0MigrationSql.indexOf(
@@ -2585,6 +2828,12 @@ async function run(): Promise<void> {
       fail('the M6.3-B4 down migration guard boundaries could not be isolated');
     }
     const b4DownGuardSql = b4DownSql.slice(b4DownGuardStart, b4DownGuardEnd).trim();
+    const b5DownGuardStart = b5DownSql.indexOf('DO $$');
+    const b5DownGuardEnd = b5DownSql.indexOf('GRANT INSERT');
+    if (b5DownGuardStart < 0 || b5DownGuardEnd <= b5DownGuardStart) {
+      fail('the M6.3-B5 down migration guard boundaries could not be isolated');
+    }
+    const b5DownGuardSql = b5DownSql.slice(b5DownGuardStart, b5DownGuardEnd).trim();
     const d0EvidenceId = 'f2e00000-0000-4000-8000-000000000001';
     const d0TransitionId = 'f2e00000-0000-4000-8000-000000000002';
     const d0OutboxId = 'f2e00000-0000-4000-8000-000000000003';
@@ -3057,6 +3306,7 @@ async function run(): Promise<void> {
     await assertM63B2bD0Indexes(scratchClient);
     await assertM63B3CommandBoundary(scratchClient);
     await assertM63B4ReviewBoundary(scratchClient);
+    await assertM63B5ReturnBoundary(scratchClient);
 
     await scratchClient.$transaction(async (transaction) => {
       await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
@@ -3193,6 +3443,7 @@ async function run(): Promise<void> {
     await assertM63B2bD0Indexes(scratchClient);
     const repeatedB3CatalogFingerprint = await assertM63B3CommandBoundary(scratchClient);
     const repeatedB4CatalogFingerprint = await assertM63B4ReviewBoundary(scratchClient);
+    const repeatedB5CatalogFingerprint = await assertM63B5ReturnBoundary(scratchClient);
     await assertM63B2bD5ProtectedReadLock(scratchClient);
     await exerciseD5MigrationAtomicity(
       scratchClient,
@@ -3209,6 +3460,68 @@ async function run(): Promise<void> {
       ['db', 'execute', '--file', ASSERTIONS_SQL_PATH, '--schema', fullSchemaPath],
       scratchDatabaseUrl,
     );
+
+    const b5RollbackOperationId = randomUUID();
+    const b5RollbackAfterSaleId = randomUUID();
+    const b5RollbackOperationRows = await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      return transaction.$executeRaw`
+        INSERT INTO after_sale_operations (
+          id, store_id, after_sale_id, operation, idempotency_key_hash, request_hash,
+          status, result_summary, attempt_count, version, updated_at
+        )
+        SELECT
+          ${b5RollbackOperationId}::uuid, store.id, ${b5RollbackAfterSaleId}::uuid,
+          'MEMBER_SUBMIT_RETURN',
+          ${createHash('sha256').update('m63-b5-rollback-idempotency').digest('hex')},
+          ${createHash('sha256').update('m63-b5-rollback-request').digest('hex')},
+          'COMPLETED', '{"migrationGuard":true}'::jsonb, 1, 2, clock_timestamp()
+        FROM stores AS store
+        ORDER BY store.id
+        LIMIT 1
+      `;
+    });
+    if (b5RollbackOperationRows !== 1) {
+      fail('M6.3-B5 rollback guard fixture could not create a return operation fact');
+    }
+    const [b5RollbackFixture] = await scratchClient.$queryRaw<
+      Array<{ operation_count: bigint; action_count: bigint }>
+    >`
+      SELECT
+        (SELECT count(*) FROM after_sale_operations
+         WHERE id = ${b5RollbackOperationId}::uuid
+           AND operation IN ('MEMBER_SUBMIT_RETURN','ADMIN_RECORD_RETURN_FACT')) AS operation_count,
+        (SELECT count(*) FROM audit_logs
+         WHERE action IN ('after-sale.return.submitted','after-sale.return.fact-recorded')) AS action_count
+    `;
+    if (b5RollbackFixture?.operation_count !== 1n) {
+      fail(
+        `M6.3-B5 rollback guard fixture disappeared: ${JSON.stringify({
+          operation_count: String(b5RollbackFixture?.operation_count),
+          action_count: String(b5RollbackFixture?.action_count),
+        })}`,
+      );
+    }
+    await expectSqlState(
+      scratchClient.$executeRawUnsafe(b5DownGuardSql),
+      '55000',
+      'M6.3-B5 down return-operation fact guard',
+    );
+    await scratchClient.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await transaction.$executeRaw`
+        DELETE FROM after_sale_operations WHERE id = ${b5RollbackOperationId}::uuid
+      `;
+    });
+    runPrisma(
+      ['db', 'execute', '--file', b5DownPath, '--schema', fullSchemaPath],
+      scratchDatabaseUrl,
+    );
+    await assertM63B5DownBoundary(scratchClient);
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations" WHERE migration_name = ${B5_MIGRATION_NAME}
+    `;
+    const b4CatalogAfterB5DownFingerprint = await assertM63B4ReviewBoundary(scratchClient);
 
     const b4RollbackOperationId = randomUUID();
     const b4RollbackAfterSaleId = randomUUID();
@@ -3275,7 +3588,7 @@ async function run(): Promise<void> {
       await transaction.$executeRaw`DELETE FROM audit_logs WHERE id = ${b4RollbackAuditId}::uuid`;
     });
     const afterB4GuardFingerprint = await assertM63B4ReviewBoundary(scratchClient);
-    if (afterB4GuardFingerprint !== repeatedB4CatalogFingerprint) {
+    if (afterB4GuardFingerprint !== b4CatalogAfterB5DownFingerprint) {
       fail('M6.3-B4 rollback fail-fast changed the review security catalog');
     }
 
@@ -3303,13 +3616,25 @@ async function run(): Promise<void> {
     if (restoredB4CatalogFingerprint !== repeatedB4CatalogFingerprint) {
       fail('M6.3-B4 down/forward exercise did not restore the review security catalog');
     }
+    const restoredB5CatalogFingerprint = await assertM63B5ReturnBoundary(scratchClient);
+    if (restoredB5CatalogFingerprint !== repeatedB5CatalogFingerprint) {
+      fail('M6.3-B5 down/forward exercise did not restore the return security catalog');
+    }
     const afterB4RoundTripFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterB4RoundTripFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during the M6.3-B4 down/forward exercise');
     }
 
-    // B3 cannot be rolled back while B4 functions and triggers still depend on its command
-    // boundary. Remove the two B4 migrations first, then restore all three in one forward deploy.
+    // B3 cannot be rolled back while B4/B5 functions and triggers still depend on its command
+    // boundary. Remove B5, then B4, and restore all four in one forward deploy.
+    runPrisma(
+      ['db', 'execute', '--file', b5DownPath, '--schema', fullSchemaPath],
+      scratchDatabaseUrl,
+    );
+    await assertM63B5DownBoundary(scratchClient);
+    await scratchClient.$executeRaw`
+      DELETE FROM "_prisma_migrations" WHERE migration_name = ${B5_MIGRATION_NAME}
+    `;
     for (const migrationName of [...B4_MIGRATIONS].reverse()) {
       runPrisma(
         [
@@ -3384,6 +3709,10 @@ async function run(): Promise<void> {
     const restoredB4AfterB3CatalogFingerprint = await assertM63B4ReviewBoundary(scratchClient);
     if (restoredB4AfterB3CatalogFingerprint !== repeatedB4CatalogFingerprint) {
       fail('M6.3-B3 down/forward exercise did not restore the dependent B4 catalog');
+    }
+    const restoredB5AfterB3CatalogFingerprint = await assertM63B5ReturnBoundary(scratchClient);
+    if (restoredB5AfterB3CatalogFingerprint !== repeatedB5CatalogFingerprint) {
+      fail('M6.3-B3 down/forward exercise did not restore the dependent B5 catalog');
     }
     const afterB3RoundTripFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterB3RoundTripFingerprint !== beforeUpgradeFingerprint) {
@@ -3611,6 +3940,7 @@ async function run(): Promise<void> {
     await assertM63B2bD5ProtectedReadLock(scratchClient);
     await assertM63B3CommandBoundary(scratchClient);
     await assertM63B4ReviewBoundary(scratchClient);
+    await assertM63B5ReturnBoundary(scratchClient);
     const afterForwardRepairFingerprint = await fixtureFingerprint(scratchClient, fingerprintSql);
     if (afterForwardRepairFingerprint !== beforeUpgradeFingerprint) {
       fail('M1/M2 fixture fingerprint changed during the M5/M6 forward repair exercise');
@@ -3801,6 +4131,7 @@ async function run(): Promise<void> {
     await assertM63B2bD0Indexes(scratchClient);
     await assertM63B3CommandBoundary(scratchClient);
     await assertM63B4ReviewBoundary(scratchClient);
+    await assertM63B5ReturnBoundary(scratchClient);
     const [d0RoundTripShape] = await scratchClient.$queryRaw<
       Array<{ ledger_exists: boolean; object_role_exists: boolean }>
     >`
@@ -4286,9 +4617,10 @@ async function run(): Promise<void> {
     await assertM63B2bD5ProtectedReadLock(scratchClient);
     await assertM63B3CommandBoundary(scratchClient);
     await assertM63B4ReviewBoundary(scratchClient);
+    await assertM63B5ReturnBoundary(scratchClient);
 
     console.log(
-      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair, B3 historical policy preflight, B4 review/expiration catalog restoration and rollback guards`,
+      `[m2-upgrade] verified ${String(allMigrationNames.length)} migrations, fresh deploy, M5/M6 down/forward repair, B3 historical policy preflight, B4 review/expiration and B5 return-trust catalog restoration and rollback guards`,
     );
   } catch (error) {
     primaryError = asError(error);

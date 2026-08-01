@@ -113,13 +113,13 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
     Authorization: `Bearer ${adminToken}`,
     'X-Store-Code': storeCode,
   });
-  const memberBody = (quantity = 1) => ({
+  const memberBody = (quantity = 1, type: 'REFUND_ONLY' | 'RETURN_REFUND' = 'REFUND_ONLY') => ({
     description,
     evidence_ids: [],
     items: [{ order_item_id: fixture.orderItemId, quantity }],
     order_id: fixture.orderId,
     reason_code: 'defective-item',
-    type: 'REFUND_ONLY' as const,
+    type,
   });
 
   function accessToken(input: {
@@ -159,7 +159,11 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
   }
 
   beforeAll(async () => {
-    if (!config.AFTER_SALE_COMMANDS_ENABLED || config.NODE_ENV !== 'test') {
+    if (
+      !config.AFTER_SALE_COMMANDS_ENABLED ||
+      !config.AFTER_SALE_RETURN_COMMANDS_ENABLED ||
+      config.NODE_ENV !== 'test'
+    ) {
       throw new Error('M6.3-B3 local/test command configuration is not enabled');
     }
     await owner.$connect();
@@ -618,6 +622,9 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
         where: { actorId: { in: [fixture.memberId, fixture.otherMemberId, fixture.adminId] } },
       });
       if (afterSaleIds.length > 0) {
+        await transaction.afterSaleReturnShipment.deleteMany({
+          where: { afterSaleId: { in: afterSaleIds } },
+        });
         await transaction.afterSaleTransition.deleteMany({
           where: { afterSaleId: { in: afterSaleIds } },
         });
@@ -950,7 +957,7 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
         ...memberHeaders(),
         'Idempotency-Key': `m63b4-api-member-create-${suffix}`,
       })
-      .send(memberBody());
+      .send(memberBody(1, 'RETURN_REFUND'));
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     expect(created.body).toMatchObject({ status: 'PENDING_REVIEW', version: 1 });
 
@@ -1030,5 +1037,180 @@ describe.sequential('M6.3-B3 after-sale command API', () => {
       .send(reviewBody);
     expect(selfReview.status).toBe(403);
     expect(selfReview.body).toMatchObject({ code: 'AUTHORIZATION_DENIED' });
+
+    const trackingNumber = `GHN-API-RETURN-${suffix}-123456`;
+    const submitKey = `m63b5-api-return-submit-${suffix}`;
+    const submitBody = {
+      carrier_name: 'GHN',
+      expected_version: approved.body.version,
+      tracking_number: trackingNumber,
+    };
+    const submitted = await api()
+      .post(`/v1/after-sales/${created.body.id}/return-shipment`)
+      .set({ ...memberHeaders(), 'Idempotency-Key': submitKey })
+      .send(submitBody);
+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+    expect(submitted.headers['idempotency-replayed']).toBe('false');
+    expect(submitted.body).toEqual({ ...approved.body, status: 'RETURN_PENDING', version: 3 });
+    expect(JSON.stringify(submitted.body)).not.toContain(trackingNumber);
+
+    const submitReplay = await api()
+      .post(`/v1/after-sales/${created.body.id}/return-shipment`)
+      .set({ ...memberHeaders(), 'Idempotency-Key': submitKey })
+      .send(submitBody);
+    expect(submitReplay.status).toBe(200);
+    expect(submitReplay.headers['idempotency-replayed']).toBe('true');
+    expect(submitReplay.body).toEqual(submitted.body);
+
+    const changedSubmit = await api()
+      .post(`/v1/after-sales/${created.body.id}/return-shipment`)
+      .set({ ...memberHeaders(), 'Idempotency-Key': submitKey })
+      .send({ ...submitBody, tracking_number: `${trackingNumber}-CHANGED` });
+    expect(changedSubmit.status).toBe(409);
+    expect(changedSubmit.body).toMatchObject({
+      code: 'CONFLICT',
+      details: { reason_code: 'AFTER_SALE_IDEMPOTENCY_CONFLICT' },
+    });
+
+    const foreignMember = await api()
+      .post(`/v1/after-sales/${created.body.id}/return-shipment`)
+      .set({
+        ...memberHeaders(otherMemberToken),
+        'Idempotency-Key': `m63b5-api-foreign-member-${suffix}`,
+      })
+      .send(submitBody);
+    expect(foreignMember.status).toBe(404);
+    expect(foreignMember.body).toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
+
+    const factKey = `m63b5-api-return-delivered-${suffix}`;
+    const factBody = {
+      confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT',
+      expected_return_shipment_version: 1,
+      expected_version: submitted.body.version,
+      reason: 'Carrier portal confirms delivery to the return warehouse.',
+      status: 'DELIVERED',
+    };
+    await owner.storeRolePermission.delete({
+      where: {
+        storeId_roleId_permissionCode: {
+          permissionCode: 'store.after-sales.review',
+          roleId: fixture.beautyRoleId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      },
+    });
+    try {
+      const revokedFact = await api()
+        .post(
+          `/v1/admin/after-sales/${created.body.id}/return-shipment/fact?store_id=${BEAUTY_STORE_ID}`,
+        )
+        .set({
+          ...adminHeaders(),
+          'Idempotency-Key': `m63b5-api-return-revoked-${suffix}`,
+        })
+        .send(factBody);
+      expect(revokedFact.status).toBe(403);
+      expect(revokedFact.body).toMatchObject({ code: 'AUTHORIZATION_DENIED' });
+    } finally {
+      await owner.storeRolePermission.create({
+        data: {
+          permissionCode: 'store.after-sales.review',
+          roleId: fixture.beautyRoleId,
+          storeId: BEAUTY_STORE_ID,
+        },
+      });
+    }
+    await owner.adminSession.update({
+      data: { mfaVerifiedAt: new Date(Date.now() - 11 * 60 * 1_000) },
+      where: { id: fixture.adminSessionId },
+    });
+    const staleFact = await api()
+      .post(
+        `/v1/admin/after-sales/${created.body.id}/return-shipment/fact?store_id=${BEAUTY_STORE_ID}`,
+      )
+      .set({ ...adminHeaders(), 'Idempotency-Key': factKey })
+      .send(factBody);
+    expect(staleFact.status).toBe(403);
+    await owner.adminSession.update({
+      data: { mfaVerifiedAt: new Date() },
+      where: { id: fixture.adminSessionId },
+    });
+
+    const delivered = await api()
+      .post(
+        `/v1/admin/after-sales/${created.body.id}/return-shipment/fact?store_id=${BEAUTY_STORE_ID}`,
+      )
+      .set({ ...adminHeaders(), 'Idempotency-Key': factKey })
+      .send(factBody);
+    expect(delivered.status, JSON.stringify(delivered.body)).toBe(200);
+    expect(delivered.headers['idempotency-replayed']).toBe('false');
+    expect(delivered.body).toEqual({
+      ...approved.body,
+      status: 'INSPECTION_PENDING',
+      version: 5,
+    });
+    expect(JSON.stringify(delivered.body)).not.toContain(trackingNumber);
+
+    const factReplay = await api()
+      .post(
+        `/v1/admin/after-sales/${created.body.id}/return-shipment/fact?store_id=${BEAUTY_STORE_ID}`,
+      )
+      .set({ ...adminHeaders(), 'Idempotency-Key': factKey })
+      .send(factBody);
+    expect(factReplay.status).toBe(200);
+    expect(factReplay.headers['idempotency-replayed']).toBe('true');
+    expect(factReplay.body).toEqual(delivered.body);
+
+    const foreignFact = await api()
+      .post(
+        `/v1/admin/after-sales/${created.body.id}/return-shipment/fact?store_id=${FASHION_STORE_ID}`,
+      )
+      .set({
+        ...adminHeaders(FASHION_STORE_CODE),
+        'Idempotency-Key': `m63b5-api-foreign-fact-${suffix}`,
+      })
+      .send(factBody);
+    expect(foreignFact.status).toBe(404);
+    expect(foreignFact.body).toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
+
+    const detail = await api()
+      .get(`/v1/admin/after-sales/${created.body.id}?store_id=${BEAUTY_STORE_ID}`)
+      .set({
+        ...adminHeaders(),
+        'X-Access-Reason': 'Inspect the returned parcel before after-sale acceptance.',
+      });
+    expect(detail.status, JSON.stringify(detail.body)).toBe(200);
+    expect(detail.body).toMatchObject({
+      id: created.body.id,
+      return_shipments: [
+        {
+          carrier_name: 'GHN',
+          masked_tracking_number: expect.any(String),
+          status: 'DELIVERED',
+        },
+      ],
+      status: 'INSPECTION_PENDING',
+      version: 5,
+    });
+    expect(detail.body.return_shipments[0].masked_tracking_number).not.toBe(trackingNumber);
+    expect(JSON.stringify(detail.body)).not.toContain(trackingNumber);
+    expect(detail.body.timeline.map(({ event }: { event: string }) => event).slice(-3)).toEqual([
+      'START_RETURN',
+      'RETURN_SHIPPED',
+      'RETURN_RECEIVED',
+    ]);
+
+    const inspectionQueue = await api()
+      .get(`/v1/admin/after-sales?store_id=${BEAUTY_STORE_ID}&status=INSPECTION_PENDING&limit=20`)
+      .set({
+        ...adminHeaders(),
+        'X-Access-Reason': 'Inspect the returned parcel queue for after-sale acceptance.',
+      });
+    expect(inspectionQueue.status, JSON.stringify(inspectionQueue.body)).toBe(200);
+    expect(inspectionQueue.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: created.body.id, status: 'INSPECTION_PENDING' }),
+      ]),
+    );
   });
 });

@@ -108,6 +108,31 @@ This file records completed repository changes. Each entry uses `Date`, `Added`,
 - Kept real Zalo Testing, sandbox, callback, funds and production rollout explicitly blocked or not run.
 - Git Recovery reconciled this completed task to the task-scoped commit `feat(P0-M5-002): buyer online payment runtime`; TypeScript, lint, unit, affected integration, build, format and two-device targeted E2E verification passed.
 
+## 2026-08-01 - M6.3-B5 Return Trust Git Recovery (`0.1.0`)
+
+### Added
+
+- Default-disabled member return registration and audited administrator `IN_TRANSIT`/`DELIVERED` fact commands.
+- The guarded M6.3-B5 forward migration, return command primitives, API coverage and completion evidence.
+
+### Changed
+
+- Return tracking is persisted only as a keyed HMAC and display mask; current aggregate and inspection-pending state remain read through the existing B1 projection.
+- Runtime return-table writes now pass through store/member or direct target-store review authorization, expected versions, idempotency and deferred atomicity guards.
+
+### Fixed
+
+- Recovered the completed B5 snapshot into the task-scoped commit `feat(P0-M6-005): return trust commands` without mixing B6, D2 or P0-M6-009 changes.
+
+### Removed
+
+- None.
+
+### Docs
+
+- Added the approved B5 plan and completion report and synchronized the B5-era README, OpenAPI, architecture, data dictionary, permission matrix and milestone plans.
+- Recorded typecheck, lint, unit, affected integration, migration, build, format and staged-diff verification in the Git Recovery ledger.
+
 ## 2026-08-01 - M6.3-B6 ONLINE After-Sale Refund Closeout (`0.1.0`)
 
 ### Added

@@ -23,6 +23,8 @@ import type {
   AfterSalePageResponse,
   AfterSaleReviewRequest,
   AfterSaleReviewResolveRequest,
+  AfterSaleReturnFactRequest,
+  AfterSaleReturnShipmentRequest,
   AfterSaleResponse,
   MerchantAfterSaleCreateRequest,
 } from '@zalo-shop/contracts';
@@ -36,8 +38,10 @@ import {
   cancelMemberAfterSaleCommand,
   createMemberAfterSaleCommand,
   createMerchantRefundAfterSaleCommand,
+  recordAfterSaleReturnFact,
   resolveAfterSaleReviewCommand,
   reviewAfterSaleCommand,
+  submitMemberAfterSaleReturn,
   type AfterSaleCommandResult,
   type PrismaClient,
   type StoreTransaction,
@@ -175,6 +179,33 @@ export class AfterSalesService {
     };
   }
 
+  public async memberSubmitReturn(input: {
+    afterSaleId: string;
+    authorization?: string;
+    body: AfterSaleReturnShipmentRequest;
+    correlationId: string;
+    idempotencyKey: string;
+    sourceIp: string;
+    storeCode: string;
+  }): Promise<AfterSaleCommandExecution> {
+    const context = await this.memberContext(input);
+    await this.consumeWriteLimit(context, 'MEMBER');
+    this.assertReturnCommandsEnabled();
+    let command: Awaited<ReturnType<typeof submitMemberAfterSaleReturn>>;
+    try {
+      command = await submitMemberAfterSaleReturn(this.database, context, {
+        afterSaleId: input.afterSaleId,
+        body: input.body,
+        idempotencyKey: input.idempotencyKey,
+        sourceIp: input.sourceIp,
+        trackingHashKey: this.config.PII_HASH_KEY,
+      });
+    } catch (error) {
+      this.throwCommandError(error, 'member');
+    }
+    return { body: this.acknowledgeCommand(command), replayed: command.replayed };
+  }
+
   public async adminCreateMerchantRefund(input: {
     body: MerchantAfterSaleCreateRequest;
     headers: AdminHeaders;
@@ -274,6 +305,35 @@ export class AfterSalesService {
               policyBasisCiphertext: encryptSensitive(policyBasis, this.config.PII_ENCRYPTION_KEY),
               policyBasisHash: sensitiveReasonDigest(policyBasis),
             }),
+        ...(input.headers.sourceIp === undefined ? {} : { sourceIp: input.headers.sourceIp }),
+      });
+    } catch (error) {
+      this.throwCommandError(error, 'admin');
+    }
+    return { body: this.acknowledgeCommand(command), replayed: command.replayed };
+  }
+
+  public async adminRecordReturnFact(input: {
+    afterSaleId: string;
+    body: AfterSaleReturnFactRequest;
+    headers: AdminHeaders;
+    idempotencyKey: string;
+    query: AfterSaleAdminStoreQuery;
+  }): Promise<AfterSaleCommandExecution> {
+    const context = await this.admin.authorizeSensitive(
+      input.headers,
+      input.query.store_id,
+      'store.after-sales.review',
+    );
+    this.assertDirectReviewAuthorization(context);
+    await this.consumeWriteLimit(context, 'ADMIN');
+    this.assertReturnCommandsEnabled();
+    let command: Awaited<ReturnType<typeof recordAfterSaleReturnFact>>;
+    try {
+      command = await recordAfterSaleReturnFact(this.database, context, {
+        afterSaleId: input.afterSaleId,
+        body: input.body,
+        idempotencyKey: input.idempotencyKey,
         ...(input.headers.sourceIp === undefined ? {} : { sourceIp: input.headers.sourceIp }),
       });
     } catch (error) {
@@ -488,6 +548,12 @@ export class AfterSalesService {
   private assertReviewCommandsEnabled(): void {
     if (!this.config.AFTER_SALE_REVIEW_COMMANDS_ENABLED || this.config.NODE_ENV === 'production') {
       throw new ServiceUnavailableException('After-sale review commands are unavailable');
+    }
+  }
+
+  private assertReturnCommandsEnabled(): void {
+    if (!this.config.AFTER_SALE_RETURN_COMMANDS_ENABLED || this.config.NODE_ENV === 'production') {
+      throw new ServiceUnavailableException('After-sale return commands are unavailable');
     }
   }
 

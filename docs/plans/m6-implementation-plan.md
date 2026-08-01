@@ -6,13 +6,13 @@
 > B2b-D4 repository implementation + local/test deletion worker validation 已完成且适用仓库门禁通过；
 > B2b-D5 default-disabled repository implementation + local/test protected-read validation 已完成且
 > 适用仓库门禁通过；B3 default-disabled repository implementation + local/test validation 已完成且
-> 适用仓库门禁通过；B4 default-disabled repository implementation + local/test validation 也已完成且
-> 适用仓库门禁通过；B2/B2b、B5-B7、
+> 适用仓库门禁通过；B4 与 B5 default-disabled repository implementation + local/test validation 也已完成且
+> 适用仓库门禁通过；B2/B2b、B6-B7、
 > M6.3、UI 与生产启用未完成或未授权并保持失败关闭；M6 整体未完成
 >
-> 版本：1.0
+> 版本：1.1
 >
-> 日期：2026-07-30
+> 日期：2026-07-31
 >
 > 依赖：`REQUIREMENTS.md`、`AGENTS.md`、`docs/plans/p0-development-plan.md`、
 > `docs/architecture/system-architecture.md`、`docs/plans/m5-implementation-plan.md`、
@@ -314,9 +314,9 @@ M6.3-B0/B1/B2a/B2b-D0 仓库实施、B2b-D1 repository + local/test storage vali
 repository implementation + local/test scanner worker validation、B2b-D3 repository
 implementation + local/test member evidence HTTP validation、B2b-D4 repository implementation + local/test
 deletion worker validation 与 B2b-D5 default-disabled repository implementation + local/test
-protected-read validation 已完成。B3 与 B4 计划及建议默认值已获 repository/local-test 实施授权，且
-两者的 default-disabled repository implementation + local/test validation 现已完成；B2/B2b、B5-B7
-仍未完成或未授权并失败关闭。A/B0/B1/B2a/D0-D5/B3/B4 的局部交付也不代表 M6.3 完成，详见
+protected-read validation 已完成。B3、B4 与 B5 计划及建议默认值已获 repository/local-test 实施授权，且
+三者的 default-disabled repository implementation + local/test validation 现已完成；B2/B2b、B6-B7
+仍未完成或未授权并失败关闭。A/B0/B1/B2a/D0-D5/B3/B4/B5 的局部交付也不代表 M6.3 完成，详见
 `docs/plans/m6.3-implementation-plan.md`。
 
 - B1 只读列表/详情使用严格响应投影和三语历史政策回退；不得因 RLS 没有列级保护而使用宽
@@ -353,8 +353,12 @@ protected-read validation 已完成。B3 与 B4 计划及建议默认值已获 r
   当前完整聚合通过 B1 GET 查询。管理员只接受目标商城直接 review 权限，cross-access-only 失败关闭；
   当前 COD 无可证明收款事实也失败关闭。只有政策要求或请求携带非空 evidence id 时才强制五项凭证能力和
   `ordinary < retention` TTL。B3 的序列化冲突最多进行三次事务尝试，`expected_version` 冲突不重试。
-  管理员审核、返件登记与可信物流事实、待验收读取和售后时间线写入仍属后续；完整返件验收写路径及
-  exactly-once 库存恢复属于 M6.4。
+  B4 已完成默认关闭的管理员审核/人工复核与 SYSTEM 寄回到期。
+- B5 已完成默认关闭的会员返件登记和管理员可信 `IN_TRANSIT/DELIVERED` 事实。运单号只保存 keyed
+  HMAC 与掩码；会员只追加 `START_RETURN`，管理员直接送达可原子追加
+  `RETURN_SHIPPED/RETURN_RECEIVED` 并形成 B1 `INSPECTION_PENDING` 待读取。管理员要求目标商城直接
+  review 权限、近期 MFA、确认词、reason 和 aggregate/返件双版本。该状态不等于验收；完整返件验收
+  写路径及 exactly-once 库存恢复属于 M6.4。
 - ONLINE 通过内部原语关联 M5 Refund，并消费成功/失败/取消/不确定权威结果；COD 使用可从退款响应
   取得公开号的双人确认线下结算事实。
 - 所有命令使用商城范围幂等键、expected version、固定锁序和有界串行化重试。
@@ -540,3 +544,9 @@ B4 最终 repository/local-test 证据见
 关闭的两条管理员审核命令、SYSTEM 寄回到期 worker 与第 50-51 段迁移；production policy、真实退款/
 COD、返件物流、验收、库存、换货、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`，也不完成
 B2/B2b、B5-B7、M6.3、M6 或 P0。
+
+B5 最终 repository/local-test 证据见
+`docs/reports/m6.3-b5-return-trust-completion-report.md`。该局部 `COMPLETE` 只覆盖默认关闭的会员返件登记、
+管理员可信物流事实、B1 待验收读取复用与第 52 段迁移；production policy、真实物流 provider、验收、
+库存、资金、换货、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`，也不完成 B2/B2b、B6-B7、M6.3、
+M6 或 P0。

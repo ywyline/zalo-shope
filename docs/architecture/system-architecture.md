@@ -52,6 +52,12 @@ B3 default-disabled repository implementation + local/test validation 已完成�
 真实供应商、部署和 rollout 均保持
 `NOT_AUTHORIZED / NOT_RUN`，不因仓库实现而改变既有外部上线门禁。
 
+用户随后按相邻切片授权 B4 与 B5。B4 已完成默认关闭的管理员审核/人工复核和 SYSTEM 寄回到期；
+B5 已完成默认关闭的会员返件登记、管理员可信 `IN_TRANSIT/DELIVERED` 物流事实与 B1 待验收读取复用。
+两者均只完成 repository implementation + local/test validation；真实物流、验收、库存恢复、退款/COD、
+换货、UI、生产配置、部署与 rollout 均为 `NOT_AUTHORIZED / NOT_RUN`，B2/B2b、B6-B7、M6.3、M6 和 P0
+仍未完成。
+
 ## 1. 决策范围
 
 本文确定首次脚手架前需要批准的技术方向，覆盖应用边界、多商城隔离、数据与集成原则、部署形态和质量门禁。本文不定义完整表字段、最终 API 契约或供应商私有参数；这些内容在后续专项设计中完成。
@@ -418,8 +424,8 @@ docs/
   `(store_id, updated_at DESC, id DESC)` 前向索引；Prisma 仅补记数据库原有
   `after_sale_refunds(store_id, settlement_id)` 唯一约束以修复 schema drift，不重复创建索引。
 - B1 本身不开放申请、取消、审核、凭证访问、返件、退款、COD 结算或任何写路径，也不交付 UI、worker、生产政策/启用或外部调用。
-  随后增加并完成下节 B2a 政策控制面，并在独立授权下完成默认关闭的 B3/B4 repository/local-test 写命令
-  与到期 worker；这不改变 B1 的历史只读结论。完整 B2b、B5-B7、返件验收与库存恢复 M6.4、生产 rollout、
+  随后增加并完成下节 B2a 政策控制面，并在独立授权下完成默认关闭的 B3-B5 repository-local-test
+  写命令与 worker；这不改变 B1 的历史只读结论。完整 B2b、B6-B7、返件验收与库存恢复 M6.4、生产 rollout、
   部署和发布仍需独立授权。
   B1 可读不代表整个 M6.3、M6、M5 或 P0 完成。
 
@@ -447,7 +453,7 @@ docs/
   这一历史读，又无法隐藏 ACTIVE head 行内草稿列；管理操作由应用层独立 RBAC 和显式 store scope 叠加 FORCE RLS 保护。
 - 旧数据库允许下划线 code 与非严格 object payload，新 API 不接受这些事实。仓库的只读分批预检已在本地测试库通过
   （`policies=0, versions=0`）；适用仓库门禁均已通过，B2a 仓库实施为 `COMPLETE`。每个目标库在 rollout 前仍必须重新执行并留证；
-  B2/B2b、B5-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭；B3/B4 的局部完成
+  B2/B2b、B6-B7、M6.3、UI、生产政策与启用/部署仍未完成或未授权并保持失败关闭；B3-B5 的局部完成
   不构成 M6.3 或生产启用。
 
 ### M6.3-B2b-D0 凭证数据库生命周期与可靠排队边界
@@ -693,6 +699,28 @@ docs/
 - `AFTER_SALE_REVIEW_COMMANDS_ENABLED` 与 `AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED` 默认关闭，
   production 拒绝启用。B4 不调用退款/COD/物流 provider，不创建返件、验收、库存恢复、换货履约或 UI；
   B5-B7、M6.3、M6、P0 和 production rollout 继续未完成。
+
+### M6.3-B5 默认关闭的返件登记与可信物流事实仓库边界
+
+- B5 只注册会员返件登记与管理员可信物流事实两条写路由。会员命令只在截止点前创建唯一
+  `SUBMITTED` 并追加 `START_RETURN`；管理员只接受 `IN_TRANSIT/DELIVERED`，由受审数据库入口追加
+  `RETURN_SHIPPED/RETURN_RECEIVED`。直接送达在同一事务写两条事件，并以至少一微秒的时间顺序保证 B1
+  `(created_at,id)` 时间线稳定；最终 `INSPECTION_PENDING` 仅表示待验收。
+- 运单号在应用边界 trim 后计算 `PII_HASH_KEY` keyed HMAC，并只持久化摘要与首尾掩码。request hash
+  绑定商城、actor、path、幂等键与 aggregate/返件版本；明文不能进入 SQL 参数之外的持久事实、日志、
+  audit、operation result、公开响应或错误。
+- 两条命令在 `Serializable` 事务中采用幂等 advisory lock、订单 advisory lock、订单/header/返件的固定
+  行锁序；只对 `P2034/40001` 最多尝试三次，明确 expected-version 冲突不重试。第 52 段迁移把
+  operation、一条或两条 transition 与 audit 绑定为 deferred 原子提交，并拒绝 runtime 直接返件或
+  operation 表写入。
+- 会员最终提交前重验 ACTIVE 商城、本人 member/session/token；管理员额外要求目标商城直接
+  `store.after-sales.review`、近期 MFA、确认词和 reason，并在全部锁等待后再次重验。只有 platform
+  cross-access 固定失败关闭。两条写响应均为不可变 operation acknowledgement；掩码返件、当前状态、
+  时间线和 `INSPECTION_PENDING` 队列继续由 B1 严格 GET 投影读取。
+- `AFTER_SALE_RETURN_COMMANDS_ENABLED` 默认 `false`，production 配置解析与 service 双重拒绝启用。
+  第 52 段 `down.sql` 仅允许无 B5 operation/可信状态/transition/audit 的 local/test，以 `55000` 阻止
+  有事实回滚。B5 不调用 provider，不执行 inspection、库存恢复、退款/COD、换货或 UI；完整 B2/B2b、
+  B6-B7、M6.3、M6、P0、部署和 rollout 继续未完成。
 
 ## 7. 身份、安全与隐私
 

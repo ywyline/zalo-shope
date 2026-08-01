@@ -120,6 +120,7 @@ describe('parseRuntimeConfig', () => {
     expect(config.AFTER_SALE_CURSOR_TTL_SECONDS).toBe(900);
     expect(config.AFTER_SALE_COMMANDS_ENABLED).toBe(false);
     expect(config.AFTER_SALE_REVIEW_COMMANDS_ENABLED).toBe(false);
+    expect(config.AFTER_SALE_RETURN_COMMANDS_ENABLED).toBe(false);
     expect(config.AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED).toBe(false);
     expect(config.AFTER_SALE_RETURN_EXPIRATION_BATCH_SIZE).toBe(100);
     expect(config.AFTER_SALE_RETURN_EXPIRATION_INTERVAL_MS).toBe(5_000);
@@ -435,6 +436,22 @@ describe('parseRuntimeConfig', () => {
       expect(error).toBeInstanceOf(InvalidEnvironmentError);
       expect(String(error)).toContain('AFTER_SALE_COMMANDS_ENABLED');
     }
+  });
+
+  it('keeps B5 return commands independently disabled and rejects production enablement', () => {
+    expect(
+      parseRuntimeConfig({
+        ...validEnvironment,
+        AFTER_SALE_RETURN_COMMANDS_ENABLED: 'true',
+        NODE_ENV: 'test',
+      }).AFTER_SALE_RETURN_COMMANDS_ENABLED,
+    ).toBe(true);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validProductionEnvironment,
+        AFTER_SALE_RETURN_COMMANDS_ENABLED: 'true',
+      }),
+    ).toThrow(InvalidEnvironmentError);
   });
 
   it('allows only an explicit loopback ClamAV sidecar in production', () => {

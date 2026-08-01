@@ -214,6 +214,7 @@ const runtimeConfigSchema = z
     AFTER_SALE_CURSOR_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
     AFTER_SALE_COMMANDS_ENABLED: disabledBooleanFromString,
     AFTER_SALE_REVIEW_COMMANDS_ENABLED: disabledBooleanFromString,
+    AFTER_SALE_RETURN_COMMANDS_ENABLED: disabledBooleanFromString,
     AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED: disabledBooleanFromString,
     AFTER_SALE_RETURN_EXPIRATION_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
     AFTER_SALE_RETURN_EXPIRATION_INTERVAL_MS: z.coerce
@@ -661,6 +662,7 @@ const runtimeConfigSchema = z
     }
     for (const field of [
       'AFTER_SALE_REVIEW_COMMANDS_ENABLED',
+      'AFTER_SALE_RETURN_COMMANDS_ENABLED',
       'AFTER_SALE_RETURN_EXPIRATION_WORKER_ENABLED',
     ] as const) {
       if (config[field] && config.NODE_ENV === 'production') {

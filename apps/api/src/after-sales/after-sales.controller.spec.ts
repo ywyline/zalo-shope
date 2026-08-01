@@ -259,6 +259,74 @@ describe('AfterSalesAdminController B4 commands', () => {
     );
     expect(resolveResponse.setHeader).toHaveBeenCalledWith('Idempotency-Replayed', 'true');
   });
+
+  it('strictly binds member return and trusted admin fact commands', async () => {
+    const memberSubmitReturn = vi.fn().mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'RETURN_PENDING', version: 3 },
+      replayed: false,
+    });
+    const memberController = new AfterSalesController({
+      memberSubmitReturn,
+    } as unknown as AfterSalesService);
+    const memberResponse = response();
+    await memberController.submitReturnShipment(
+      'Bearer member-token',
+      `${IDEMPOTENCY_KEY}-return`,
+      'beauty-store',
+      { afterSaleId: AFTER_SALE_ID },
+      {
+        carrier_name: 'GHN',
+        expected_version: 2,
+        tracking_number: 'GHN-RETURN-000012345678',
+      },
+      {},
+      { id: 'client-correlation', ip: '::ffff:127.0.0.1' },
+      memberResponse,
+    );
+    expect(memberSubmitReturn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        afterSaleId: AFTER_SALE_ID,
+        sourceIp: '127.0.0.1',
+      }),
+    );
+
+    const adminRecordReturnFact = vi.fn().mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'RETURN_IN_TRANSIT', version: 4 },
+      replayed: true,
+    });
+    const adminController = new AfterSalesAdminController({
+      adminRecordReturnFact,
+    } as unknown as AfterSalesService);
+    const adminResponse = response();
+    await adminController.recordReturnFact(
+      'Bearer admin-token',
+      `${IDEMPOTENCY_KEY}-return-fact`,
+      'beauty-store',
+      'Carrier portal verification for the returned parcel',
+      { afterSaleId: AFTER_SALE_ID },
+      {
+        confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT',
+        expected_return_shipment_version: 1,
+        expected_version: 3,
+        reason: 'Carrier portal confirms the return is now in transit.',
+        status: 'IN_TRANSIT',
+      },
+      { store_id: STORE_ID },
+      { id: 'client-correlation', ip: '::1' },
+      adminResponse,
+    );
+    expect(adminRecordReturnFact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        afterSaleId: AFTER_SALE_ID,
+        headers: expect.objectContaining({
+          accessReason: 'Carrier portal verification for the returned parcel',
+          sourceIp: '::1',
+        }),
+        query: { store_id: STORE_ID },
+      }),
+    );
+    expect(adminResponse.setHeader).toHaveBeenCalledWith('Idempotency-Replayed', 'true');
+  });
 });
 
 describe('B3 command HTTP routes', () => {
@@ -267,12 +335,14 @@ describe('B3 command HTTP routes', () => {
     adminCreateMerchantRefund: vi.fn(),
     adminDetail: vi.fn(),
     adminList: vi.fn(),
+    adminRecordReturnFact: vi.fn(),
     adminResolveReview: vi.fn(),
     adminReview: vi.fn(),
     memberCancel: vi.fn(),
     memberCreate: vi.fn(),
     memberDetail: vi.fn(),
     memberList: vi.fn(),
+    memberSubmitReturn: vi.fn(),
   };
 
   beforeAll(async () => {
@@ -291,6 +361,14 @@ describe('B3 command HTTP routes', () => {
     });
     service.adminResolveReview.mockResolvedValue({
       body: { ...ACKNOWLEDGEMENT, status: 'REJECTED', version: 3 },
+      replayed: true,
+    });
+    service.memberSubmitReturn.mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'RETURN_PENDING', version: 3 },
+      replayed: false,
+    });
+    service.adminRecordReturnFact.mockResolvedValue({
+      body: { ...ACKNOWLEDGEMENT, status: 'INSPECTION_PENDING', version: 5 },
       replayed: true,
     });
     const module = await Test.createTestingModule({
@@ -436,5 +514,58 @@ describe('B3 command HTTP routes', () => {
     expect(resolve.status).toBe(200);
     expect(resolve.headers['idempotency-replayed']).toBe('true');
     expect(resolve.body).toMatchObject({ status: 'REJECTED', version: 3 });
+  });
+
+  it('registers strict B5 member and administrator return routes', async () => {
+    const member = await api()
+      .post(`/v1/after-sales/${AFTER_SALE_ID}/return-shipment`)
+      .set({
+        Authorization: 'Bearer member-token',
+        'Idempotency-Key': `${IDEMPOTENCY_KEY}-return`,
+        'X-Store-Code': 'beauty-store',
+      })
+      .send({
+        carrier_name: 'GHN',
+        expected_version: 2,
+        tracking_number: 'GHN-RETURN-000012345678',
+      });
+    expect(member.status).toBe(200);
+    expect(member.headers['idempotency-replayed']).toBe('false');
+    expect(member.body).toMatchObject({ status: 'RETURN_PENDING', version: 3 });
+
+    const admin = await api()
+      .post(`/v1/admin/after-sales/${AFTER_SALE_ID}/return-shipment/fact?store_id=${STORE_ID}`)
+      .set({
+        Authorization: 'Bearer admin-token',
+        'Idempotency-Key': `${IDEMPOTENCY_KEY}-return-fact`,
+        'X-Access-Reason': 'Carrier portal verification for the returned parcel',
+        'X-Store-Code': 'beauty-store',
+      })
+      .send({
+        confirmation_code: 'RECORD_RETURN_LOGISTICS_FACT',
+        expected_return_shipment_version: 1,
+        expected_version: 3,
+        reason: 'Carrier portal confirms delivery to the return warehouse.',
+        status: 'DELIVERED',
+      });
+    expect(admin.status).toBe(200);
+    expect(admin.headers['idempotency-replayed']).toBe('true');
+    expect(admin.body).toMatchObject({ status: 'INSPECTION_PENDING', version: 5 });
+
+    const invalid = await api()
+      .post(`/v1/after-sales/${AFTER_SALE_ID}/return-shipment`)
+      .set({
+        Authorization: 'Bearer member-token',
+        'Idempotency-Key': `${IDEMPOTENCY_KEY}-return-invalid`,
+        'X-Store-Code': 'beauty-store',
+      })
+      .send({
+        carrier_name: 'GHN',
+        expected_version: 2,
+        status: 'DELIVERED',
+        tracking_number: 'GHN-RETURN-000012345678',
+      });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body).toMatchObject({ code: 'INPUT_INVALID' });
   });
 });
